@@ -90,7 +90,8 @@ Var repeat_kv(const Var& input, int64_t batch, int64_t kv_heads,
                            Shape({batch, kv_heads * repeats, seq, head_dim}));
 }
 
-Var Attention::forward(const Var& input, int64_t position_offset) const {
+Var Attention::forward(const Var& input, int64_t position_offset,
+                       KvCache* cache, int64_t layer) const {
   LLM_CHECK_MSG(
       input.shape().rank() == 3,
       "внимание ждёт (батч, позиция, канал), получено " << input.shape());
@@ -109,18 +110,34 @@ Var Attention::forward(const Var& input, int64_t position_offset) const {
   queries = autograd::rope(queries, position_offset, config_.rope_theta);
   keys = autograd::rope(keys, position_offset, config_.rope_theta);
 
-  keys = repeat_kv(keys, batch, config_.n_kv_heads, config_.heads_per_kv(), seq,
-                   head_dim);
+  // Ключей и значений может быть больше, чем запросов: при генерации запрос
+  // один, а ключи накоплены за весь предыдущий текст.
+  int64_t key_length = seq;
+  if (cache != nullptr) {
+    LLM_CHECK_MSG(!autograd::grad_enabled(),
+                  "KV-кэш несовместим с построением ленты: градиент через "
+                  "сохранённые ключи не идёт");
+    Tensor cached_keys;
+    Tensor cached_values;
+    cache->append(layer, keys.value(), values.value(), &cached_keys,
+                  &cached_values);
+    keys = Var::constant(cached_keys);
+    values = Var::constant(cached_values);
+    key_length = cached_keys.shape().dim(2);
+  }
+
+  keys = repeat_kv(keys, batch, config_.n_kv_heads, config_.heads_per_kv(),
+                   key_length, head_dim);
   values = repeat_kv(values, batch, config_.n_kv_heads, config_.heads_per_kv(),
-                     seq, head_dim);
+                     key_length, head_dim);
 
   // Умножение матриц работает по последним двум осям, поэтому батч и головы
   // сворачиваются в одну ось: голова — такой же независимый пример, как
   // элемент батча.
-  const Shape folded({batch * heads, seq, head_dim});
-  queries = autograd::reshape(queries, folded);
-  keys = autograd::reshape(keys, folded);
-  values = autograd::reshape(values, folded);
+  queries = autograd::reshape(queries, Shape({batch * heads, seq, head_dim}));
+  keys = autograd::reshape(keys, Shape({batch * heads, key_length, head_dim}));
+  values =
+      autograd::reshape(values, Shape({batch * heads, key_length, head_dim}));
 
   // Деление на корень из размерности головы удерживает дисперсию оценок
   // около единицы. Без него при большой размерности softmax насыщается,
@@ -177,10 +194,11 @@ Block::Block(const ModelConfig& config, Rng* rng)
       attention_(config, rng),
       mlp_(config, rng) {}
 
-Var Block::forward(const Var& input, int64_t position_offset) const {
+Var Block::forward(const Var& input, int64_t position_offset, KvCache* cache,
+                   int64_t layer) const {
   const Var attended = attention_.forward(
       autograd::rms_norm(input, attention_norm_, config_.norm_eps),
-      position_offset);
+      position_offset, cache, layer);
   const Var after_attention = autograd::add(input, attended);
 
   const Var transformed = mlp_.forward(
@@ -227,7 +245,7 @@ Model::Model(const ModelConfig& config, uint64_t seed) : config_(config) {
 }
 
 Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
-                   int64_t position_offset) const {
+                   int64_t position_offset, KvCache* cache) const {
   LLM_CHECK_MSG(static_cast<int64_t>(ids.size()) == batch * seq,
                 "передано " << ids.size() << " токенов при батче " << batch
                             << " и длине " << seq);
@@ -242,7 +260,14 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
                                  Shape({batch, seq, config_.d_model}));
 
   for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
-    hidden = blocks_[layer].forward(hidden, position_offset);
+    hidden = blocks_[layer].forward(hidden, position_offset, cache,
+                                    static_cast<int64_t>(layer));
+  }
+  // Длина кэша сдвигается один раз, после всех слоёв: они дописывают один и
+  // тот же блок позиций, и сдвиг внутри цикла сбил бы отсчёт для следующего
+  // слоя.
+  if (cache != nullptr) {
+    cache->advance(seq);
   }
   hidden = autograd::rms_norm(hidden, final_norm_, config_.norm_eps);
 
@@ -254,6 +279,16 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
                             autograd::transpose(token_embedding_, 0, 1));
   }
   return lm_head_.forward(hidden);
+}
+
+Var Model::forward_last(const std::vector<int32_t>& ids, int64_t batch,
+                        int64_t seq, int64_t position_offset,
+                        KvCache* cache) const {
+  const Var logits = forward(ids, batch, seq, position_offset, cache);
+  // Генерации нужна только последняя позиция. Остальные логиты посчитаны зря
+  // лишь при обработке затравки; на шаге генерации позиция и так одна.
+  const Var last = autograd::slice(logits, 1, seq - 1, 1);
+  return autograd::reshape(last, Shape({batch, config_.vocab_size}));
 }
 
 Var Model::loss(const std::vector<int32_t>& ids, int64_t batch,

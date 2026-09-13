@@ -99,6 +99,17 @@ Tensor sqrt(const Tensor& input) {
   return unary_op(input, [](float x) { return std::sqrt(x); });
 }
 
+void copy_into(const Tensor& source, Tensor* target) {
+  LLM_CHECK(target != nullptr);
+  LLM_CHECK_MSG(source.shape() == target->shape(),
+                "copy_into: формы " << source.shape() << " и "
+                                    << target->shape() << " не совпадают");
+  const float* in = source.data();
+  float* out = target->data();
+  for_each_offset2(target->shape(), target->strides(), source.strides(),
+                   [&](int64_t to, int64_t from) { out[to] = in[from]; });
+}
+
 void add_into(const Tensor& source, Tensor* target) {
   LLM_CHECK(target != nullptr);
   LLM_CHECK_MSG(source.shape() == target->shape(),

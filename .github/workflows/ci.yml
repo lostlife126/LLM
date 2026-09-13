@@ -67,6 +67,7 @@ jobs:
             src/core/*.h src/core/*.cpp src/ops/*.h src/ops/*.cpp \
             src/autograd/*.h src/autograd/*.cpp \
             src/nn/*.h src/nn/*.cpp src/data/*.h src/data/*.cpp \
+            src/infer/*.h src/infer/*.cpp \
             src/train/*.h src/train/*.cpp \
             src/serialize/*.h src/serialize/*.cpp \
             src/tokenizer/*.h src/tokenizer/*.cpp \

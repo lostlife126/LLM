@@ -21,6 +21,7 @@
 #include "autograd/node.h"
 #include "core/random.h"
 #include "nn/config.h"
+#include "nn/kv_cache.h"
 
 namespace llm {
 namespace nn {
@@ -66,8 +67,12 @@ class Attention {
 
   // position_offset — абсолютная позиция первого запроса. При обучении нуль,
   // при генерации с KV-кэшем равен длине уже накопленного контекста.
-  autograd::Var forward(const autograd::Var& input,
-                        int64_t position_offset) const;
+  //
+  // cache задаётся только при генерации: тогда input содержит лишь новые
+  // позиции, а ключи и значения всех прошлых берутся из кэша. Градиент через
+  // кэш не идёт, поэтому этот путь допустим только с выключенной лентой.
+  autograd::Var forward(const autograd::Var& input, int64_t position_offset,
+                        KvCache* cache = nullptr, int64_t layer = 0) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
  private:
@@ -113,8 +118,8 @@ class Block {
   Block() {}
   Block(const ModelConfig& config, Rng* rng);
 
-  autograd::Var forward(const autograd::Var& input,
-                        int64_t position_offset) const;
+  autograd::Var forward(const autograd::Var& input, int64_t position_offset,
+                        KvCache* cache = nullptr, int64_t layer = 0) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
  private:
@@ -134,7 +139,14 @@ class Model {
   // ids — batch * seq идентификаторов в порядке (батч, позиция).
   // Возвращает логиты формы (batch, seq, vocab).
   autograd::Var forward(const std::vector<int32_t>& ids, int64_t batch,
-                        int64_t seq, int64_t position_offset = 0) const;
+                        int64_t seq, int64_t position_offset = 0,
+                        KvCache* cache = nullptr) const;
+
+  // Логиты только последней позиции — то, что нужно генерации. Форма
+  // (batch, vocab).
+  autograd::Var forward_last(const std::vector<int32_t>& ids, int64_t batch,
+                             int64_t seq, int64_t position_offset = 0,
+                             KvCache* cache = nullptr) const;
 
   // Потери на предсказании следующего токена: каждая позиция предсказывает
   // следующую, последняя отбрасывается — ей нечего предсказывать.

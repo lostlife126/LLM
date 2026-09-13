@@ -31,6 +31,11 @@ Tensor exp(const Tensor& input);
 Tensor log(const Tensor& input);
 Tensor sqrt(const Tensor& input);
 
+// Копирует source в target на месте. Формы обязаны совпадать. В отличие от
+// присваивания тензора, пишет сквозь вид: так заполняется кусок KV-кэша, не
+// трогая остальное.
+void copy_into(const Tensor& source, Tensor* target);
+
 // Прибавляет source к target на месте. Формы обязаны совпадать; растяжения
 // здесь нет намеренно — молчаливое растяжение при накоплении градиента
 // скрывало бы ошибку в формах.

@@ -47,6 +47,7 @@ add_library(llm_core
   src/ops/matmul.cpp
   src/ops/reduce.cpp
   src/nn/config.cpp
+  src/nn/kv_cache.cpp
   src/nn/model.cpp
   src/tokenizer/bpe.cpp
   src/data/dataset.cpp
@@ -54,6 +55,8 @@ add_library(llm_core
   src/train/optimizer.cpp
   src/train/schedule.cpp
   src/train/trainer.cpp
+  src/infer/sampler.cpp
+  src/infer/generate.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -69,6 +72,9 @@ target_link_libraries(bench_model PRIVATE llm_core)
 add_executable(train apps/train.cpp)
 target_link_libraries(train PRIVATE llm_core)
 
+add_executable(generate apps/generate.cpp)
+target_link_libraries(generate PRIVATE llm_core)
+
 enable_testing()
 
 add_executable(llm_tests
@@ -81,6 +87,7 @@ add_executable(llm_tests
   tests/test_elementwise.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
+  tests/test_infer.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
   tests/test_nn.cpp
@@ -104,11 +111,13 @@ set(LLM_TEST_SUITES
   Check
   Elementwise
   Grad
+  Infer
   Gemm
   Matmul
   Model
   Nn
   Rng
+  Sampler
   Shape
   Span
   Storage
