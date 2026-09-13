@@ -30,10 +30,18 @@ endif()
 
 add_library(llm_core
   src/core/check.cpp
+  src/core/random.cpp
+  src/core/shape.cpp
   src/core/storage.cpp
   src/core/str_view.cpp
+  src/core/tensor.cpp
+  src/ops/gemm.cpp
+  src/ops/matmul.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_executable(bench_gemm apps/bench_gemm.cpp)
+target_link_libraries(bench_gemm PRIVATE llm_core)
 
 enable_testing()
 
@@ -41,9 +49,14 @@ add_executable(llm_tests
   tests/testing.cpp
   tests/test_main.cpp
   tests/test_check.cpp
+  tests/test_gemm.cpp
+  tests/test_matmul.cpp
+  tests/test_random.cpp
+  tests/test_shape.cpp
   tests/test_span.cpp
   tests/test_storage.cpp
   tests/test_str_view.cpp
+  tests/test_tensor.cpp
   tests/test_util.cpp
 )
 target_link_libraries(llm_tests PRIVATE llm_core)
@@ -53,9 +66,14 @@ target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 # компонент сломан, без чтения общего лога.
 set(LLM_TEST_SUITES
   Check
+  Gemm
+  Matmul
+  Rng
+  Shape
   Span
   Storage
   StrView
+  Tensor
   Util
 )
 foreach(suite ${LLM_TEST_SUITES})

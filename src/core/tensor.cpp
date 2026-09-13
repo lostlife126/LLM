@@ -1,0 +1,338 @@
+#include "core/tensor.h"
+
+#include <algorithm>
+#include <cstring>
+#include <ostream>
+#include <sstream>
+
+namespace llm {
+namespace {
+
+// Обход всех элементов в порядке плотного размещения: fn получает смещение
+// элемента в буфере с учётом шагов.
+//
+// Это «одометр»: младший разряд — последняя ось. При переносе разряд
+// сбрасывается в нуль, и из смещения вычитается накопленный по этой оси вклад.
+// Такой обход корректно работает и с шагом 0 (растянутая ось), и с
+// произвольной перестановкой осей.
+template <typename Fn>
+void for_each_offset(const Shape& shape, const std::vector<int64_t>& strides,
+                     Fn fn) {
+  const int64_t total = shape.numel();
+  if (total == 0) {
+    return;
+  }
+  const int rank = shape.rank();
+  std::vector<int64_t> index(static_cast<std::size_t>(rank), 0);
+  int64_t offset = 0;
+  for (int64_t counter = 0; counter < total; ++counter) {
+    fn(offset);
+    for (int axis = rank - 1; axis >= 0; --axis) {
+      const std::size_t a = static_cast<std::size_t>(axis);
+      index[a] += 1;
+      offset += strides[a];
+      if (index[a] < shape.dim(axis)) {
+        break;
+      }
+      offset -= index[a] * strides[a];
+      index[a] = 0;
+    }
+  }
+}
+
+}  // namespace
+
+Tensor::Tensor(std::shared_ptr<Storage> storage, float* data,
+               const Shape& shape, std::vector<int64_t> strides)
+    : storage_(std::move(storage)),
+      data_(data),
+      shape_(shape),
+      strides_(std::move(strides)) {
+  LLM_DCHECK_EQ(static_cast<int>(strides_.size()), shape_.rank());
+}
+
+Tensor Tensor::uninitialized(const Shape& shape) {
+  const int64_t count = shape.numel();
+  std::shared_ptr<Storage> storage = std::make_shared<Storage>(
+      static_cast<std::size_t>(count) * sizeof(float));
+  float* data = count == 0 ? nullptr : storage->as<float>().data();
+  return Tensor(std::move(storage), data, shape, contiguous_strides(shape));
+}
+
+Tensor Tensor::zeros(const Shape& shape) {
+  Tensor result = uninitialized(shape);
+  if (result.storage_) {
+    result.storage_->zero();
+  }
+  return result;
+}
+
+Tensor Tensor::full(const Shape& shape, float value) {
+  Tensor result = uninitialized(shape);
+  result.fill(value);
+  return result;
+}
+
+Tensor Tensor::from_values(const Shape& shape,
+                           const std::vector<float>& values) {
+  LLM_CHECK_MSG(static_cast<int64_t>(values.size()) == shape.numel(),
+                "для формы " << shape << " нужно " << shape.numel()
+                             << " значений, передано " << values.size());
+  Tensor result = uninitialized(shape);
+  if (!values.empty()) {
+    std::memcpy(result.data(), values.data(), values.size() * sizeof(float));
+  }
+  return result;
+}
+
+bool Tensor::is_contiguous() const {
+  // Оси размера 1 не ограничивают размещение: индекс по ним всегда 0, поэтому
+  // их шаг никогда не участвует в вычислении адреса.
+  int64_t expected = 1;
+  for (int axis = rank() - 1; axis >= 0; --axis) {
+    const int64_t size = shape_.dim(axis);
+    if (size == 1) {
+      continue;
+    }
+    if (strides_[static_cast<std::size_t>(axis)] != expected) {
+      return false;
+    }
+    expected *= size;
+  }
+  return true;
+}
+
+Span<float> Tensor::flat() {
+  LLM_CHECK_MSG(is_contiguous(),
+                "flat() требует плотного размещения; форма " << shape_);
+  return Span<float>(data_, static_cast<std::size_t>(numel()));
+}
+
+Span<const float> Tensor::flat() const {
+  LLM_CHECK_MSG(is_contiguous(),
+                "flat() требует плотного размещения; форма " << shape_);
+  return Span<const float>(data_, static_cast<std::size_t>(numel()));
+}
+
+int64_t Tensor::flat_offset(const int64_t* index, int count) const {
+  LLM_CHECK_MSG(count == rank(),
+                "индекс ранга " << count << " для тензора формы " << shape_);
+  int64_t offset = 0;
+  for (int axis = 0; axis < count; ++axis) {
+    LLM_DCHECK_GE(index[axis], static_cast<int64_t>(0));
+    LLM_DCHECK_LT(index[axis], shape_.dim(axis));
+    offset += index[axis] * strides_[static_cast<std::size_t>(axis)];
+  }
+  return offset;
+}
+
+float& Tensor::operator()(int64_t i0) {
+  const int64_t index[] = {i0};
+  return data_[flat_offset(index, 1)];
+}
+
+float& Tensor::operator()(int64_t i0, int64_t i1) {
+  const int64_t index[] = {i0, i1};
+  return data_[flat_offset(index, 2)];
+}
+
+float& Tensor::operator()(int64_t i0, int64_t i1, int64_t i2) {
+  const int64_t index[] = {i0, i1, i2};
+  return data_[flat_offset(index, 3)];
+}
+
+float& Tensor::operator()(int64_t i0, int64_t i1, int64_t i2, int64_t i3) {
+  const int64_t index[] = {i0, i1, i2, i3};
+  return data_[flat_offset(index, 4)];
+}
+
+const float& Tensor::operator()(int64_t i0) const {
+  const int64_t index[] = {i0};
+  return data_[flat_offset(index, 1)];
+}
+
+const float& Tensor::operator()(int64_t i0, int64_t i1) const {
+  const int64_t index[] = {i0, i1};
+  return data_[flat_offset(index, 2)];
+}
+
+const float& Tensor::operator()(int64_t i0, int64_t i1, int64_t i2) const {
+  const int64_t index[] = {i0, i1, i2};
+  return data_[flat_offset(index, 3)];
+}
+
+const float& Tensor::operator()(int64_t i0, int64_t i1, int64_t i2,
+                                int64_t i3) const {
+  const int64_t index[] = {i0, i1, i2, i3};
+  return data_[flat_offset(index, 4)];
+}
+
+float& Tensor::at(const std::vector<int64_t>& index) {
+  return data_[flat_offset(index.data(), static_cast<int>(index.size()))];
+}
+
+const float& Tensor::at(const std::vector<int64_t>& index) const {
+  return data_[flat_offset(index.data(), static_cast<int>(index.size()))];
+}
+
+Tensor Tensor::reshape(const Shape& shape) const {
+  LLM_CHECK_MSG(shape.numel() == numel(), "reshape " << shape_ << " -> "
+                                                     << shape
+                                                     << " меняет число "
+                                                        "элементов");
+  LLM_CHECK_MSG(is_contiguous(),
+                "reshape требует плотного размещения; сначала contiguous()");
+  return Tensor(storage_, data_, shape, contiguous_strides(shape));
+}
+
+Tensor Tensor::transpose(int axis_a, int axis_b) const {
+  const int a = shape_.normalize_axis(axis_a);
+  const int b = shape_.normalize_axis(axis_b);
+  std::vector<int64_t> dims = shape_.dims();
+  std::vector<int64_t> strides = strides_;
+  std::swap(dims[static_cast<std::size_t>(a)],
+            dims[static_cast<std::size_t>(b)]);
+  std::swap(strides[static_cast<std::size_t>(a)],
+            strides[static_cast<std::size_t>(b)]);
+  return Tensor(storage_, data_, Shape(std::move(dims)), std::move(strides));
+}
+
+Tensor Tensor::permute(const std::vector<int>& order) const {
+  LLM_CHECK_MSG(static_cast<int>(order.size()) == rank(),
+                "перестановка из " << order.size() << " осей для тензора ранга "
+                                   << rank());
+  std::vector<bool> seen(order.size(), false);
+  std::vector<int64_t> dims(order.size());
+  std::vector<int64_t> strides(order.size());
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    const int axis = shape_.normalize_axis(order[i]);
+    LLM_CHECK_MSG(!seen[static_cast<std::size_t>(axis)],
+                  "ось " << axis << " указана в перестановке дважды");
+    seen[static_cast<std::size_t>(axis)] = true;
+    dims[i] = shape_.dim(axis);
+    strides[i] = strides_[static_cast<std::size_t>(axis)];
+  }
+  return Tensor(storage_, data_, Shape(std::move(dims)), std::move(strides));
+}
+
+Tensor Tensor::slice(int axis, int64_t start, int64_t count) const {
+  const int a = shape_.normalize_axis(axis);
+  LLM_CHECK_GE(start, static_cast<int64_t>(0));
+  LLM_CHECK_GE(count, static_cast<int64_t>(0));
+  LLM_CHECK_MSG(start + count <= shape_.dim(a),
+                "срез [" << start << ", " << start + count << ") по оси " << a
+                         << " выходит за границу " << shape_.dim(a));
+  std::vector<int64_t> dims = shape_.dims();
+  dims[static_cast<std::size_t>(a)] = count;
+  float* data = data_ + start * strides_[static_cast<std::size_t>(a)];
+  return Tensor(storage_, data, Shape(std::move(dims)), strides_);
+}
+
+Tensor Tensor::select(int axis, int64_t index) const {
+  const int a = shape_.normalize_axis(axis);
+  LLM_CHECK_GE(index, static_cast<int64_t>(0));
+  LLM_CHECK_LT(index, shape_.dim(a));
+  std::vector<int64_t> dims = shape_.dims();
+  std::vector<int64_t> strides = strides_;
+  dims.erase(dims.begin() + a);
+  strides.erase(strides.begin() + a);
+  float* data = data_ + index * strides_[static_cast<std::size_t>(a)];
+  return Tensor(storage_, data, Shape(std::move(dims)), std::move(strides));
+}
+
+Tensor Tensor::expand(const Shape& shape) const {
+  LLM_CHECK_MSG(shape.rank() >= rank(), "expand не может уменьшать ранг: "
+                                            << shape_ << " -> " << shape);
+  // Оси выравниваются справа, как в broadcast: новые оси добавляются слева.
+  const int pad = shape.rank() - rank();
+  std::vector<int64_t> strides(static_cast<std::size_t>(shape.rank()), 0);
+  for (int axis = 0; axis < rank(); ++axis) {
+    const int64_t from = shape_.dim(axis);
+    const int64_t to = shape.dim(axis + pad);
+    if (from == to) {
+      strides[static_cast<std::size_t>(axis + pad)] =
+          strides_[static_cast<std::size_t>(axis)];
+    } else {
+      // Шаг 0: все индексы по этой оси читают одну и ту же ячейку. Так
+      // растяжение выражается без копирования данных.
+      LLM_CHECK_MSG(from == 1, "ось " << axis << " размера " << from
+                                      << " нельзя растянуть до " << to);
+      strides[static_cast<std::size_t>(axis + pad)] = 0;
+    }
+  }
+  return Tensor(storage_, data_, shape, std::move(strides));
+}
+
+Tensor Tensor::contiguous() const {
+  if (is_contiguous()) {
+    return *this;
+  }
+  return clone();
+}
+
+Tensor Tensor::clone() const {
+  Tensor result = uninitialized(shape_);
+  if (numel() == 0) {
+    return result;
+  }
+  float* out = result.data();
+  const float* in = data_;
+  int64_t written = 0;
+  for_each_offset(shape_, strides_,
+                  [&](int64_t offset) { out[written++] = in[offset]; });
+  LLM_DCHECK_EQ(written, numel());
+  return result;
+}
+
+void Tensor::fill(float value) {
+  if (numel() == 0) {
+    return;
+  }
+  if (is_contiguous()) {
+    // Быстрый путь: заполнение веса или буфера активаций идёт по плотной
+    // памяти, и обход одометром здесь был бы на порядок дороже.
+    std::fill(data_, data_ + numel(), value);
+    return;
+  }
+  float* out = data_;
+  for_each_offset(shape_, strides_,
+                  [&](int64_t offset) { out[offset] = value; });
+}
+
+std::string Tensor::debug_string(int64_t max_values) const {
+  std::ostringstream oss;
+  oss << "Tensor" << shape_;
+  if (!is_contiguous()) {
+    oss << " strides(";
+    for (std::size_t i = 0; i < strides_.size(); ++i) {
+      if (i != 0) {
+        oss << ", ";
+      }
+      oss << strides_[i];
+    }
+    oss << ")";
+  }
+  oss << " [";
+  int64_t printed = 0;
+  const float* in = data_;
+  for_each_offset(shape_, strides_, [&](int64_t offset) {
+    if (printed < max_values) {
+      if (printed != 0) {
+        oss << ", ";
+      }
+      oss << in[offset];
+    }
+    ++printed;
+  });
+  if (printed > max_values) {
+    oss << ", ... (всего " << printed << ")";
+  }
+  oss << "]";
+  return oss.str();
+}
+
+std::ostream& operator<<(std::ostream& os, const Tensor& tensor) {
+  return os << tensor.debug_string();
+}
+
+}  // namespace llm

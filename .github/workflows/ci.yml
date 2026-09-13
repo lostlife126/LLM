@@ -64,4 +64,5 @@ jobs:
         run: |
           clang-format-18 --version
           clang-format-18 --dry-run --Werror \
-            src/core/*.h src/core/*.cpp tests/*.h tests/*.cpp
+            src/core/*.h src/core/*.cpp src/ops/*.h src/ops/*.cpp \
+            apps/*.cpp tests/*.h tests/*.cpp
