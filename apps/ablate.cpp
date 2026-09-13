@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "core/check.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "tokenizer/bpe.h"
@@ -102,10 +103,24 @@ std::vector<Variant> build_variants(int64_t vocab_size) {
 
   Variant untied;
   untied.name = "несвязанные эмбеддинги";
-  untied.question = "окупается ли отдельная выходная матрица";
+  untied.question =
+      "что даёт отдельная выходная матрица (НЕ выровнено по параметрам)";
   untied.config = base;
   untied.config.tie_embeddings = false;
   variants.push_back(untied);
+
+  // Развязывание эмбеддингов добавляет vocab * d_model весов, поэтому строка
+  // выше отвечает на вопрос «помогает ли +24% параметров», а не «помогает ли
+  // развязывание». Честный ответ даёт этот вариант: те же лишние веса, но
+  // потраченные на ширину FFN при связанных эмбеддингах.
+  Variant wider;
+  wider.name = "связанные + шире FFN";
+  wider.question = "те же +24% параметров, но в FFN, а не в выходной матрице";
+  wider.config = base;
+  wider.config.ffn_hidden =
+      base.ffn_hidden +
+      (base.vocab_size * base.d_model) / (3 * base.d_model * base.n_layers);
+  variants.push_back(wider);
 
   return variants;
 }
@@ -179,6 +194,9 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const int64_t steps = argc > 3 ? std::atoll(argv[3]) : 1000;
   const int seeds = argc > 4 ? std::atoi(argv[4]) : 2;
+  // Необязательный фильтр по имени: позволяет догнать один вариант, не
+  // пересчитывая всю таблицу.
+  const std::string filter = argc > 5 ? argv[5] : std::string();
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const llm::data::TokenDataset dataset = llm::data::TokenDataset::from_text(
@@ -187,12 +205,18 @@ int main(int argc, char** argv) {
   const std::vector<Variant> variants = build_variants(tokenizer.vocab_size());
   std::printf("абляции: %zu вариантов по %d зёрен, %lld шагов каждый\n",
               variants.size(), seeds, static_cast<long long>(steps));
+  // Сброс буфера после шапки: при выводе в файл она иначе не появится до
+  // первого готового прогона, и несколько минут кажется, что ничего не идёт.
   std::printf("обучающих токенов %lld, проверочных %lld\n\n",
               static_cast<long long>(dataset.train_size()),
               static_cast<long long>(dataset.validation_size()));
+  std::fflush(stdout);
 
   std::vector<Outcome> outcomes;
   for (std::size_t v = 0; v < variants.size(); ++v) {
+    if (!filter.empty() && variants[v].name.find(filter) == std::string::npos) {
+      continue;
+    }
     Outcome outcome;
     outcome.name = variants[v].name;
     outcome.question = variants[v].question;
@@ -232,6 +256,8 @@ int main(int argc, char** argv) {
       sorted.begin(), sorted.end(),
       [](const Outcome& a, const Outcome& b) { return a.mean() < b.mean(); });
 
+  LLM_CHECK_MSG(!outcomes.empty(),
+                "фильтр '" << filter << "' ничего не выбрал");
   const float baseline_spread = outcomes[0].spread();
 
   std::printf("\n%s %10s %8s %8s %10s %8s\n", pad("вариант", 26).c_str(),
