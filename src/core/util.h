@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "core/check.h"
 
@@ -32,6 +33,24 @@ inline std::size_t div_up(std::size_t value, std::size_t divisor) {
 // Ближайшее сверху число, кратное multiple.
 inline std::size_t round_up(std::size_t value, std::size_t multiple) {
   return div_up(value, multiple) * multiple;
+}
+
+// Дополняет строку пробелами до нужной ширины В СИМВОЛАХ.
+//
+// printf с %-20s считает байты, а кириллица в UTF-8 занимает по два, поэтому
+// таблицы с русскими подписями разъезжаются. Ведущие байты символа UTF-8 —
+// это все, кроме продолжающих, у которых старшие два бита равны 10.
+inline std::string pad_utf8(const std::string& text, std::size_t width) {
+  std::size_t characters = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
+      ++characters;
+    }
+  }
+  if (characters >= width) {
+    return text;
+  }
+  return text + std::string(width - characters, ' ');
 }
 
 inline bool is_aligned(const void* pointer, std::size_t alignment) {

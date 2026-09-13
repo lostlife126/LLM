@@ -7,7 +7,9 @@
 #include "autograd/ops.h"
 #include "core/check.h"
 #include "ops/elementwise.h"
+#include "ops/loss.h"
 #include "ops/matmul.h"
+#include "ops/nn.h"
 
 namespace llm {
 namespace nn {
@@ -200,7 +202,8 @@ Var repeat_kv(const Var& input, int64_t batch, int64_t kv_heads,
 }
 
 Var Attention::forward(const Var& input, int64_t position_offset,
-                       KvCache* cache, int64_t layer) const {
+                       KvCache* cache, int64_t layer,
+                       ForwardStats* stats) const {
   LLM_CHECK_MSG(
       input.shape().rank() == 3,
       "внимание ждёт (батч, позиция, канал), получено " << input.shape());
@@ -262,6 +265,10 @@ Var Attention::forward(const Var& input, int64_t position_offset,
 
   scores = autograd::causal_mask(scores, position_offset);
   const Var weights = autograd::softmax(scores);
+  if (stats != nullptr) {
+    stats->attention_entropy.push_back(
+        ops::attention_entropy(weights.value(), position_offset));
+  }
   Var result = autograd::matmul(weights, values);
 
   result = autograd::reshape(result, Shape({batch, heads, seq, head_dim}));
@@ -316,12 +323,20 @@ Mlp::Mlp(const ModelConfig& config, Rng* rng) : kind_(config.ffn) {
       Linear(config.ffn_hidden, config.d_model, residual_init_std(config), rng);
 }
 
-Var Mlp::forward(const Var& input) const {
+Var Mlp::forward(const Var& input, ForwardStats* stats) const {
   if (kind_ == FfnKind::kSwiGlu) {
     // Вентиль решает, какие каналы пропустить дальше, и решение зависит от
     // входа. У обычного FFN такого выбора нет: активация применяется к
     // каждому каналу одинаково.
-    const Var gate = autograd::silu(gate_.forward(input));
+    const Var raw_gate = gate_.forward(input);
+    if (stats != nullptr) {
+      // Доля каналов, которые вентиль пропускает дальше. Схлопывание к нулю
+      // или к единице означало бы, что вентиль перестал выбирать и FFN
+      // выродился в обычный.
+      stats->gate_open_fraction.push_back(
+          ops::positive_fraction(raw_gate.value()));
+    }
+    const Var gate = autograd::silu(raw_gate);
     const Var up = up_.forward(input);
     return down_.forward(autograd::mul(gate, up));
   }
@@ -371,25 +386,34 @@ Block::Block(const ModelConfig& config, Rng* rng)
       mlp_(config, rng) {}
 
 Var Block::forward(const Var& input, int64_t position_offset, KvCache* cache,
-                   int64_t layer) const {
+                   int64_t layer, ForwardStats* stats) const {
+  Var output;
   if (config_.post_norm) {
     // Нормируется уже сумма остатка и подслоя, то есть нормировка стоит на
     // пути остатка.
     const Var attended =
-        attention_.forward(input, position_offset, cache, layer);
+        attention_.forward(input, position_offset, cache, layer, stats);
     const Var after_attention =
         attention_norm_.forward(autograd::add(input, attended));
-    const Var transformed = mlp_.forward(after_attention);
-    return mlp_norm_.forward(autograd::add(after_attention, transformed));
+    const Var transformed = mlp_.forward(after_attention, stats);
+    output = mlp_norm_.forward(autograd::add(after_attention, transformed));
+  } else {
+    // Пре-нормировка: путь остатка от выхода к входу — чистое сложение.
+    const Var attended = attention_.forward(
+        attention_norm_.forward(input), position_offset, cache, layer, stats);
+    const Var after_attention = autograd::add(input, attended);
+    const Var transformed =
+        mlp_.forward(mlp_norm_.forward(after_attention), stats);
+    output = autograd::add(after_attention, transformed);
   }
 
-  // Пре-нормировка: путь остатка от выхода к входу — чистое сложение.
-  const Var attended = attention_.forward(attention_norm_.forward(input),
-                                          position_offset, cache, layer);
-  const Var after_attention = autograd::add(input, attended);
-
-  const Var transformed = mlp_.forward(mlp_norm_.forward(after_attention));
-  return autograd::add(after_attention, transformed);
+  if (stats != nullptr) {
+    // Масштаб остаточного потока на выходе слоя. Рост в разы по глубине
+    // означает, что поправка на инициализацию выходных проекций не
+    // справляется.
+    stats->residual_rms.push_back(ops::root_mean_square(output.value()));
+  }
+  return output;
 }
 
 void Block::enable_lora(const LoraConfig& config, Rng* rng) {
@@ -445,7 +469,8 @@ Model::Model(const ModelConfig& config, uint64_t seed) : config_(config) {
 }
 
 Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
-                   int64_t position_offset, KvCache* cache) const {
+                   int64_t position_offset, KvCache* cache,
+                   ForwardStats* stats) const {
   LLM_CHECK_MSG(static_cast<int64_t>(ids.size()) == batch * seq,
                 "передано " << ids.size() << " токенов при батче " << batch
                             << " и длине " << seq);
@@ -477,7 +502,7 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
 
   for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
     hidden = blocks_[layer].forward(hidden, position_offset, cache,
-                                    static_cast<int64_t>(layer));
+                                    static_cast<int64_t>(layer), stats);
   }
   // Длина кэша сдвигается один раз, после всех слоёв: они дописывают один и
   // тот же блок позиций, и сдвиг внутри цикла сбил бы отсчёт для следующего
@@ -507,12 +532,12 @@ Var Model::forward_last(const std::vector<int32_t>& ids, int64_t batch,
   return autograd::reshape(last, Shape({batch, config_.vocab_size}));
 }
 
-Var Model::loss(const std::vector<int32_t>& ids, int64_t batch,
-                int64_t seq) const {
+Var Model::loss(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
+                ForwardStats* stats) const {
   LLM_CHECK_MSG(seq >= 2,
                 "для предсказания следующего токена нужно хотя бы два");
 
-  const Var logits = forward(ids, batch, seq);
+  const Var logits = forward(ids, batch, seq, 0, nullptr, stats);
   // Последняя позиция отбрасывается: следующего токена для неё в окне нет.
   const Var predictions = autograd::slice(logits, 1, 0, seq - 1);
   const Var flat = autograd::reshape(
@@ -523,6 +548,34 @@ Var Model::loss(const std::vector<int32_t>& ids, int64_t batch,
   for (int64_t item = 0; item < batch; ++item) {
     for (int64_t position = 1; position < seq; ++position) {
       targets.push_back(ids[static_cast<std::size_t>(item * seq + position)]);
+    }
+  }
+  if (stats != nullptr) {
+    const ops::PredictionStats prediction =
+        ops::prediction_stats(flat.value(), targets);
+    stats->top1_accuracy = prediction.top1_accuracy;
+    stats->prediction_entropy = prediction.entropy;
+
+    // Разбивка потерь по четвертям окна. Строки идут в порядке
+    // (элемент батча, позиция), поэтому позиция строки — это остаток от
+    // деления на длину окна без последней позиции.
+    const std::vector<float> rows = ops::per_row_loss(flat.value(), targets);
+    const int64_t window = seq - 1;
+    std::vector<double> sums(4, 0.0);
+    std::vector<int64_t> counts(4, 0);
+    for (std::size_t row = 0; row < rows.size(); ++row) {
+      const int64_t position = static_cast<int64_t>(row) % window;
+      int64_t quarter = position * 4 / window;
+      quarter = quarter > 3 ? 3 : quarter;
+      sums[static_cast<std::size_t>(quarter)] += rows[row];
+      counts[static_cast<std::size_t>(quarter)] += 1;
+    }
+    stats->loss_by_quarter.clear();
+    for (std::size_t i = 0; i < 4; ++i) {
+      stats->loss_by_quarter.push_back(
+          counts[i] == 0
+              ? 0.0f
+              : static_cast<float>(sums[i] / static_cast<double>(counts[i])));
     }
   }
   return autograd::cross_entropy(flat, targets);

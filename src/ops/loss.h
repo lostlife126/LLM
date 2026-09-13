@@ -31,6 +31,30 @@ Tensor cross_entropy(const Tensor& logits, const std::vector<int32_t>& targets);
 Tensor cross_entropy_backward(const Tensor& logits,
                               const std::vector<int32_t>& targets);
 
+// --- Диагностика качества предсказания ---
+
+struct PredictionStats {
+  // Доля позиций, где самый вероятный токен оказался правильным. Величина
+  // понятнее потерь: «угадывает каждый пятый» читается сразу, а «потери 4.4» —
+  // нет.
+  float top1_accuracy = 0.0f;
+
+  // Энтропия предсказанного распределения в натах. На старте близка к
+  // log(vocab) — модель ничего не знает и распределяет вероятность ровно; по
+  // ходу обучения падает. Рост энтропии при падающих потерях означал бы, что
+  // модель становится осторожнее, а не увереннее.
+  float entropy = 0.0f;
+};
+
+PredictionStats prediction_stats(const Tensor& logits,
+                                 const std::vector<int32_t>& targets);
+
+// Потери по каждой строке отдельно. Нужны, чтобы разложить их по позициям в
+// окне: модель обязана предсказывать конец окна лучше начала, потому что там
+// больше контекста.
+std::vector<float> per_row_loss(const Tensor& logits,
+                                const std::vector<int32_t>& targets);
+
 }  // namespace ops
 }  // namespace llm
 

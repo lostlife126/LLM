@@ -56,6 +56,25 @@ class AdamW {
 
   int64_t step_count() const { return step_; }
 
+  // Отношение длины шага к длине самого веса, медиана по параметрам последнего
+  // шага.
+  //
+  // Классический диагностический признак: у здорового обучения он держится
+  // около 1e-3. Заметно больше — шаг переписывает веса, и обучение вот-вот
+  // сорвётся; заметно меньше — модель практически стоит, и дело либо в
+  // слишком малой скорости, либо в том, что градиент уже нулевой.
+  //
+  // Величина полезнее нормы градиента: та говорит, насколько велик градиент
+  // сам по себе, а эта — насколько велик он относительно того, что двигает.
+  float last_update_ratio() const { return last_update_ratio_; }
+
+  // Отношение по каждому параметру отдельно — чтобы видеть, какой слой
+  // движется, а какой стоит.
+  const std::vector<float>& update_ratios() const { return update_ratios_; }
+  const std::vector<nn::NamedParameter>& parameters() const {
+    return parameters_;
+  }
+
   // Число параметров, к которым применяется распад веса.
   int64_t decayed_parameter_count() const;
 
@@ -66,6 +85,8 @@ class AdamW {
   std::vector<bool> apply_decay_;
   AdamWConfig config_;
   int64_t step_;
+  float last_update_ratio_ = 0.0f;
+  std::vector<float> update_ratios_;
 };
 
 }  // namespace train

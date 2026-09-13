@@ -36,6 +36,11 @@ struct TrainConfig {
   float grad_clip = 1.0f;
 
   int64_t log_every = 50;
+
+  // Как часто печатать полную диагностику: послойные величины и разбивку
+  // потерь по позициям. Считать их на каждом шаге дорого и незачем —
+  // меняются они медленно.
+  int64_t diagnostics_every = 200;
   int64_t eval_every = 200;
   int64_t eval_batches = 8;
   int64_t checkpoint_every = 0;  // 0 — не сохранять
@@ -48,8 +53,16 @@ struct TrainConfig {
 struct TrainReport {
   std::vector<float> train_loss;  // потери на каждом шаге
   std::vector<float> grad_norm;  // норма градиента до обрезки
+  std::vector<float> update_ratio;  // отношение длины шага к длине веса
+
   float final_train_loss = 0.0f;
   float final_validation_loss = 0.0f;
+  float final_accuracy = 0.0f;
+  float final_prediction_entropy = 0.0f;
+
+  // Снимок внутренностей модели на последней диагностике.
+  nn::ForwardStats final_stats;
+
   double seconds = 0.0;
 };
 

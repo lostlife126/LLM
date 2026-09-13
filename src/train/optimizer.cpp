@@ -1,5 +1,6 @@
 #include "train/optimizer.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/check.h"
@@ -68,6 +69,8 @@ void AdamW::step(float learning_rate) {
   const double bias2 = 1.0 - std::pow(static_cast<double>(config_.beta2),
                                       static_cast<double>(step_));
 
+  update_ratios_.assign(parameters_.size(), 0.0f);
+
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
     const Tensor& grad = parameters_[i].value->grad();
     if (!grad.defined()) {
@@ -83,8 +86,15 @@ void AdamW::step(float learning_rate) {
     float* second = second_moment_[i].data();
     const int64_t count = value.numel();
 
+    // Длины шага и самого веса копятся по ходу: отдельный проход ради них
+    // стоил бы столько же, сколько сам шаг.
+    double update_squares = 0.0;
+    double weight_squares = 0.0;
+
     for (int64_t element = 0; element < count; ++element) {
       const float gradient = gradients[element];
+      weight_squares +=
+          static_cast<double>(weights[element]) * weights[element];
 
       first[element] =
           config_.beta1 * first[element] + (1.0f - config_.beta1) * gradient;
@@ -106,8 +116,30 @@ void AdamW::step(float learning_rate) {
       const double update =
           corrected_first /
           (std::sqrt(corrected_second) + static_cast<double>(config_.eps));
-      weights[element] -= learning_rate * static_cast<float>(update);
+      const double step = static_cast<double>(learning_rate) * update;
+      update_squares += step * step;
+      weights[element] -= static_cast<float>(step);
     }
+
+    update_ratios_[i] = weight_squares > 0.0
+                            ? static_cast<float>(std::sqrt(update_squares) /
+                                                 std::sqrt(weight_squares))
+                            : 0.0f;
+  }
+
+  // Медиана, а не среднее: у одного-двух параметров отношение бывает на
+  // порядки больше, и среднее говорило бы только о них.
+  std::vector<float> sorted;
+  for (std::size_t i = 0; i < update_ratios_.size(); ++i) {
+    if (update_ratios_[i] > 0.0f) {
+      sorted.push_back(update_ratios_[i]);
+    }
+  }
+  if (sorted.empty()) {
+    last_update_ratio_ = 0.0f;
+  } else {
+    std::sort(sorted.begin(), sorted.end());
+    last_update_ratio_ = sorted[sorted.size() / 2];
   }
 }
 

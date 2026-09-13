@@ -99,5 +99,85 @@ Tensor cross_entropy_backward(const Tensor& logits,
   return out;
 }
 
+PredictionStats prediction_stats(const Tensor& logits,
+                                 const std::vector<int32_t>& targets) {
+  check_arguments(logits, targets);
+  const int64_t rows = logits.dim(0);
+  const int64_t vocab = logits.dim(1);
+
+  const Tensor dense = logits.contiguous();
+  const float* data = dense.data();
+
+  int64_t correct = 0;
+  double entropy_total = 0.0;
+
+  for (int64_t row = 0; row < rows; ++row) {
+    const float* row_data = data + row * vocab;
+
+    float maximum = -std::numeric_limits<float>::infinity();
+    int64_t best = 0;
+    for (int64_t i = 0; i < vocab; ++i) {
+      if (row_data[i] > maximum) {
+        maximum = row_data[i];
+        best = i;
+      }
+    }
+    if (best == targets[static_cast<std::size_t>(row)]) {
+      ++correct;
+    }
+
+    double sum_exp = 0.0;
+    for (int64_t i = 0; i < vocab; ++i) {
+      sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
+    }
+    // Энтропия через логарифм суммы экспонент: H = log(S) + max - E[x], где
+    // ожидание берётся по самому распределению. Так не нужен отдельный проход
+    // с материализацией вероятностей.
+    const double log_sum = std::log(sum_exp);
+    double weighted = 0.0;
+    for (int64_t i = 0; i < vocab; ++i) {
+      const double probability =
+          std::exp(static_cast<double>(row_data[i] - maximum)) / sum_exp;
+      weighted += probability * static_cast<double>(row_data[i] - maximum);
+    }
+    entropy_total += log_sum - weighted;
+  }
+
+  PredictionStats stats;
+  stats.top1_accuracy = static_cast<float>(static_cast<double>(correct) /
+                                           static_cast<double>(rows));
+  stats.entropy = static_cast<float>(entropy_total / static_cast<double>(rows));
+  return stats;
+}
+
+std::vector<float> per_row_loss(const Tensor& logits,
+                                const std::vector<int32_t>& targets) {
+  check_arguments(logits, targets);
+  const int64_t rows = logits.dim(0);
+  const int64_t vocab = logits.dim(1);
+
+  const Tensor dense = logits.contiguous();
+  const float* data = dense.data();
+
+  std::vector<float> losses;
+  losses.reserve(static_cast<std::size_t>(rows));
+  for (int64_t row = 0; row < rows; ++row) {
+    const float* row_data = data + row * vocab;
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < vocab; ++i) {
+      maximum = row_data[i] > maximum ? row_data[i] : maximum;
+    }
+    double sum_exp = 0.0;
+    for (int64_t i = 0; i < vocab; ++i) {
+      sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
+    }
+    const double log_sum_exp = static_cast<double>(maximum) + std::log(sum_exp);
+    losses.push_back(static_cast<float>(
+        log_sum_exp -
+        static_cast<double>(row_data[targets[static_cast<std::size_t>(row)]])));
+  }
+  return losses;
+}
+
 }  // namespace ops
 }  // namespace llm

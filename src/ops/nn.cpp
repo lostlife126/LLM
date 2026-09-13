@@ -381,6 +381,74 @@ Tensor gelu_backward(const Tensor& grad_output, const Tensor& input) {
   return out;
 }
 
+float attention_entropy(const Tensor& weights, int64_t query_offset) {
+  LLM_CHECK_MSG(weights.rank() >= 2, "матрице внимания нужны две оси");
+  const int64_t keys = weights.dim(-1);
+  const int64_t queries = weights.dim(-2);
+  if (queries == 0 || keys == 0) {
+    return 0.0f;
+  }
+  const int64_t matrices = weights.numel() / (queries * keys);
+
+  Tensor holder;
+  const float* data = dense_data(weights, &holder);
+
+  double total = 0.0;
+  int64_t counted = 0;
+  for (int64_t matrix = 0; matrix < matrices; ++matrix) {
+    for (int64_t query = 0; query < queries; ++query) {
+      // Сколько ключей доступно этому запросу: он видит себя и всё прошлое.
+      const int64_t available = query + query_offset + 1;
+      if (available < 2) {
+        // Единственный доступный ключ — энтропия ноль по построению, и делить
+        // было бы не на что.
+        continue;
+      }
+      const float* row = data + (matrix * queries + query) * keys;
+      double entropy = 0.0;
+      const int64_t limit = available < keys ? available : keys;
+      for (int64_t key = 0; key < limit; ++key) {
+        if (row[key] > 0.0f) {
+          entropy -= static_cast<double>(row[key]) * std::log(row[key]);
+        }
+      }
+      total += entropy / std::log(static_cast<double>(limit));
+      ++counted;
+    }
+  }
+  return counted == 0 ? 0.0f : static_cast<float>(total / counted);
+}
+
+float positive_fraction(const Tensor& input) {
+  if (input.numel() == 0) {
+    return 0.0f;
+  }
+  Tensor holder;
+  const float* data = dense_data(input, &holder);
+  int64_t positive = 0;
+  for (int64_t i = 0; i < input.numel(); ++i) {
+    if (data[i] > 0.0f) {
+      ++positive;
+    }
+  }
+  return static_cast<float>(static_cast<double>(positive) /
+                            static_cast<double>(input.numel()));
+}
+
+float root_mean_square(const Tensor& input) {
+  if (input.numel() == 0) {
+    return 0.0f;
+  }
+  Tensor holder;
+  const float* data = dense_data(input, &holder);
+  double total = 0.0;
+  for (int64_t i = 0; i < input.numel(); ++i) {
+    total += static_cast<double>(data[i]) * data[i];
+  }
+  return static_cast<float>(
+      std::sqrt(total / static_cast<double>(input.numel())));
+}
+
 namespace {
 
 // Позиция (query, key) видна, если ключ не из будущего относительно запроса.

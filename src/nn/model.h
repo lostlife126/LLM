@@ -21,6 +21,7 @@
 #include "autograd/node.h"
 #include "core/random.h"
 #include "nn/config.h"
+#include "nn/diagnostics.h"
 #include "nn/kv_cache.h"
 #include "nn/lora.h"
 
@@ -129,7 +130,8 @@ class Attention {
   // позиции, а ключи и значения всех прошлых берутся из кэша. Градиент через
   // кэш не идёт, поэтому этот путь допустим только с выключенной лентой.
   autograd::Var forward(const autograd::Var& input, int64_t position_offset,
-                        KvCache* cache = nullptr, int64_t layer = 0) const;
+                        KvCache* cache = nullptr, int64_t layer = 0,
+                        ForwardStats* stats = nullptr) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
  private:
@@ -157,7 +159,8 @@ class Mlp {
   Mlp() {}
   Mlp(const ModelConfig& config, Rng* rng);
 
-  autograd::Var forward(const autograd::Var& input) const;
+  autograd::Var forward(const autograd::Var& input,
+                        ForwardStats* stats = nullptr) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
   void enable_lora(const LoraConfig& config, Rng* rng);
@@ -187,7 +190,8 @@ class Block {
   Block(const ModelConfig& config, Rng* rng);
 
   autograd::Var forward(const autograd::Var& input, int64_t position_offset,
-                        KvCache* cache = nullptr, int64_t layer = 0) const;
+                        KvCache* cache = nullptr, int64_t layer = 0,
+                        ForwardStats* stats = nullptr) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
   void enable_lora(const LoraConfig& config, Rng* rng);
@@ -212,7 +216,8 @@ class Model {
   // Возвращает логиты формы (batch, seq, vocab).
   autograd::Var forward(const std::vector<int32_t>& ids, int64_t batch,
                         int64_t seq, int64_t position_offset = 0,
-                        KvCache* cache = nullptr) const;
+                        KvCache* cache = nullptr,
+                        ForwardStats* stats = nullptr) const;
 
   // Логиты только последней позиции — то, что нужно генерации. Форма
   // (batch, vocab).
@@ -223,7 +228,7 @@ class Model {
   // Потери на предсказании следующего токена: каждая позиция предсказывает
   // следующую, последняя отбрасывается — ей нечего предсказывать.
   autograd::Var loss(const std::vector<int32_t>& ids, int64_t batch,
-                     int64_t seq) const;
+                     int64_t seq, ForwardStats* stats = nullptr) const;
 
   // Все параметры: и обучаемые, и замороженные. Чекпоинту нужны все.
   std::vector<NamedParameter> parameters();

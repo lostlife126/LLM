@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "core/check.h"
+#include "core/util.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "tokenizer/bpe.h"
@@ -151,24 +152,6 @@ struct Outcome {
   }
 };
 
-// Дополнение строки пробелами до нужной ШИРИНЫ В СИМВОЛАХ.
-//
-// printf с %-28s считает байты, а кириллица в UTF-8 занимает по два, поэтому
-// таблица с русскими названиями разъезжается. Ведущие байты символа UTF-8 —
-// это все, кроме продолжающих (10xxxxxx).
-std::string pad(const std::string& text, std::size_t width) {
-  std::size_t characters = 0;
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
-      ++characters;
-    }
-  }
-  if (characters >= width) {
-    return text;
-  }
-  return text + std::string(width - characters, ' ');
-}
-
 std::string read_file(const std::string& path) {
   std::ifstream file(path.c_str(), std::ios::binary);
   if (!file.good()) {
@@ -243,7 +226,7 @@ int main(int argc, char** argv) {
       outcome.validation_loss.push_back(report.final_validation_loss);
 
       std::printf("  %s зерно %d: потери %.4f  (%.1f мин)\n",
-                  pad(variants[v].name, 26).c_str(), seed,
+                  llm::pad_utf8(variants[v].name, 26).c_str(), seed,
                   report.final_validation_loss, report.seconds / 60.0);
       std::fflush(stdout);
     }
@@ -260,22 +243,23 @@ int main(int argc, char** argv) {
                 "фильтр '" << filter << "' ничего не выбрал");
   const float baseline_spread = outcomes[0].spread();
 
-  std::printf("\n%s %10s %8s %8s %10s %8s\n", pad("вариант", 26).c_str(),
-              "параметров", "потери", "разброс", "перплексия", "к базе");
+  std::printf("\n%s %10s %8s %8s %10s %8s\n",
+              llm::pad_utf8("вариант", 26).c_str(), "параметров", "потери",
+              "разброс", "перплексия", "к базе");
   std::printf(
       "----------------------------------------------------------------------"
       "-----------\n");
   for (std::size_t i = 0; i < sorted.size(); ++i) {
     const float delta = sorted[i].mean() - outcomes[0].mean();
     std::printf("%s %10lld %8.4f %8.4f %10.1f %+8.4f\n",
-                pad(sorted[i].name, 26).c_str(),
+                llm::pad_utf8(sorted[i].name, 26).c_str(),
                 static_cast<long long>(sorted[i].parameters), sorted[i].mean(),
                 sorted[i].spread(), std::exp(sorted[i].mean()), delta);
   }
 
   std::printf("\nчто проверял каждый вариант:\n");
   for (std::size_t i = 0; i < outcomes.size(); ++i) {
-    std::printf("  %s %s\n", pad(outcomes[i].name, 26).c_str(),
+    std::printf("  %s %s\n", llm::pad_utf8(outcomes[i].name, 26).c_str(),
                 outcomes[i].question.c_str());
   }
   std::printf(
