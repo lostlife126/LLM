@@ -68,8 +68,14 @@ struct TrainReport {
 
 // Средние потери на проверочной части, по фиксированным неперекрывающимся
 // окнам: сравнение прогонов должно идти на одних и тех же данных.
+//
+// Если передана stats, она заполняется диагностикой, усреднённой по всем
+// проверочным батчам. Это существенно: те же величины, снятые с одного
+// обучающего батча, тонут в шуме — разбивка потерь по четвертям окна на нём
+// скакала от -0.15 до +0.27 без всякой системы.
 float evaluate(nn::Model* model, const data::TokenDataset& dataset,
-               int64_t batch, int64_t seq, int64_t max_batches);
+               int64_t batch, int64_t seq, int64_t max_batches,
+               nn::ForwardStats* stats = nullptr);
 
 TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
                   const TrainConfig& config);

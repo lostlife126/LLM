@@ -150,7 +150,8 @@ void print_diagnostics(const nn::ForwardStats& stats,
 }  // namespace
 
 float evaluate(nn::Model* model, const data::TokenDataset& dataset,
-               int64_t batch, int64_t seq, int64_t max_batches) {
+               int64_t batch, int64_t seq, int64_t max_batches,
+               nn::ForwardStats* stats) {
   LLM_CHECK(model != nullptr);
   const int64_t available = dataset.validation_batch_count(batch, seq);
   if (available == 0) {
@@ -161,11 +162,43 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
   // Лента не нужна: считается только значение, и без неё не расходуется
   // память на промежуточные величины.
   autograd::NoGradGuard no_grad;
+
   double total = 0.0;
+  double accuracy_total = 0.0;
+  double entropy_total = 0.0;
+  std::vector<double> quarter_totals(4, 0.0);
+  nn::ForwardStats last_batch_stats;
+
   for (int64_t index = 0; index < count; ++index) {
     const std::vector<int32_t> ids =
         dataset.validation_batch(batch, seq, index);
-    total += *model->loss(ids, batch, seq).value().data();
+    nn::ForwardStats batch_stats;
+    nn::ForwardStats* pointer = stats != nullptr ? &batch_stats : nullptr;
+    total += *model->loss(ids, batch, seq, pointer).value().data();
+
+    if (stats != nullptr) {
+      accuracy_total += batch_stats.top1_accuracy;
+      entropy_total += batch_stats.prediction_entropy;
+      for (std::size_t i = 0; i < batch_stats.loss_by_quarter.size() && i < 4;
+           ++i) {
+        quarter_totals[i] += batch_stats.loss_by_quarter[i];
+      }
+      last_batch_stats = batch_stats;
+    }
+  }
+
+  if (stats != nullptr) {
+    const double denominator = static_cast<double>(count);
+    // Послойные величины берутся с последнего батча: они устойчивы и почти не
+    // зависят от того, какой именно текст подан, так что усреднять их незачем.
+    *stats = last_batch_stats;
+    stats->top1_accuracy = static_cast<float>(accuracy_total / denominator);
+    stats->prediction_entropy = static_cast<float>(entropy_total / denominator);
+    stats->loss_by_quarter.clear();
+    for (std::size_t i = 0; i < 4; ++i) {
+      stats->loss_by_quarter.push_back(
+          static_cast<float>(quarter_totals[i] / denominator));
+    }
   }
   return static_cast<float>(total / static_cast<double>(count));
 }
@@ -270,17 +303,22 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
 
     if (wants_diagnostics) {
       float validation = 0.0f;
+      // Диагностика снимается с проверочной выборки и усредняется по всем её
+      // батчам. На одном обучающем батче разбивка потерь по четвертям окна
+      // тонула в шуме: она скакала от -0.15 до +0.27 без всякой системы, то
+      // есть не говорила ничего.
+      nn::ForwardStats shown = stats;
       if (config.eval_batches > 0) {
         validation = evaluate(model, dataset, config.batch_size, seq,
-                              config.eval_batches);
+                              config.eval_batches, &shown);
         report.final_validation_loss = validation;
       }
-      report.final_accuracy = stats.top1_accuracy;
-      report.final_prediction_entropy = stats.prediction_entropy;
-      report.final_stats = stats;
+      report.final_accuracy = shown.top1_accuracy;
+      report.final_prediction_entropy = shown.prediction_entropy;
+      report.final_stats = shown;
 
       if (config.verbose) {
-        print_diagnostics(stats,
+        print_diagnostics(shown,
                           grad_norm_by_layer(optimizer.parameters(),
                                              model->config().n_layers),
                           validation, loss_value);
