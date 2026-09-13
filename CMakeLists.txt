@@ -78,6 +78,9 @@ target_link_libraries(generate PRIVATE llm_core)
 add_executable(ablate apps/ablate.cpp)
 target_link_libraries(ablate PRIVATE llm_core)
 
+add_executable(finetune apps/finetune.cpp)
+target_link_libraries(finetune PRIVATE llm_core)
+
 enable_testing()
 
 add_executable(llm_tests
@@ -91,6 +94,7 @@ add_executable(llm_tests
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_infer.cpp
+  tests/test_lora.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
   tests/test_nn.cpp
@@ -116,6 +120,7 @@ set(LLM_TEST_SUITES
   Elementwise
   Grad
   Infer
+  Lora
   Gemm
   Matmul
   Model

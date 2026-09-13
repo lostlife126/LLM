@@ -22,6 +22,7 @@
 #include "core/random.h"
 #include "nn/config.h"
 #include "nn/kv_cache.h"
+#include "nn/lora.h"
 
 namespace llm {
 namespace nn {
@@ -45,6 +46,11 @@ class Norm {
   autograd::Var forward(const autograd::Var& input) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
+  // При дообучении адаптерами масштабы нормировок обычно тоже замораживают:
+  // их мало, но менять их значит менять поведение модели глобально, а не
+  // точечно.
+  void freeze();
+
  private:
   NormKind kind_ = NormKind::kRmsNorm;
   float eps_ = 1e-5f;
@@ -56,6 +62,13 @@ class Norm {
 //
 // Веса хранятся как (вход, выход), а не (выход, вход), как в PyTorch. Тогда
 // прямой проход — это просто x * W, без транспонирования на каждом вызове.
+//
+// Умеет нести низкоранговый адаптер (LoRA). Идея: вместо того чтобы двигать
+// всю матрицу весов, к ней прибавляется произведение двух узких матриц
+// A (вход x r) и B (r x выход). При r в несколько единиц обучаемых параметров
+// становится в десятки раз меньше, а исходные веса не меняются вовсе — их
+// можно держать в одном экземпляре и навешивать разные адаптеры под разные
+// задачи.
 class Linear {
  public:
   Linear() {}
@@ -64,8 +77,27 @@ class Linear {
   autograd::Var forward(const autograd::Var& input) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
+  // Замораживает базовый вес: он остаётся значением, но перестаёт быть узлом
+  // графа, и градиент до него не доходит.
+  void freeze();
+
+  // Навешивает адаптер ранга rank. Масштаб вклада — alpha / rank: так смена
+  // ранга не требует заново подбирать скорость обучения.
+  void enable_lora(int64_t rank, float alpha, Rng* rng);
+
+  bool has_lora() const { return has_lora_; }
+
+  // Вплавляет адаптер в базовый вес и убирает его. Нужно перед выкладыванием
+  // модели: после слияния инференс идёт без всяких дополнительных умножений,
+  // как будто адаптера и не было.
+  void merge_lora();
+
  private:
   autograd::Var weight_;
+  autograd::Var lora_a_;
+  autograd::Var lora_b_;
+  float lora_scale_ = 0.0f;
+  bool has_lora_ = false;
 };
 
 // Размножение голов ключей и значений для GQA.
@@ -85,6 +117,10 @@ class Attention {
  public:
   Attention() {}
   Attention(const ModelConfig& config, Rng* rng);
+
+  void enable_lora(const LoraConfig& config, Rng* rng);
+  void merge_lora();
+  void freeze();
 
   // position_offset — абсолютная позиция первого запроса. При обучении нуль,
   // при генерации с KV-кэшем равен длине уже накопленного контекста.
@@ -124,6 +160,10 @@ class Mlp {
   autograd::Var forward(const autograd::Var& input) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
+  void enable_lora(const LoraConfig& config, Rng* rng);
+  void merge_lora();
+  void freeze();
+
  private:
   FfnKind kind_ = FfnKind::kSwiGlu;
   Linear gate_;  // существует только у SwiGLU
@@ -149,6 +189,10 @@ class Block {
   autograd::Var forward(const autograd::Var& input, int64_t position_offset,
                         KvCache* cache = nullptr, int64_t layer = 0) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+
+  void enable_lora(const LoraConfig& config, Rng* rng);
+  void merge_lora();
+  void freeze();
 
  private:
   ModelConfig config_;
@@ -181,8 +225,21 @@ class Model {
   autograd::Var loss(const std::vector<int32_t>& ids, int64_t batch,
                      int64_t seq) const;
 
+  // Все параметры: и обучаемые, и замороженные. Чекпоинту нужны все.
   std::vector<NamedParameter> parameters();
   int64_t parameter_count();
+
+  // Только те, до которых доходит градиент. Оптимизатор берёт их: заводить
+  // моменты Адама на замороженный вес — чистая трата памяти.
+  std::vector<NamedParameter> trainable_parameters();
+  int64_t trainable_parameter_count();
+
+  // Переводит модель в режим дообучения адаптерами: базовые веса
+  // замораживаются, на выбранные проекции навешиваются адаптеры.
+  void enable_lora(const LoraConfig& config);
+
+  // Вплавляет все адаптеры в базовые веса.
+  void merge_lora();
 
  private:
   ModelConfig config_;

@@ -64,7 +64,12 @@ void write_config(std::ofstream* file, const nn::ModelConfig& config) {
   write_pod<uint8_t>(file, config.post_norm ? 1 : 0);
 }
 
-nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path) {
+// Версия 1 не знала про архитектурные развилки. Их значения по умолчанию —
+// ровно те, с которыми она и писалась (RMSNorm, pre-norm, RoPE, SwiGLU),
+// поэтому старые чекпоинты читаются без потерь, и переобучать модель из-за
+// смены формата не нужно.
+nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path,
+                                 uint32_t version) {
   nn::ModelConfig config;
   config.vocab_size = read_pod<int64_t>(file, path);
   config.d_model = read_pod<int64_t>(file, path);
@@ -77,25 +82,33 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path) {
   config.norm_eps = read_pod<float>(file, path);
   config.init_std = read_pod<float>(file, path);
   config.tie_embeddings = read_pod<uint8_t>(file, path) != 0;
-  config.norm = static_cast<nn::NormKind>(read_pod<uint8_t>(file, path));
-  config.position =
-      static_cast<nn::PositionKind>(read_pod<uint8_t>(file, path));
-  config.ffn = static_cast<nn::FfnKind>(read_pod<uint8_t>(file, path));
-  config.post_norm = read_pod<uint8_t>(file, path) != 0;
+  if (version >= 2) {
+    config.norm = static_cast<nn::NormKind>(read_pod<uint8_t>(file, path));
+    config.position =
+        static_cast<nn::PositionKind>(read_pod<uint8_t>(file, path));
+    config.ffn = static_cast<nn::FfnKind>(read_pod<uint8_t>(file, path));
+    config.post_norm = read_pod<uint8_t>(file, path) != 0;
+  }
   config.validate();
   return config;
 }
 
-void read_header(std::ifstream* file, const std::string& path) {
+// Возвращает версию формата: она нужна дальше, чтобы решить, есть ли в файле
+// поля архитектурных развилок.
+uint32_t read_header(std::ifstream* file, const std::string& path) {
   LLM_CHECK_MSG(read_pod<uint32_t>(file, path) == kMagic,
                 "файл " << path << " не является чекпоинтом");
   const uint32_t version = read_pod<uint32_t>(file, path);
-  LLM_CHECK_MSG(version == kVersion,
-                "версия чекпоинта " << version << " не поддержана");
+  LLM_CHECK_MSG(version >= 1 && version <= kVersion,
+                "версия чекпоинта "
+                    << version
+                    << " не поддержана: эта сборка читает версии с 1 по "
+                    << kVersion);
   LLM_CHECK_MSG(read_pod<uint32_t>(file, path) == kEndianMarker,
                 "чекпоинт " << path << " записан с другим порядком байтов");
   LLM_CHECK_MSG(read_pod<float>(file, path) == kFloatMarker,
                 "чекпоинт " << path << " записан с другим форматом float");
+  return version;
 }
 
 }  // namespace
@@ -132,8 +145,8 @@ void save_checkpoint(const std::string& path, nn::Model* model, int64_t step) {
 nn::ModelConfig read_config(const std::string& path) {
   std::ifstream file(path.c_str(), std::ios::binary);
   LLM_CHECK_MSG(file.good(), "не удалось открыть: " << path);
-  read_header(&file, path);
-  return read_config_body(&file, path);
+  const uint32_t version = read_header(&file, path);
+  return read_config_body(&file, path, version);
 }
 
 int64_t load_checkpoint(const std::string& path, nn::Model* model) {
@@ -141,8 +154,8 @@ int64_t load_checkpoint(const std::string& path, nn::Model* model) {
   std::ifstream file(path.c_str(), std::ios::binary);
   LLM_CHECK_MSG(file.good(), "не удалось открыть: " << path);
 
-  read_header(&file, path);
-  const nn::ModelConfig stored = read_config_body(&file, path);
+  const uint32_t version = read_header(&file, path);
+  const nn::ModelConfig stored = read_config_body(&file, path, version);
   const nn::ModelConfig& current = model->config();
   // Сравнение по всем полям, а не по to_string(): та показывает только форму
   // модели, а веса несовместимы и при расхождении в theta для RoPE или в

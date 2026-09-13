@@ -6,6 +6,8 @@
 #include "autograd/nn.h"
 #include "autograd/ops.h"
 #include "core/check.h"
+#include "ops/elementwise.h"
+#include "ops/matmul.h"
 
 namespace llm {
 namespace nn {
@@ -56,6 +58,13 @@ Var Norm::forward(const Var& input) const {
   return autograd::rms_norm(input, weight_, eps_);
 }
 
+void Norm::freeze() {
+  weight_ = Var::constant(weight_.value());
+  if (kind_ == NormKind::kLayerNorm) {
+    bias_ = Var::constant(bias_.value());
+  }
+}
+
 void Norm::collect(const std::string& prefix,
                    std::vector<NamedParameter>* out) {
   NamedParameter weight;
@@ -77,7 +86,60 @@ Linear::Linear(int64_t in_features, int64_t out_features, float init_std,
           true, "linear.weight")) {}
 
 Var Linear::forward(const Var& input) const {
-  return autograd::matmul(input, weight_);
+  const Var base = autograd::matmul(input, weight_);
+  if (!has_lora_) {
+    return base;
+  }
+  // Порядок умножения существен: (x * A) * B требует двух умножений на узкие
+  // матрицы, а (A * B) сначала построило бы полную матрицу размера
+  // вход x выход — то есть ровно ту экономию, ради которой всё затевалось, и
+  // потеряло бы.
+  const Var adapter =
+      autograd::matmul(autograd::matmul(input, lora_a_), lora_b_);
+  return autograd::add(base, autograd::mul_scalar(adapter, lora_scale_));
+}
+
+void Linear::freeze() {
+  // Значение остаётся, узел графа исчезает: градиент до веса больше не
+  // доходит, и оптимизатор его не увидит.
+  weight_ = Var::constant(weight_.value());
+}
+
+void Linear::enable_lora(int64_t rank, float alpha, Rng* rng) {
+  LLM_CHECK_GT(rank, static_cast<int64_t>(0));
+  const int64_t in_features = weight_.shape().dim(0);
+  const int64_t out_features = weight_.shape().dim(1);
+  LLM_CHECK_MSG(rank < in_features && rank < out_features,
+                "ранг " << rank << " не меньше размеров матрицы "
+                        << weight_.shape() << " — экономии не будет");
+
+  lora_a_ = Var::leaf(normal_tensor(Shape({in_features, rank}), 0.02f, rng),
+                      true, "lora_a");
+  // B начинается с нуля: пока она нулевая, адаптер не даёт вклада, и модель в
+  // начале дообучения в точности совпадает с исходной.
+  lora_b_ =
+      Var::leaf(Tensor::zeros(Shape({rank, out_features})), true, "lora_b");
+  lora_scale_ = alpha / static_cast<float>(rank);
+  has_lora_ = true;
+}
+
+void Linear::merge_lora() {
+  if (!has_lora_) {
+    return;
+  }
+  // W += scale * A * B. После этого адаптер не нужен: он растворён в весе.
+  const Tensor product = ops::matmul(lora_a_.value(), lora_b_.value());
+  const Tensor scaled = ops::mul_scalar(product, lora_scale_);
+  Tensor updated = weight_.value();
+  ops::add_into(scaled, &updated);
+
+  const bool trainable = weight_.requires_grad();
+  weight_ = trainable ? Var::leaf(updated, true, "linear.weight")
+                      : Var::constant(updated);
+  lora_a_ = Var();
+  lora_b_ = Var();
+  lora_scale_ = 0.0f;
+  has_lora_ = false;
 }
 
 void Linear::collect(const std::string& prefix,
@@ -86,6 +148,18 @@ void Linear::collect(const std::string& prefix,
   parameter.name = prefix + ".weight";
   parameter.value = &weight_;
   out->push_back(parameter);
+
+  if (has_lora_) {
+    NamedParameter a;
+    a.name = prefix + ".lora_a";
+    a.value = &lora_a_;
+    out->push_back(a);
+
+    NamedParameter b;
+    b.name = prefix + ".lora_b";
+    b.value = &lora_b_;
+    out->push_back(b);
+  }
 }
 
 Attention::Attention(const ModelConfig& config, Rng* rng) : config_(config) {
@@ -196,6 +270,35 @@ Var Attention::forward(const Var& input, int64_t position_offset,
   return output_.forward(result);
 }
 
+void Attention::enable_lora(const LoraConfig& config, Rng* rng) {
+  if (config.attention_query) {
+    query_.enable_lora(config.rank, config.alpha, rng);
+  }
+  if (config.attention_key) {
+    key_.enable_lora(config.rank, config.alpha, rng);
+  }
+  if (config.attention_value) {
+    value_.enable_lora(config.rank, config.alpha, rng);
+  }
+  if (config.attention_output) {
+    output_.enable_lora(config.rank, config.alpha, rng);
+  }
+}
+
+void Attention::merge_lora() {
+  query_.merge_lora();
+  key_.merge_lora();
+  value_.merge_lora();
+  output_.merge_lora();
+}
+
+void Attention::freeze() {
+  query_.freeze();
+  key_.freeze();
+  value_.freeze();
+  output_.freeze();
+}
+
 void Attention::collect(const std::string& prefix,
                         std::vector<NamedParameter>* out) {
   query_.collect(prefix + ".query", out);
@@ -223,6 +326,33 @@ Var Mlp::forward(const Var& input) const {
     return down_.forward(autograd::mul(gate, up));
   }
   return down_.forward(autograd::gelu(up_.forward(input)));
+}
+
+void Mlp::enable_lora(const LoraConfig& config, Rng* rng) {
+  if (!config.ffn) {
+    return;
+  }
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_.enable_lora(config.rank, config.alpha, rng);
+  }
+  up_.enable_lora(config.rank, config.alpha, rng);
+  down_.enable_lora(config.rank, config.alpha, rng);
+}
+
+void Mlp::merge_lora() {
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_.merge_lora();
+  }
+  up_.merge_lora();
+  down_.merge_lora();
+}
+
+void Mlp::freeze() {
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_.freeze();
+  }
+  up_.freeze();
+  down_.freeze();
 }
 
 void Mlp::collect(const std::string& prefix, std::vector<NamedParameter>* out) {
@@ -260,6 +390,23 @@ Var Block::forward(const Var& input, int64_t position_offset, KvCache* cache,
 
   const Var transformed = mlp_.forward(mlp_norm_.forward(after_attention));
   return autograd::add(after_attention, transformed);
+}
+
+void Block::enable_lora(const LoraConfig& config, Rng* rng) {
+  attention_.enable_lora(config, rng);
+  mlp_.enable_lora(config, rng);
+}
+
+void Block::merge_lora() {
+  attention_.merge_lora();
+  mlp_.merge_lora();
+}
+
+void Block::freeze() {
+  attention_norm_.freeze();
+  mlp_norm_.freeze();
+  attention_.freeze();
+  mlp_.freeze();
 }
 
 void Block::collect(const std::string& prefix,
@@ -408,6 +555,54 @@ std::vector<NamedParameter> Model::parameters() {
     lm_head_.collect("lm_head", &result);
   }
   return result;
+}
+
+void Model::enable_lora(const LoraConfig& config) {
+  Rng rng(config.seed);
+
+  // Сначала замораживается всё, потом навешиваются адаптеры. Порядок важен:
+  // иначе заморозка накрыла бы и только что созданные матрицы адаптера.
+  token_embedding_ = Var::constant(token_embedding_.value());
+  if (config_.position == PositionKind::kLearned) {
+    position_embedding_ = Var::constant(position_embedding_.value());
+  }
+  for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
+    blocks_[layer].freeze();
+  }
+  final_norm_.freeze();
+  if (!config_.tie_embeddings) {
+    lm_head_.freeze();
+  }
+
+  for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
+    blocks_[layer].enable_lora(config, &rng);
+  }
+}
+
+void Model::merge_lora() {
+  for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
+    blocks_[layer].merge_lora();
+  }
+}
+
+std::vector<NamedParameter> Model::trainable_parameters() {
+  std::vector<NamedParameter> all = parameters();
+  std::vector<NamedParameter> trainable;
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    if (all[i].value->requires_grad()) {
+      trainable.push_back(all[i]);
+    }
+  }
+  return trainable;
+}
+
+int64_t Model::trainable_parameter_count() {
+  int64_t total = 0;
+  const std::vector<NamedParameter> all = trainable_parameters();
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    total += all[i].value->numel();
+  }
+  return total;
 }
 
 int64_t Model::parameter_count() {

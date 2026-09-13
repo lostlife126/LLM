@@ -380,6 +380,64 @@ LLM_TEST(Train, CheckpointRejectsSameShapeDifferentHyperparameters) {
   std::remove(path.c_str());
 }
 
+LLM_TEST(Train, ReadsOlderCheckpointFormat) {
+  // Версия 1 формата не знала про архитектурные развилки. Старые чекпоинты
+  // обязаны читаться: иначе смена формата заставляла бы переобучать модель.
+  //
+  // Файл версии 1 строится из версии 2 удалением четырёх байтов развилок и
+  // правкой номера версии — так тест не зависит от того, сохранился ли где-то
+  // настоящий старый файл.
+  const std::string path = "test_v2.llmw";
+  const ModelConfig config = test_config();
+  Model saved(config, 3);
+  llm::train::overfit_batch(&saved, random_ids(2 * 8, config.vocab_size, 12), 2,
+                            8, 3, 1e-3f);
+  llm::serialize::save_checkpoint(path, &saved, 77);
+
+  std::string bytes;
+  {
+    std::ifstream input(path.c_str(), std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    bytes = buffer.str();
+  }
+  std::remove(path.c_str());
+
+  // Смещение полей развилок: magic, версия, метка порядка байт, метка float,
+  // семь int64 и три float конфигурации, байт связывания эмбеддингов.
+  const std::size_t switches_offset = 4 + 4 + 4 + 4 + 7 * 8 + 3 * 4 + 1;
+  LLM_CHECK_GT(bytes.size(), switches_offset + 4);
+  bytes[4] = 1;  // версия 1
+  bytes[5] = 0;
+  bytes[6] = 0;
+  bytes[7] = 0;
+  bytes.erase(switches_offset, 4);
+
+  const std::string old_path = "test_v1.llmw";
+  {
+    std::ofstream output(old_path.c_str(), std::ios::binary);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+
+  // Конфигурация читается с значениями по умолчанию для развилок — ровно с
+  // теми, с которыми версия 1 и писалась.
+  LLM_CHECK(llm::serialize::read_config(old_path) == config);
+
+  Model loaded(config, 999);
+  LLM_CHECK_EQ(llm::serialize::load_checkpoint(old_path, &loaded),
+               static_cast<std::int64_t>(77));
+
+  const std::vector<int32_t> probe = random_ids(6, config.vocab_size, 13);
+  const Var a = saved.forward(probe, 1, 6);
+  const Var b = loaded.forward(probe, 1, 6);
+  for (std::int64_t position = 0; position < 6; ++position) {
+    for (std::int64_t token = 0; token < config.vocab_size; ++token) {
+      LLM_CHECK(a.value()(0, position, token) == b.value()(0, position, token));
+    }
+  }
+  std::remove(old_path.c_str());
+}
+
 LLM_TEST(Train, CheckpointRejectsForeignFile) {
   const std::string path = "test_foreign.llmw";
   {

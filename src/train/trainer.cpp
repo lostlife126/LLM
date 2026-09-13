@@ -45,7 +45,9 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
 
   AdamWConfig optimizer_config;
   optimizer_config.weight_decay = config.weight_decay;
-  AdamW optimizer(model->parameters(), optimizer_config);
+  // Обучаемые, а не все: при дообучении адаптерами базовые веса заморожены,
+  // и заводить на них моменты Адама — чистая трата памяти.
+  AdamW optimizer(model->trainable_parameters(), optimizer_config);
 
   ScheduleConfig schedule;
   schedule.max_learning_rate = config.max_learning_rate;
@@ -58,9 +60,11 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
   const Clock::time_point start = Clock::now();
 
   if (config.verbose) {
-    std::printf("параметров: %lld, из них с распадом веса: %lld\n",
-                static_cast<long long>(model->parameter_count()),
-                static_cast<long long>(optimizer.decayed_parameter_count()));
+    std::printf(
+        "параметров: %lld, обучаемых: %lld, из них с распадом веса: %lld\n",
+        static_cast<long long>(model->parameter_count()),
+        static_cast<long long>(model->trainable_parameter_count()),
+        static_cast<long long>(optimizer.decayed_parameter_count()));
     std::printf("обучающих токенов: %lld, проверочных: %lld\n",
                 static_cast<long long>(dataset.train_size()),
                 static_cast<long long>(dataset.validation_size()));
@@ -130,7 +134,9 @@ std::vector<float> overfit_batch(nn::Model* model,
   AdamWConfig optimizer_config;
   // Регуляризация здесь мешает: цель — именно запомнить батч.
   optimizer_config.weight_decay = 0.0f;
-  AdamW optimizer(model->parameters(), optimizer_config);
+  // Обучаемые, а не все: при дообучении адаптерами базовые веса заморожены,
+  // и заводить на них моменты Адама — чистая трата памяти.
+  AdamW optimizer(model->trainable_parameters(), optimizer_config);
 
   std::vector<float> history;
   for (int64_t step = 0; step < steps; ++step) {
