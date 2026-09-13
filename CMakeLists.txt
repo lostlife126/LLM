@@ -46,11 +46,15 @@ add_library(llm_core
   src/ops/gemm.cpp
   src/ops/matmul.cpp
   src/ops/reduce.cpp
+  src/tokenizer/bpe.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 add_executable(bench_gemm apps/bench_gemm.cpp)
 target_link_libraries(bench_gemm PRIVATE llm_core)
+
+add_executable(bpe_train apps/bpe_train.cpp)
+target_link_libraries(bpe_train PRIVATE llm_core)
 
 enable_testing()
 
@@ -59,6 +63,7 @@ add_executable(llm_tests
   tests/testing.cpp
   tests/test_main.cpp
   tests/test_autograd.cpp
+  tests/test_bpe.cpp
   tests/test_check.cpp
   tests/test_elementwise.cpp
   tests/test_gemm.cpp
@@ -80,6 +85,7 @@ target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 # компонент сломан, без чтения общего лога.
 set(LLM_TEST_SUITES
   Autograd
+  Bpe
   Check
   Elementwise
   Grad

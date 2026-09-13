@@ -49,7 +49,7 @@ Pre-norm, RMSNorm, RoPE, GQA, SwiGLU, без bias, tied embeddings.
 - [x] **M0. Скелет.** CMake, `Span`, `StrView`, выровненный `Storage`, проверки, тестовый фреймворк, CI.
 - [x] **M1. Тензор и ядра.** `Shape` с broadcast, `Tensor` с шагами и видами без копирования, `Rng`, GEMM с упаковкой панелей, `matmul`, бенчмарк.
 - [x] **M2. Автоград.** Лента вычислений, backward для всех операций, численная проверка градиентов.
-- [ ] **M3. Токенизатор.** Byte-level BPE: обучение словаря, encode/decode, roundtrip-тест.
+- [x] **M3. Токенизатор.** Byte-level BPE: обучение словаря, encode/decode, roundtrip-тест.
 - [ ] **M4. Модель.** Forward: RMSNorm, RoPE, GQA, SwiGLU. Тест каузальности.
 - [ ] **M5. Обучение.** AdamW, warmup + cosine, клиппинг градиента, чекпоинты, overfit-тест.
 - [ ] **M6. Инференс.** KV-кэш, сэмплирование (temperature / top-k / top-p), CLI.
@@ -65,7 +65,7 @@ src/ops/      ядра: gemm, matmul, поэлементные, редукции
               активации, маска, эмбеддинги, RoPE, cross-entropy
 src/autograd/ лента вычислений, дифференцируемые операции
 src/nn/       слои и модель (M4)
-src/tokenizer/BPE (M3)
+src/tokenizer/byte-level BPE
 src/train/    оптимизатор и цикл обучения (M5)
 src/infer/    KV-кэш и сэмплирование (M6)
 tests/        тесты, по одному набору ctest на компонент
@@ -88,6 +88,28 @@ ctest --test-dir build-debug --output-on-failure
 
 Отдельный запуск набора: `./build/llm_tests Storage`.
 Замер производительности: `./build/bench_gemm`.
+
+## Данные и словарь
+
+Корпус в репозиторий не входит. Скачать и обучить словарь:
+
+```sh
+mkdir -p data
+curl -o data/tinyshakespeare.txt \
+  https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+./build/bpe_train data/tinyshakespeare.txt data/shakespeare-1024.bpe 1024
+```
+
+Результат на TinyShakespeare (1.1 МБ):
+
+| словарь | токенов | сжатие | время обучения |
+|---|---|---|---|
+| 1024 | 457k | 2.44x | 2.5 с |
+| 4096 | 342k | 3.26x | 13 с |
+
+Первые выученные слияния — самые частые биграммы (`' t'`, `'he'`, `' the'`),
+самые длинные токены — имена персонажей (`'CORIOLANUS'`, `'PETRUCHIO'`), потому
+что в пьесе они стоят перед каждой репликой.
 
 ## Производительность GEMM
 
@@ -132,7 +154,7 @@ ctest --test-dir build-debug --output-on-failure
 3. **Тест каузальности** — изменение токена на позиции *t* не должно менять логиты на позициях < *t*. Одним тестом покрывает маску, RoPE и форму attention.
 4. **KV-кэш ≡ полный пересчёт** — генерация с кэшем совпадает с генерацией без него.
 5. **Overfit одного батча** — loss должен уйти к нулю; иначе сломан оптимизатор или градиенты.
-6. **BPE roundtrip** — `decode(encode(x)) == x` побайтово на всём корпусе.
+6. **BPE roundtrip** — `decode(encode(x)) == x` побайтово: на корпусе обучения, на невиданном тексте, на всех 256 значениях байта и на случайном мусоре. Байтовый алфавит замкнут, поэтому непредставимого входа не бывает в принципе.
 
 Сборка идёт в четырёх конфигурациях CI (gcc и clang × Release и Debug+ASan):
 Release проверяет ветку макросов с `NDEBUG`, Debug — с активными `LLM_DCHECK`.
