@@ -182,6 +182,20 @@ Var rope(const Var& input, int64_t position_offset, float theta) {
       });
 }
 
+Var z_loss(const Var& logits) {
+  Tensor value = ops::z_loss(logits.value());
+  if (!tracking(logits)) {
+    return Var::constant(std::move(value));
+  }
+  const Tensor saved_logits = logits.value();
+  const NodePtr node = logits.node();
+  return Var::from_op(
+      std::move(value), "z_loss", {node},
+      [node, saved_logits](const Tensor& grad) {
+        node->accumulate(ops::z_loss_backward(saved_logits, *grad.data()));
+      });
+}
+
 Var cross_entropy(const Var& logits, const std::vector<int32_t>& targets) {
   Tensor value = ops::cross_entropy(logits.value(), targets);
   if (!tracking(logits)) {

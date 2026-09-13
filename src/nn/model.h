@@ -143,6 +143,9 @@ class Attention {
   Linear key_;
   Linear value_;
   Linear output_;
+  // Масштабы нормировки запросов и ключей; существуют только при qk_norm.
+  autograd::Var query_norm_;
+  autograd::Var key_norm_;
 };
 
 // FFN: либо SwiGLU, либо обычный двухматричный слой с GELU.

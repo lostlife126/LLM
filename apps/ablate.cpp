@@ -114,6 +114,28 @@ std::vector<Variant> build_variants(int64_t vocab_size) {
   // выше отвечает на вопрос «помогает ли +24% параметров», а не «помогает ли
   // развязывание». Честный ответ даёт этот вариант: те же лишние веса, но
   // потраченные на ширину FFN при связанных эмбеддингах.
+  Variant qk;
+  qk.name = "QK-норма";
+  qk.question = "мешает ли рост логитов внимания";
+  qk.config = base;
+  qk.config.qk_norm = true;
+  variants.push_back(qk);
+
+  Variant z;
+  z.name = "Z-loss";
+  z.question = "мешает ли дрейф логитов от нуля";
+  z.config = base;
+  z.config.z_loss_coef = 1e-4f;
+  variants.push_back(z);
+
+  Variant both;
+  both.name = "QK-норма + Z-loss";
+  both.question = "складываются ли два приёма";
+  both.config = base;
+  both.config.qk_norm = true;
+  both.config.z_loss_coef = 1e-4f;
+  variants.push_back(both);
+
   Variant wider;
   wider.name = "связанные + шире FFN";
   wider.question = "те же +24% параметров, но в FFN, а не в выходной матрице";
@@ -177,9 +199,23 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const int64_t steps = argc > 3 ? std::atoll(argv[3]) : 1000;
   const int seeds = argc > 4 ? std::atoi(argv[4]) : 2;
-  // Необязательный фильтр по имени: позволяет догнать один вариант, не
-  // пересчитывая всю таблицу.
+  // Необязательный фильтр: список подстрок через запятую. Позволяет догнать
+  // несколько вариантов, не пересчитывая всю таблицу.
   const std::string filter = argc > 5 ? argv[5] : std::string();
+  std::vector<std::string> wanted;
+  if (!filter.empty()) {
+    std::size_t begin = 0;
+    while (begin <= filter.size()) {
+      const std::size_t comma = filter.find(',', begin);
+      const std::size_t end =
+          comma == std::string::npos ? filter.size() : comma;
+      wanted.push_back(filter.substr(begin, end - begin));
+      if (comma == std::string::npos) {
+        break;
+      }
+      begin = comma + 1;
+    }
+  }
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const llm::data::TokenDataset dataset = llm::data::TokenDataset::from_text(
@@ -197,8 +233,16 @@ int main(int argc, char** argv) {
 
   std::vector<Outcome> outcomes;
   for (std::size_t v = 0; v < variants.size(); ++v) {
-    if (!filter.empty() && variants[v].name.find(filter) == std::string::npos) {
-      continue;
+    if (!wanted.empty()) {
+      bool matched = false;
+      for (std::size_t w = 0; w < wanted.size(); ++w) {
+        if (variants[v].name.find(wanted[w]) != std::string::npos) {
+          matched = true;
+        }
+      }
+      if (!matched) {
+        continue;
+      }
     }
     Outcome outcome;
     outcome.name = variants[v].name;

@@ -172,9 +172,13 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
   for (int64_t index = 0; index < count; ++index) {
     const std::vector<int32_t> ids =
         dataset.validation_batch(batch, seq, index);
+    // Диагностика собирается всегда, даже если вызывающий её не просил: из неё
+    // берётся чистая перекрёстная энтропия. Без этого проверочные потери
+    // включали бы вспомогательные штрафы и были бы несравнимы между
+    // конфигурациями.
     nn::ForwardStats batch_stats;
-    nn::ForwardStats* pointer = stats != nullptr ? &batch_stats : nullptr;
-    total += *model->loss(ids, batch, seq, pointer).value().data();
+    model->loss(ids, batch, seq, &batch_stats);
+    total += batch_stats.cross_entropy;
 
     if (stats != nullptr) {
       accuracy_total += batch_stats.top1_accuracy;

@@ -99,6 +99,81 @@ Tensor cross_entropy_backward(const Tensor& logits,
   return out;
 }
 
+namespace {
+
+// Логарифм суммы экспонент строки, устойчивый к большим значениям.
+double row_log_sum_exp(const float* row, int64_t width) {
+  float maximum = -std::numeric_limits<float>::infinity();
+  for (int64_t i = 0; i < width; ++i) {
+    maximum = row[i] > maximum ? row[i] : maximum;
+  }
+  double sum = 0.0;
+  for (int64_t i = 0; i < width; ++i) {
+    sum += std::exp(static_cast<double>(row[i] - maximum));
+  }
+  return static_cast<double>(maximum) + std::log(sum);
+}
+
+}  // namespace
+
+Tensor z_loss(const Tensor& logits) {
+  LLM_CHECK_MSG(logits.rank() == 2, "z-loss ждёт матрицу (n, vocab)");
+  const int64_t rows = logits.dim(0);
+  const int64_t vocab = logits.dim(1);
+  LLM_CHECK_GT(rows, static_cast<int64_t>(0));
+
+  const Tensor dense = logits.contiguous();
+  const float* data = dense.data();
+
+  double total = 0.0;
+  for (int64_t row = 0; row < rows; ++row) {
+    const double z = row_log_sum_exp(data + row * vocab, vocab);
+    total += z * z;
+  }
+
+  Tensor out = Tensor::uninitialized(Shape());
+  *out.data() = static_cast<float>(total / static_cast<double>(rows));
+  return out;
+}
+
+Tensor z_loss_backward(const Tensor& logits, float grad_output) {
+  LLM_CHECK_MSG(logits.rank() == 2, "z-loss ждёт матрицу (n, vocab)");
+  const int64_t rows = logits.dim(0);
+  const int64_t vocab = logits.dim(1);
+
+  const Tensor dense = logits.contiguous();
+  const float* data = dense.data();
+
+  Tensor out = Tensor::uninitialized(logits.shape());
+  float* grad = out.data();
+
+  for (int64_t row = 0; row < rows; ++row) {
+    const float* row_data = data + row * vocab;
+    float* grad_row = grad + row * vocab;
+
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < vocab; ++i) {
+      maximum = row_data[i] > maximum ? row_data[i] : maximum;
+    }
+    double sum_exp = 0.0;
+    for (int64_t i = 0; i < vocab; ++i) {
+      const float value = std::exp(row_data[i] - maximum);
+      grad_row[i] = value;
+      sum_exp += value;
+    }
+    const double z = static_cast<double>(maximum) + std::log(sum_exp);
+    // Производная логарифма суммы экспонент по логиту — это softmax, а
+    // производная квадрата даёт множитель 2z. Деление на число строк — от
+    // усреднения.
+    const double scale = 2.0 * z * static_cast<double>(grad_output) /
+                         (static_cast<double>(rows) * sum_exp);
+    for (int64_t i = 0; i < vocab; ++i) {
+      grad_row[i] = static_cast<float>(grad_row[i] * scale);
+    }
+  }
+  return out;
+}
+
 PredictionStats prediction_stats(const Tensor& logits,
                                  const std::vector<int32_t>& targets) {
   check_arguments(logits, targets);

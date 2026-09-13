@@ -403,15 +403,20 @@ LLM_TEST(Train, ReadsOlderCheckpointFormat) {
   }
   std::remove(path.c_str());
 
-  // Смещение полей развилок: magic, версия, метка порядка байт, метка float,
-  // семь int64 и три float конфигурации, байт связывания эмбеддингов.
-  const std::size_t switches_offset = 4 + 4 + 4 + 4 + 7 * 8 + 3 * 4 + 1;
-  LLM_CHECK_GT(bytes.size(), switches_offset + 4);
+  // Смещение полей, добавленных после версии 1: magic, версия, метка порядка
+  // байт, метка float, семь int64 и три float конфигурации, байт связывания
+  // эмбеддингов.
+  const std::size_t after_v1 = 4 + 4 + 4 + 4 + 7 * 8 + 3 * 4 + 1;
+  // Версия 2 добавила четыре байта развилок, версия 3 — байт QK-нормы и
+  // коэффициент z-loss.
+  const std::size_t v2_fields = 4;
+  const std::size_t v3_fields = 1 + 4;
+  LLM_CHECK_GT(bytes.size(), after_v1 + v2_fields + v3_fields);
   bytes[4] = 1;  // версия 1
   bytes[5] = 0;
   bytes[6] = 0;
   bytes[7] = 0;
-  bytes.erase(switches_offset, 4);
+  bytes.erase(after_v1, v2_fields + v3_fields);
 
   const std::string old_path = "test_v1.llmw";
   {

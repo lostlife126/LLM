@@ -59,7 +59,7 @@ int64_t ModelConfig::parameter_count() const {
                             + d_model * kv_dim()  // V
                             + d_model * d_model;  // O
   const int64_t ffn_weights = ffn_matrix_count() * d_model * ffn_hidden;
-  const int64_t norms = 2 * norm_parameter_count();
+  const int64_t norms = 2 * norm_parameter_count() + qk_norm_parameter_count();
 
   total += n_layers * (attention + ffn_weights + norms);
   total += norm_parameter_count();  // финальная нормировка
@@ -83,6 +83,12 @@ std::string ModelConfig::to_string() const {
     oss << "none";
   }
   oss << " ffn_kind=" << (ffn == FfnKind::kSwiGlu ? "swiglu" : "gelu");
+  if (qk_norm) {
+    oss << " qk_norm";
+  }
+  if (z_loss_coef > 0.0f) {
+    oss << " z_loss=" << z_loss_coef;
+  }
   oss << (tie_embeddings ? " tied" : " untied");
   oss << " params=" << parameter_count();
   return oss.str();
@@ -149,7 +155,8 @@ bool operator==(const ModelConfig& lhs, const ModelConfig& rhs) {
          lhs.norm_eps == rhs.norm_eps && lhs.init_std == rhs.init_std &&
          lhs.tie_embeddings == rhs.tie_embeddings && lhs.norm == rhs.norm &&
          lhs.position == rhs.position && lhs.ffn == rhs.ffn &&
-         lhs.post_norm == rhs.post_norm;
+         lhs.post_norm == rhs.post_norm && lhs.qk_norm == rhs.qk_norm &&
+         lhs.z_loss_coef == rhs.z_loss_coef;
 }
 
 bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs) {

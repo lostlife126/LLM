@@ -31,6 +31,20 @@ Tensor cross_entropy(const Tensor& logits, const std::vector<int32_t>& targets);
 Tensor cross_entropy_backward(const Tensor& logits,
                               const std::vector<int32_t>& targets);
 
+// Вспомогательные потери, удерживающие логиты от дрейфа: среднее по строкам
+// от квадрата логарифма суммы экспонент.
+//
+// Softmax инвариантен к добавлению константы ко всем логитам строки, поэтому
+// ничто не мешает им уехать далеко от нуля целой группой. На предсказания это
+// не влияет, а точность float падает и экспонента подходит к переполнению.
+// Штраф возвращает логиты к нулю, почти не трогая их разности — то есть само
+// распределение.
+Tensor z_loss(const Tensor& logits);
+
+// Градиент по логитам: (2 * z_i / n) * softmax_ij, где z_i — логарифм суммы
+// экспонент строки.
+Tensor z_loss_backward(const Tensor& logits, float grad_output);
+
 // --- Диагностика качества предсказания ---
 
 struct PredictionStats {

@@ -171,6 +171,15 @@ Attention::Attention(const ModelConfig& config, Rng* rng) : config_(config) {
   key_ = Linear(d_model, config.kv_dim(), config.init_std, rng);
   value_ = Linear(d_model, config.kv_dim(), config.init_std, rng);
   output_ = Linear(d_model, d_model, residual_init_std(config), rng);
+
+  if (config.qk_norm) {
+    // Масштабы начинаются с единицы: на старте нормировка только делит на
+    // длину и ничего больше не меняет.
+    query_norm_ = Var::leaf(Tensor::full(Shape({config.head_dim()}), 1.0f),
+                            true, "query_norm");
+    key_norm_ = Var::leaf(Tensor::full(Shape({config.head_dim()}), 1.0f), true,
+                          "key_norm");
+  }
 }
 
 Var Attention::split_heads(const Var& input, int64_t batch, int64_t seq,
@@ -216,6 +225,18 @@ Var Attention::forward(const Var& input, int64_t position_offset,
   Var keys = split_heads(key_.forward(input), batch, seq, config_.n_kv_heads);
   Var values =
       split_heads(value_.forward(input), batch, seq, config_.n_kv_heads);
+
+  if (config_.qk_norm) {
+    // Нормировка идёт по размерности головы и до поворота. Порядок важен:
+    // поворот сохраняет длину, а масштаб нормировки — нет, и переставив их
+    // местами, мы получили бы другое преобразование.
+    //
+    // Смысл в том, что после нормировки длина запроса и ключа ограничена, и
+    // скалярное произведение не может уехать настолько, чтобы softmax
+    // насытился, а градиент через него исчез.
+    queries = autograd::rms_norm(queries, query_norm_, config_.norm_eps);
+    keys = autograd::rms_norm(keys, key_norm_, config_.norm_eps);
+  }
 
   // Поворот применяется к запросам и ключам, но не к значениям: позиция должна
   // влиять на то, куда смотреть, а не на то, что оттуда взять.
@@ -300,6 +321,10 @@ void Attention::merge_lora() {
 }
 
 void Attention::freeze() {
+  if (config_.qk_norm) {
+    query_norm_ = Var::constant(query_norm_.value());
+    key_norm_ = Var::constant(key_norm_.value());
+  }
   query_.freeze();
   key_.freeze();
   value_.freeze();
@@ -308,6 +333,17 @@ void Attention::freeze() {
 
 void Attention::collect(const std::string& prefix,
                         std::vector<NamedParameter>* out) {
+  if (config_.qk_norm) {
+    NamedParameter query_norm;
+    query_norm.name = prefix + ".query_norm";
+    query_norm.value = &query_norm_;
+    out->push_back(query_norm);
+
+    NamedParameter key_norm;
+    key_norm.name = prefix + ".key_norm";
+    key_norm.value = &key_norm_;
+    out->push_back(key_norm);
+  }
   query_.collect(prefix + ".query", out);
   key_.collect(prefix + ".key", out);
   value_.collect(prefix + ".value", out);
@@ -578,7 +614,18 @@ Var Model::loss(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
               : static_cast<float>(sums[i] / static_cast<double>(counts[i])));
     }
   }
-  return autograd::cross_entropy(flat, targets);
+  const Var cross_entropy = autograd::cross_entropy(flat, targets);
+  if (stats != nullptr) {
+    stats->cross_entropy = *cross_entropy.value().data();
+  }
+  if (config_.z_loss_coef <= 0.0f) {
+    return cross_entropy;
+  }
+  // Оптимизируется сумма, а отчитываемся по чистой перекрёстной энтропии:
+  // сравнивать прогоны надо по одной и той же величине.
+  return autograd::add(
+      cross_entropy,
+      autograd::mul_scalar(autograd::z_loss(flat), config_.z_loss_coef));
 }
 
 std::vector<NamedParameter> Model::parameters() {

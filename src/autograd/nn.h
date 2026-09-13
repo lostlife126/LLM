@@ -39,6 +39,10 @@ Var rope(const Var& input, int64_t position_offset, float theta);
 // Функция потерь: скаляр, от которого идёт обратный проход всего обучения.
 Var cross_entropy(const Var& logits, const std::vector<int32_t>& targets);
 
+// Вспомогательные потери, удерживающие логиты от дрейфа по абсолютной
+// величине.
+Var z_loss(const Var& logits);
+
 }  // namespace autograd
 }  // namespace llm
 

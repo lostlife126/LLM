@@ -36,6 +36,13 @@ struct ForwardStats {
   std::vector<float> attention_entropy;
   std::vector<float> gate_open_fraction;
 
+  // Чистая перекрёстная энтропия, без вспомогательных слагаемых.
+  //
+  // Оптимизируется сумма потерь и штрафов, а сравнивать прогоны надо по одной
+  // и той же величине: иначе включение Z-loss «ухудшало» бы модель просто
+  // потому, что к её потерям добавилось слагаемое.
+  float cross_entropy = 0.0f;
+
   // Качество предсказания; заполняется в Model::loss.
   float top1_accuracy = 0.0f;
 
@@ -52,6 +59,7 @@ struct ForwardStats {
     attention_entropy.clear();
     gate_open_fraction.clear();
     loss_by_quarter.clear();
+    cross_entropy = 0.0f;
     top1_accuracy = 0.0f;
     prediction_entropy = 0.0f;
   }

@@ -11,7 +11,8 @@ namespace serialize {
 namespace {
 
 const uint32_t kMagic = 0x574d4c4cu;  // "LLMW" в little-endian
-const uint32_t kVersion = 2;  // версия 2 добавила архитектурные развилки
+const uint32_t kVersion =
+    3;  // 2 — архитектурные развилки, 3 — QK-норма и z-loss
 
 // Метка представления чисел. Если файл читают на машине с другим порядком
 // байтов или другим форматом float, эти два значения не совпадут, и загрузка
@@ -62,6 +63,8 @@ void write_config(std::ofstream* file, const nn::ModelConfig& config) {
   write_pod<uint8_t>(file, static_cast<uint8_t>(config.position));
   write_pod<uint8_t>(file, static_cast<uint8_t>(config.ffn));
   write_pod<uint8_t>(file, config.post_norm ? 1 : 0);
+  write_pod<uint8_t>(file, config.qk_norm ? 1 : 0);
+  write_pod<float>(file, config.z_loss_coef);
 }
 
 // Версия 1 не знала про архитектурные развилки. Их значения по умолчанию —
@@ -88,6 +91,10 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path,
         static_cast<nn::PositionKind>(read_pod<uint8_t>(file, path));
     config.ffn = static_cast<nn::FfnKind>(read_pod<uint8_t>(file, path));
     config.post_norm = read_pod<uint8_t>(file, path) != 0;
+  }
+  if (version >= 3) {
+    config.qk_norm = read_pod<uint8_t>(file, path) != 0;
+    config.z_loss_coef = read_pod<float>(file, path);
   }
   config.validate();
   return config;

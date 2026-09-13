@@ -7,9 +7,11 @@
 #include <vector>
 
 #include "autograd/nn.h"
+#include "autograd/ops.h"
 #include "core/random.h"
 #include "gradcheck.h"
 #include "nn/model.h"
+#include "ops/loss.h"
 #include "ops/nn.h"
 #include "serialize/checkpoint.h"
 #include "testing.h"
@@ -77,7 +79,26 @@ std::vector<ModelConfig> all_variants() {
   ModelConfig untied = base_config();
   untied.tie_embeddings = false;
   variants.push_back(untied);
+
+  ModelConfig qk = base_config();
+  qk.qk_norm = true;
+  variants.push_back(qk);
+
+  ModelConfig z = base_config();
+  z.z_loss_coef = 1e-4f;
+  variants.push_back(z);
   return variants;
+}
+
+// Батч с выучиваемой закономерностью: арифметическая прогрессия по модулю.
+std::vector<int32_t> periodic_task(int period, int shift) {
+  std::vector<int32_t> ids;
+  for (int item = 0; item < 2; ++item) {
+    for (int i = 0; i < 8; ++i) {
+      ids.push_back(static_cast<int32_t>((i * period + shift + item) % 11));
+    }
+  }
+  return ids;
 }
 
 std::vector<int32_t> random_ids(int64_t count, int64_t vocab,
@@ -267,6 +288,132 @@ LLM_TEST(Variants, CheckpointRoundtripForEveryVariant) {
     }
   }
   std::remove(path.c_str());
+}
+
+LLM_TEST(Variants, QkNormMakesScoresScaleInvariant) {
+  // Определяющее свойство QK-нормы.
+  //
+  // Нормировка делит вектор на его собственную длину, поэтому умножение всей
+  // матрицы проекции на константу не меняет нормированный результат вообще.
+  // Значит внимание перестаёт зависеть от того, насколько велики веса
+  // запросов — а именно их неограниченный рост и насыщает softmax по ходу
+  // обучения.
+  //
+  // Проверяется так: увеличиваем веса запросов и ключей в сто раз и смотрим
+  // на энтропию внимания. С нормировкой она обязана остаться прежней, без неё
+  // — измениться сильно.
+  //
+  // Множитель большой намеренно. Оценка внимания — произведение запроса на
+  // ключ, поэтому она растёт как квадрат множителя, а при инициализации с
+  // разбросом 0.02 оценки настолько малы, что десятикратный рост softmax
+  // ещё даже не замечает.
+  for (int mode = 0; mode < 2; ++mode) {
+    ModelConfig config = base_config();
+    config.qk_norm = mode == 1;
+
+    Model model(config, 61);
+    const std::vector<int32_t> ids = random_ids(8, config.vocab_size, 21);
+
+    llm::nn::ForwardStats before;
+    model.loss(ids, 1, 8, &before);
+
+    std::vector<llm::nn::NamedParameter> parameters = model.parameters();
+    int scaled = 0;
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+      if (parameters[i].name == "block.0.attention.query.weight" ||
+          parameters[i].name == "block.0.attention.key.weight") {
+        llm::Tensor& weight = parameters[i].value->value();
+        for (int64_t e = 0; e < weight.numel(); ++e) {
+          weight.data()[e] *= 100.0f;
+        }
+        ++scaled;
+      }
+    }
+    LLM_CHECK_EQ(scaled, 2);
+
+    llm::nn::ForwardStats after;
+    model.loss(ids, 1, 8, &after);
+
+    const double change =
+        std::fabs(after.attention_entropy[0] - before.attention_entropy[0]);
+    if (mode == 1) {
+      // Инвариантность математически точная, но не побитовая: деление на
+      // стократно выросший масштаб теряет младшие разряды float. Измеренное
+      // расхождение — 8.7e-4, порог взят с запасом.
+      LLM_CHECK_MSG(change < 5e-3,
+                    "с QK-нормой энтропия внимания изменилась на "
+                        << change << " при масштабировании весов");
+    } else {
+      // Без нормировки энтропия обрушивается с 0.99999 до 0.023: softmax
+      // насытился полностью, и внимание из равномерного стало выбирать один
+      // ключ. Ровно это и происходит по ходу обучения, когда веса растут.
+      LLM_CHECK_MSG(change > 0.5,
+                    "без QK-нормы энтропия внимания почти не изменилась ("
+                        << change << ") — проверка ничего не проверяет");
+    }
+  }
+}
+
+LLM_TEST(Variants, QkNormAddsTwoVectorsPerLayer) {
+  ModelConfig plain = base_config();
+  ModelConfig normed = base_config();
+  normed.qk_norm = true;
+
+  Model plain_model(plain, 63);
+  Model normed_model(normed, 63);
+  // По одному вектору длины head_dim на запросы и ключи в каждом слое.
+  LLM_CHECK_EQ(normed_model.parameter_count() - plain_model.parameter_count(),
+               2 * plain.head_dim() * plain.n_layers);
+  LLM_CHECK_EQ(normed_model.parameter_count(), normed.parameter_count());
+}
+
+LLM_TEST(Variants, ZLossKeepsLogitsNearZero) {
+  // Softmax не меняется от добавления константы ко всем логитам строки,
+  // поэтому без штрафа они свободно уезжают от нуля целой группой. Штраф
+  // возвращает их обратно, почти не трогая разности — то есть предсказания.
+  const std::vector<int32_t> ids = periodic_task(3, 0);
+
+  float drift[2] = {0.0f, 0.0f};
+  for (int mode = 0; mode < 2; ++mode) {
+    ModelConfig config = base_config();
+    config.z_loss_coef = mode == 1 ? 1e-2f : 0.0f;
+
+    Model model(config, 67);
+    llm::train::overfit_batch(&model, ids, 2, 8, 150, 3e-3f);
+
+    // Логарифм суммы экспонент — это и есть то, что штрафуется.
+    const Var logits = model.forward(ids, 2, 8);
+    const llm::Tensor flat = logits.value().contiguous().reshape(
+        llm::Shape({2 * 8, config.vocab_size}));
+    drift[mode] = *llm::ops::z_loss(flat).data();
+  }
+
+  LLM_CHECK_MSG(drift[1] < drift[0],
+                "штраф не уменьшил дрейф логитов: без него "
+                    << drift[0] << ", с ним " << drift[1]);
+}
+
+LLM_TEST(Variants, ZLossDoesNotRuinPredictions) {
+  // Штраф обязан двигать логиты как группу, а не менять их разности: иначе он
+  // мешал бы обучению, а не помогал.
+  const std::vector<int32_t> ids = periodic_task(3, 0);
+  ModelConfig config = base_config();
+  config.z_loss_coef = 1e-3f;
+
+  Model model(config, 71);
+  const std::vector<float> history =
+      llm::train::overfit_batch(&model, ids, 2, 8, 200, 3e-3f);
+  LLM_CHECK_MSG(history.back() < 0.2f, "со штрафом модель перестала обучаться: "
+                                           << history.front() << " -> "
+                                           << history.back());
+}
+
+LLM_TEST(Variants, GradZLoss) {
+  const auto fn = [](const std::vector<Var>& v) {
+    return llm::autograd::z_loss(v[0]);
+  };
+  LLM_EXPECT_GRADCHECK(
+      fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({3, 5}), 90)}));
 }
 
 LLM_TEST(Variants, GradLayerNorm) {
