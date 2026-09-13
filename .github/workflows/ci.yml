@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Release проверяет ветку с NDEBUG: там LLM_DCHECK отключён, и
+          # компилируется другой путь макросов.
+          - name: gcc-release
+            cxx: g++
+            build_type: Release
+            sanitize: "OFF"
+          # Debug с санитайзерами: здесь LLM_DCHECK активен, а ASan/UBSan
+          # ловят выход за границы и неопределённое поведение.
+          - name: gcc-debug-asan
+            cxx: g++
+            build_type: Debug
+            sanitize: "ON"
+          # Второй компилятор ловит то, что GCC пропускает, и наоборот.
+          - name: clang-release
+            cxx: clang++
+            build_type: Release
+            sanitize: "OFF"
+          - name: clang-debug-asan
+            cxx: clang++
+            build_type: Debug
+            sanitize: "ON"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Конфигурация
+        run: >
+          cmake -S . -B build
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DLLM_SANITIZE=${{ matrix.sanitize }}
+
+      - name: Сборка
+        run: cmake --build build -j
+
+      - name: Тесты
+        run: ctest --test-dir build --output-on-failure
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Версия закреплена намеренно: разные выпуски clang-format
+      # расставляют переносы по-разному, и без закрепления CI начал бы падать
+      # при смене образа раннера.
+      - name: Установка clang-format 18
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - name: Проверка форматирования
+        run: |
+          clang-format-18 --version
+          clang-format-18 --dry-run --Werror \
+            src/core/*.h src/core/*.cpp tests/*.h tests/*.cpp
