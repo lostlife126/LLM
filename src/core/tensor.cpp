@@ -5,42 +5,9 @@
 #include <ostream>
 #include <sstream>
 
+#include "core/iterate.h"
+
 namespace llm {
-namespace {
-
-// Обход всех элементов в порядке плотного размещения: fn получает смещение
-// элемента в буфере с учётом шагов.
-//
-// Это «одометр»: младший разряд — последняя ось. При переносе разряд
-// сбрасывается в нуль, и из смещения вычитается накопленный по этой оси вклад.
-// Такой обход корректно работает и с шагом 0 (растянутая ось), и с
-// произвольной перестановкой осей.
-template <typename Fn>
-void for_each_offset(const Shape& shape, const std::vector<int64_t>& strides,
-                     Fn fn) {
-  const int64_t total = shape.numel();
-  if (total == 0) {
-    return;
-  }
-  const int rank = shape.rank();
-  std::vector<int64_t> index(static_cast<std::size_t>(rank), 0);
-  int64_t offset = 0;
-  for (int64_t counter = 0; counter < total; ++counter) {
-    fn(offset);
-    for (int axis = rank - 1; axis >= 0; --axis) {
-      const std::size_t a = static_cast<std::size_t>(axis);
-      index[a] += 1;
-      offset += strides[a];
-      if (index[a] < shape.dim(axis)) {
-        break;
-      }
-      offset -= index[a] * strides[a];
-      index[a] = 0;
-    }
-  }
-}
-
-}  // namespace
 
 Tensor::Tensor(std::shared_ptr<Storage> storage, float* data,
                const Shape& shape, std::vector<int64_t> strides)

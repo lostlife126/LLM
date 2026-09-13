@@ -35,8 +35,12 @@ add_library(llm_core
   src/core/storage.cpp
   src/core/str_view.cpp
   src/core/tensor.cpp
+  src/autograd/node.cpp
+  src/autograd/ops.cpp
+  src/ops/elementwise.cpp
   src/ops/gemm.cpp
   src/ops/matmul.cpp
+  src/ops/reduce.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -46,10 +50,14 @@ target_link_libraries(bench_gemm PRIVATE llm_core)
 enable_testing()
 
 add_executable(llm_tests
+  tests/gradcheck.cpp
   tests/testing.cpp
   tests/test_main.cpp
+  tests/test_autograd.cpp
   tests/test_check.cpp
+  tests/test_elementwise.cpp
   tests/test_gemm.cpp
+  tests/test_grad.cpp
   tests/test_matmul.cpp
   tests/test_random.cpp
   tests/test_shape.cpp
@@ -65,7 +73,10 @@ target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 # Отдельная запись ctest на каждый набор: при падении сразу видно, какой
 # компонент сломан, без чтения общего лога.
 set(LLM_TEST_SUITES
+  Autograd
   Check
+  Elementwise
+  Grad
   Gemm
   Matmul
   Rng

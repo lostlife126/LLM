@@ -46,6 +46,14 @@ class Tensor {
   const Shape& shape() const { return shape_; }
   const std::vector<int64_t>& strides() const { return strides_; }
 
+  // Различие между «пустым» и «неопределённым» тензором существенно.
+  // Неопределённый — это Tensor(), у него вообще нет хранилища; таким,
+  // например, остаётся градиент переменной, до которой обратный проход не
+  // дошёл. Пустой — это тензор с осью нулевой длины: хранилище есть, элементов
+  // нет. Проверять numel() недостаточно: у неопределённого тензора ранг 0, то
+  // есть numel() == 1, как у скаляра.
+  bool defined() const { return storage_ != nullptr; }
+
   int rank() const { return shape_.rank(); }
   int64_t dim(int axis) const { return shape_.dim(axis); }
   int64_t numel() const { return shape_.numel(); }
