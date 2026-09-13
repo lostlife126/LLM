@@ -305,6 +305,36 @@ LLM_TEST(Nn, CrossEntropyGradientSumsToZero) {
   }
 }
 
+LLM_TEST(Nn, LogZTracksShiftOfAllLogits) {
+  // log Z — величина, слепая к предсказаниям и чувствительная к общему сдвигу.
+  // Обе половины этого утверждения проверяются здесь, потому что телеметрия
+  // нужна ровно за этим: увидеть дрейф, которого не видно по потерям.
+  const llm::Tensor uniform = llm::Tensor::zeros(llm::Shape({1, 4}));
+  LLM_EXPECT_NEAR(llm::ops::prediction_stats(uniform, {0}).log_z, std::log(4.0),
+                  1e-5);
+
+  // Сдвиг всех логитов строки на c двигает log Z ровно на c.
+  const llm::Tensor shifted =
+      llm::Tensor::from_values(llm::Shape({1, 4}), {7.0f, 7.0f, 7.0f, 7.0f});
+  LLM_EXPECT_NEAR(llm::ops::prediction_stats(shifted, {0}).log_z,
+                  std::log(4.0) + 7.0, 1e-5);
+
+  // При этом ни потери, ни энтропия от сдвига не меняются: softmax его не
+  // видит. Без телеметрии дрейф был бы невидим целиком.
+  LLM_EXPECT_NEAR(*llm::ops::cross_entropy(shifted, {0}).data(),
+                  *llm::ops::cross_entropy(uniform, {0}).data(), 1e-5);
+  LLM_EXPECT_NEAR(llm::ops::prediction_stats(shifted, {0}).entropy,
+                  llm::ops::prediction_stats(uniform, {0}).entropy, 1e-5);
+
+  // Связь с самим штрафом: z_loss — это среднее по строкам от квадрата log Z.
+  const llm::Tensor rows =
+      llm::Tensor::from_values(llm::Shape({2, 2}), {5.0f, 5.0f, -3.0f, -3.0f});
+  const double high = std::log(2.0) + 5.0;
+  const double low = std::log(2.0) - 3.0;
+  LLM_EXPECT_NEAR(*llm::ops::z_loss(rows).data(),
+                  (high * high + low * low) / 2.0, 1e-4);
+}
+
 LLM_TEST(Nn, CrossEntropyRejectsMismatchedTargets) {
   const llm::Tensor logits = llm::Tensor::zeros(llm::Shape({2, 3}));
   LLM_EXPECT_THROWS(llm::ops::cross_entropy(logits, {0}));

@@ -591,6 +591,7 @@ Var Model::loss(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
         ops::prediction_stats(flat.value(), targets);
     stats->top1_accuracy = prediction.top1_accuracy;
     stats->prediction_entropy = prediction.entropy;
+    stats->log_z = prediction.log_z;
 
     // Разбивка потерь по четвертям окна. Строки идут в порядке
     // (элемент батча, позиция), поэтому позиция строки — это остаток от

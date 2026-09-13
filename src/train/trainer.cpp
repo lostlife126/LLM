@@ -144,6 +144,11 @@ void print_diagnostics(const nn::ForwardStats& stats,
     const float gain = stats.loss_by_quarter[0] - stats.loss_by_quarter[3];
     std::printf("   выигрыш от контекста %+.3f\n", gain);
   }
+
+  // log Z выходных логитов: softmax к нему нечувствителен, поэтому дрейф от
+  // нуля ничего не меняет в предсказаниях и виден только здесь. Это то, что
+  // штрафует Z-loss, — и по этому числу видно, есть ли что штрафовать.
+  std::printf("  log Z выходных логитов %+.2f\n", stats.log_z);
   std::printf("\n");
 }
 
@@ -166,6 +171,7 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
   double total = 0.0;
   double accuracy_total = 0.0;
   double entropy_total = 0.0;
+  double log_z_total = 0.0;
   std::vector<double> quarter_totals(4, 0.0);
   nn::ForwardStats last_batch_stats;
 
@@ -183,6 +189,7 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
     if (stats != nullptr) {
       accuracy_total += batch_stats.top1_accuracy;
       entropy_total += batch_stats.prediction_entropy;
+      log_z_total += batch_stats.log_z;
       for (std::size_t i = 0; i < batch_stats.loss_by_quarter.size() && i < 4;
            ++i) {
         quarter_totals[i] += batch_stats.loss_by_quarter[i];
@@ -198,6 +205,7 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
     *stats = last_batch_stats;
     stats->top1_accuracy = static_cast<float>(accuracy_total / denominator);
     stats->prediction_entropy = static_cast<float>(entropy_total / denominator);
+    stats->log_z = static_cast<float>(log_z_total / denominator);
     stats->loss_by_quarter.clear();
     for (std::size_t i = 0; i < 4; ++i) {
       stats->loss_by_quarter.push_back(

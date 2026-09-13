@@ -110,10 +110,6 @@ std::vector<Variant> build_variants(int64_t vocab_size) {
   untied.config.tie_embeddings = false;
   variants.push_back(untied);
 
-  // Развязывание эмбеддингов добавляет vocab * d_model весов, поэтому строка
-  // выше отвечает на вопрос «помогает ли +24% параметров», а не «помогает ли
-  // развязывание». Честный ответ даёт этот вариант: те же лишние веса, но
-  // потраченные на ширину FFN при связанных эмбеддингах.
   Variant qk;
   qk.name = "QK-норма";
   qk.question = "мешает ли рост логитов внимания";
@@ -128,6 +124,17 @@ std::vector<Variant> build_variants(int64_t vocab_size) {
   z.config.z_loss_coef = 1e-4f;
   variants.push_back(z);
 
+  // Коэффициент 1e-4 взят из PaLM, и на нашем масштабе он почти ничего не
+  // делает: логиты и так не уезжают. Вариант с коэффициентом в сто раз больше
+  // отличает «приём не работает» от «доза мала»: если и он ничего не меняет,
+  // дело не в дозе.
+  Variant z_strong;
+  z_strong.name = "Z-loss x100";
+  z_strong.question = "дело в приёме или в величине коэффициента";
+  z_strong.config = base;
+  z_strong.config.z_loss_coef = 1e-2f;
+  variants.push_back(z_strong);
+
   Variant both;
   both.name = "QK-норма + Z-loss";
   both.question = "складываются ли два приёма";
@@ -136,6 +143,10 @@ std::vector<Variant> build_variants(int64_t vocab_size) {
   both.config.z_loss_coef = 1e-4f;
   variants.push_back(both);
 
+  // Развязывание эмбеддингов добавляет vocab * d_model весов, поэтому строка
+  // выше отвечает на вопрос «помогает ли +24% параметров», а не «помогает ли
+  // развязывание». Честный ответ даёт этот вариант: те же лишние веса, но
+  // потраченные на ширину FFN при связанных эмбеддингах.
   Variant wider;
   wider.name = "связанные + шире FFN";
   wider.question = "те же +24% параметров, но в FFN, а не в выходной матрице";

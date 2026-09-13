@@ -185,6 +185,7 @@ PredictionStats prediction_stats(const Tensor& logits,
 
   int64_t correct = 0;
   double entropy_total = 0.0;
+  double log_z_total = 0.0;
 
   for (int64_t row = 0; row < rows; ++row) {
     const float* row_data = data + row * vocab;
@@ -216,12 +217,14 @@ PredictionStats prediction_stats(const Tensor& logits,
       weighted += probability * static_cast<double>(row_data[i] - maximum);
     }
     entropy_total += log_sum - weighted;
+    log_z_total += log_sum + static_cast<double>(maximum);
   }
 
   PredictionStats stats;
   stats.top1_accuracy = static_cast<float>(static_cast<double>(correct) /
                                            static_cast<double>(rows));
   stats.entropy = static_cast<float>(entropy_total / static_cast<double>(rows));
+  stats.log_z = static_cast<float>(log_z_total / static_cast<double>(rows));
   return stats;
 }
 
