@@ -49,6 +49,11 @@ add_library(llm_core
   src/nn/config.cpp
   src/nn/model.cpp
   src/tokenizer/bpe.cpp
+  src/data/dataset.cpp
+  src/serialize/checkpoint.cpp
+  src/train/optimizer.cpp
+  src/train/schedule.cpp
+  src/train/trainer.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -60,6 +65,9 @@ target_link_libraries(bpe_train PRIVATE llm_core)
 
 add_executable(bench_model apps/bench_model.cpp)
 target_link_libraries(bench_model PRIVATE llm_core)
+
+add_executable(train apps/train.cpp)
+target_link_libraries(train PRIVATE llm_core)
 
 enable_testing()
 
@@ -82,6 +90,7 @@ add_executable(llm_tests
   tests/test_storage.cpp
   tests/test_str_view.cpp
   tests/test_tensor.cpp
+  tests/test_train.cpp
   tests/test_util.cpp
 )
 target_link_libraries(llm_tests PRIVATE llm_core)
@@ -105,6 +114,7 @@ set(LLM_TEST_SUITES
   Storage
   StrView
   Tensor
+  Train
   Util
 )
 foreach(suite ${LLM_TEST_SUITES})

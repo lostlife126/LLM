@@ -31,6 +31,17 @@ void Node::accumulate(const Tensor& contribution) {
       [&](int64_t to, int64_t from) { target[to] += source[from]; });
 }
 
+void Node::scale_grad(float factor) {
+  if (!grad_.defined()) {
+    return;
+  }
+  float* data = grad_.data();
+  const int64_t count = grad_.numel();
+  for (int64_t element = 0; element < count; ++element) {
+    data[element] *= factor;
+  }
+}
+
 const Tensor& Var::grad() const {
   LLM_CHECK_MSG(node_ != nullptr,
                 "запрошен градиент переменной, которая его не требует");

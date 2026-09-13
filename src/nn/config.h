@@ -61,6 +61,13 @@ struct ModelConfig {
   static ModelConfig by_name(const std::string& name);
 };
 
+// Полное сравнение, по всем полям. Нужно чекпоинтам: to_string() показывает
+// только форму модели, а веса несовместимы и при расхождении в theta для RoPE
+// или в epsilon нормировки — форма при этом совпадает, и подмена прошла бы
+// незамеченной.
+bool operator==(const ModelConfig& lhs, const ModelConfig& rhs);
+bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs);
+
 }  // namespace nn
 }  // namespace llm
 

@@ -95,6 +95,20 @@ ModelConfig ModelConfig::small() {
   return config;
 }
 
+bool operator==(const ModelConfig& lhs, const ModelConfig& rhs) {
+  return lhs.vocab_size == rhs.vocab_size && lhs.d_model == rhs.d_model &&
+         lhs.n_layers == rhs.n_layers && lhs.n_heads == rhs.n_heads &&
+         lhs.n_kv_heads == rhs.n_kv_heads &&
+         lhs.max_seq_len == rhs.max_seq_len &&
+         lhs.ffn_hidden == rhs.ffn_hidden && lhs.rope_theta == rhs.rope_theta &&
+         lhs.norm_eps == rhs.norm_eps && lhs.init_std == rhs.init_std &&
+         lhs.tie_embeddings == rhs.tie_embeddings;
+}
+
+bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs) {
+  return !(lhs == rhs);
+}
+
 ModelConfig ModelConfig::by_name(const std::string& name) {
   if (name == "nano") {
     return nano();

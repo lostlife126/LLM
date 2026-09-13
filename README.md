@@ -51,7 +51,7 @@ softmax, мелкие матрицы внутри внимания и на ко�
 - [x] **M2. Автоград.** Лента вычислений, backward для всех операций, численная проверка градиентов.
 - [x] **M3. Токенизатор.** Byte-level BPE: обучение словаря, encode/decode, roundtrip-тест.
 - [x] **M4. Модель.** Forward: RMSNorm, RoPE, GQA, SwiGLU. Тест каузальности.
-- [ ] **M5. Обучение.** AdamW, warmup + cosine, клиппинг градиента, чекпоинты, overfit-тест.
+- [x] **M5. Обучение.** AdamW, warmup + cosine, клиппинг градиента, чекпоинты, overfit-тест.
 - [ ] **M6. Инференс.** KV-кэш, сэмплирование (temperature / top-k / top-p), CLI.
 - [ ] **M7. Архитектурная лаборатория.** Абляции: LayerNorm/RMSNorm, RoPE/обучаемые позиции, GELU/SwiGLU, MHA/GQA/MQA, pre-norm/post-norm, tied/untied, sliding window, MoE.
 - [ ] **M8. LoRA.** Дообучение низкоранговыми адаптерами.
@@ -66,7 +66,9 @@ src/ops/      ядра: gemm, matmul, поэлементные, редукции
 src/autograd/ лента вычислений, дифференцируемые операции
 src/nn/       конфигурация, слои, модель
 src/tokenizer/byte-level BPE
-src/train/    оптимизатор и цикл обучения (M5)
+src/train/    AdamW, расписание скорости, цикл обучения
+src/data/     корпус в токенах, выборка батчей
+src/serialize/чекпоинты
 src/infer/    KV-кэш и сэмплирование (M6)
 tests/        тесты, по одному набору ctest на компонент
 apps/         исполняемые файлы

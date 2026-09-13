@@ -5,5 +5,7 @@ build-*/
 compile_commands.json
 .cache/
 .vscode/
-data/
-checkpoints/
+# Со слешем в начале — только каталог корпуса и чекпоинтов в корне проекта.
+# Без него правило поглотило бы и src/data/ с исходниками датасета.
+/data/
+/checkpoints/
