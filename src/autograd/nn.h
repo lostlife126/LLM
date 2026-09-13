@@ -19,6 +19,9 @@ namespace autograd {
 // Нормировка по последней оси с обучаемым масштабом.
 Var rms_norm(const Var& input, const Var& weight, float eps);
 
+// Нормировка с центрированием и свободным членом — для сравнения с RMSNorm.
+Var layer_norm(const Var& input, const Var& weight, const Var& bias, float eps);
+
 Var softmax(const Var& input);
 Var silu(const Var& input);
 Var gelu(const Var& input);

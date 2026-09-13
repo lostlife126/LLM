@@ -35,6 +35,41 @@ float residual_init_std(const ModelConfig& config) {
 
 }  // namespace
 
+Norm::Norm(const ModelConfig& config, Rng* rng)
+    : kind_(config.norm), eps_(config.norm_eps) {
+  // Генератор не используется: нормировка стартует с тождественного
+  // преобразования, а не со случайных весов. Аргумент оставлен ради
+  // единообразия с остальными слоями.
+  (void)rng;
+  weight_ = Var::leaf(Tensor::full(Shape({config.d_model}), 1.0f), true,
+                      "norm.weight");
+  if (kind_ == NormKind::kLayerNorm) {
+    bias_ =
+        Var::leaf(Tensor::zeros(Shape({config.d_model})), true, "norm.bias");
+  }
+}
+
+Var Norm::forward(const Var& input) const {
+  if (kind_ == NormKind::kLayerNorm) {
+    return autograd::layer_norm(input, weight_, bias_, eps_);
+  }
+  return autograd::rms_norm(input, weight_, eps_);
+}
+
+void Norm::collect(const std::string& prefix,
+                   std::vector<NamedParameter>* out) {
+  NamedParameter weight;
+  weight.name = prefix + ".weight";
+  weight.value = &weight_;
+  out->push_back(weight);
+  if (kind_ == NormKind::kLayerNorm) {
+    NamedParameter bias;
+    bias.name = prefix + ".bias";
+    bias.value = &bias_;
+    out->push_back(bias);
+  }
+}
+
 Linear::Linear(int64_t in_features, int64_t out_features, float init_std,
                Rng* rng)
     : weight_(Var::leaf(
@@ -107,8 +142,13 @@ Var Attention::forward(const Var& input, int64_t position_offset,
 
   // Поворот применяется к запросам и ключам, но не к значениям: позиция должна
   // влиять на то, куда смотреть, а не на то, что оттуда взять.
-  queries = autograd::rope(queries, position_offset, config_.rope_theta);
-  keys = autograd::rope(keys, position_offset, config_.rope_theta);
+  //
+  // При других способах кодирования позиции внимание остаётся полностью
+  // симметричным по позициям, и порядок задаётся только каузальной маской.
+  if (config_.position == PositionKind::kRope) {
+    queries = autograd::rope(queries, position_offset, config_.rope_theta);
+    keys = autograd::rope(keys, position_offset, config_.rope_theta);
+  }
 
   // Ключей и значений может быть больше, чем запросов: при генерации запрос
   // один, а ключи накоплены за весь предыдущий текст.
@@ -164,62 +204,69 @@ void Attention::collect(const std::string& prefix,
   output_.collect(prefix + ".output", out);
 }
 
-Mlp::Mlp(const ModelConfig& config, Rng* rng) {
-  gate_ = Linear(config.d_model, config.ffn_hidden, config.init_std, rng);
+Mlp::Mlp(const ModelConfig& config, Rng* rng) : kind_(config.ffn) {
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_ = Linear(config.d_model, config.ffn_hidden, config.init_std, rng);
+  }
   up_ = Linear(config.d_model, config.ffn_hidden, config.init_std, rng);
   down_ =
       Linear(config.ffn_hidden, config.d_model, residual_init_std(config), rng);
 }
 
 Var Mlp::forward(const Var& input) const {
-  const Var gate = autograd::silu(gate_.forward(input));
-  const Var up = up_.forward(input);
-  return down_.forward(autograd::mul(gate, up));
+  if (kind_ == FfnKind::kSwiGlu) {
+    // Вентиль решает, какие каналы пропустить дальше, и решение зависит от
+    // входа. У обычного FFN такого выбора нет: активация применяется к
+    // каждому каналу одинаково.
+    const Var gate = autograd::silu(gate_.forward(input));
+    const Var up = up_.forward(input);
+    return down_.forward(autograd::mul(gate, up));
+  }
+  return down_.forward(autograd::gelu(up_.forward(input)));
 }
 
 void Mlp::collect(const std::string& prefix, std::vector<NamedParameter>* out) {
-  gate_.collect(prefix + ".gate", out);
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_.collect(prefix + ".gate", out);
+  }
   up_.collect(prefix + ".up", out);
   down_.collect(prefix + ".down", out);
 }
 
 Block::Block(const ModelConfig& config, Rng* rng)
     : config_(config),
-      // Масштаб нормировки начинается с единицы: на старте нормировка ничего
-      // не меняет, кроме самой нормализации.
-      attention_norm_(Var::leaf(Tensor::full(Shape({config.d_model}), 1.0f),
-                                true, "attention_norm")),
-      mlp_norm_(Var::leaf(Tensor::full(Shape({config.d_model}), 1.0f), true,
-                          "mlp_norm")),
+      attention_norm_(config, rng),
+      mlp_norm_(config, rng),
       attention_(config, rng),
       mlp_(config, rng) {}
 
 Var Block::forward(const Var& input, int64_t position_offset, KvCache* cache,
                    int64_t layer) const {
-  const Var attended = attention_.forward(
-      autograd::rms_norm(input, attention_norm_, config_.norm_eps),
-      position_offset, cache, layer);
+  if (config_.post_norm) {
+    // Нормируется уже сумма остатка и подслоя, то есть нормировка стоит на
+    // пути остатка.
+    const Var attended =
+        attention_.forward(input, position_offset, cache, layer);
+    const Var after_attention =
+        attention_norm_.forward(autograd::add(input, attended));
+    const Var transformed = mlp_.forward(after_attention);
+    return mlp_norm_.forward(autograd::add(after_attention, transformed));
+  }
+
+  // Пре-нормировка: путь остатка от выхода к входу — чистое сложение.
+  const Var attended = attention_.forward(attention_norm_.forward(input),
+                                          position_offset, cache, layer);
   const Var after_attention = autograd::add(input, attended);
 
-  const Var transformed = mlp_.forward(
-      autograd::rms_norm(after_attention, mlp_norm_, config_.norm_eps));
+  const Var transformed = mlp_.forward(mlp_norm_.forward(after_attention));
   return autograd::add(after_attention, transformed);
 }
 
 void Block::collect(const std::string& prefix,
                     std::vector<NamedParameter>* out) {
-  NamedParameter attention_norm;
-  attention_norm.name = prefix + ".attention_norm";
-  attention_norm.value = &attention_norm_;
-  out->push_back(attention_norm);
-
+  attention_norm_.collect(prefix + ".attention_norm", out);
   attention_.collect(prefix + ".attention", out);
-
-  NamedParameter mlp_norm;
-  mlp_norm.name = prefix + ".mlp_norm";
-  mlp_norm.value = &mlp_norm_;
-  out->push_back(mlp_norm);
-
+  mlp_norm_.collect(prefix + ".mlp_norm", out);
   mlp_.collect(prefix + ".mlp", out);
 }
 
@@ -232,12 +279,18 @@ Model::Model(const ModelConfig& config, uint64_t seed) : config_(config) {
                               config.init_std, &rng),
                 true, "token_embedding");
 
+  if (config.position == PositionKind::kLearned) {
+    position_embedding_ =
+        Var::leaf(normal_tensor(Shape({config.max_seq_len, config.d_model}),
+                                config.init_std, &rng),
+                  true, "position_embedding");
+  }
+
   for (int64_t layer = 0; layer < config.n_layers; ++layer) {
     blocks_.push_back(Block(config, &rng));
   }
 
-  final_norm_ = Var::leaf(Tensor::full(Shape({config.d_model}), 1.0f), true,
-                          "final_norm");
+  final_norm_ = Norm(config, &rng);
 
   if (!config.tie_embeddings) {
     lm_head_ = Linear(config.d_model, config.vocab_size, config.init_std, &rng);
@@ -259,6 +312,22 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
   Var hidden = autograd::reshape(autograd::embedding(token_embedding_, ids),
                                  Shape({batch, seq, config_.d_model}));
 
+  if (config_.position == PositionKind::kLearned) {
+    // Обучаемая позиция прибавляется к эмбеддингу токена один раз, на входе.
+    // В отличие от RoPE она одна на все слои и на весь вектор, а не действует
+    // на запросы и ключи отдельно в каждом слое.
+    std::vector<int32_t> positions;
+    positions.reserve(static_cast<std::size_t>(seq));
+    for (int64_t step = 0; step < seq; ++step) {
+      positions.push_back(static_cast<int32_t>(position_offset + step));
+    }
+    const Var encoded =
+        autograd::reshape(autograd::embedding(position_embedding_, positions),
+                          Shape({1, seq, config_.d_model}));
+    // Растяжение по батчу: позиция одна и та же для всех примеров.
+    hidden = autograd::add(hidden, encoded);
+  }
+
   for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
     hidden = blocks_[layer].forward(hidden, position_offset, cache,
                                     static_cast<int64_t>(layer));
@@ -269,7 +338,7 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
   if (cache != nullptr) {
     cache->advance(seq);
   }
-  hidden = autograd::rms_norm(hidden, final_norm_, config_.norm_eps);
+  hidden = final_norm_.forward(hidden);
 
   if (config_.tie_embeddings) {
     // Та же матрица, что и на входе, только транспонированная. Строка таблицы
@@ -320,16 +389,20 @@ std::vector<NamedParameter> Model::parameters() {
   embedding.value = &token_embedding_;
   result.push_back(embedding);
 
+  if (config_.position == PositionKind::kLearned) {
+    NamedParameter positions;
+    positions.name = "position_embedding";
+    positions.value = &position_embedding_;
+    result.push_back(positions);
+  }
+
   for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
     std::ostringstream prefix;
     prefix << "block." << layer;
     blocks_[layer].collect(prefix.str(), &result);
   }
 
-  NamedParameter final_norm;
-  final_norm.name = "final_norm";
-  final_norm.value = &final_norm_;
-  result.push_back(final_norm);
+  final_norm_.collect("final_norm", &result);
 
   if (!config_.tie_embeddings) {
     lm_head_.collect("lm_head", &result);

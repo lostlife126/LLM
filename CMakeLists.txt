@@ -75,6 +75,9 @@ target_link_libraries(train PRIVATE llm_core)
 add_executable(generate apps/generate.cpp)
 target_link_libraries(generate PRIVATE llm_core)
 
+add_executable(ablate apps/ablate.cpp)
+target_link_libraries(ablate PRIVATE llm_core)
+
 enable_testing()
 
 add_executable(llm_tests
@@ -98,6 +101,7 @@ add_executable(llm_tests
   tests/test_str_view.cpp
   tests/test_tensor.cpp
   tests/test_train.cpp
+  tests/test_variants.cpp
   tests/test_util.cpp
 )
 target_link_libraries(llm_tests PRIVATE llm_core)
@@ -124,6 +128,7 @@ set(LLM_TEST_SUITES
   StrView
   Tensor
   Train
+  Variants
   Util
 )
 foreach(suite ${LLM_TEST_SUITES})

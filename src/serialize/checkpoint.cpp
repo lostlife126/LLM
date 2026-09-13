@@ -11,7 +11,7 @@ namespace serialize {
 namespace {
 
 const uint32_t kMagic = 0x574d4c4cu;  // "LLMW" в little-endian
-const uint32_t kVersion = 1;
+const uint32_t kVersion = 2;  // версия 2 добавила архитектурные развилки
 
 // Метка представления чисел. Если файл читают на машине с другим порядком
 // байтов или другим форматом float, эти два значения не совпадут, и загрузка
@@ -58,6 +58,10 @@ void write_config(std::ofstream* file, const nn::ModelConfig& config) {
   write_pod<float>(file, config.norm_eps);
   write_pod<float>(file, config.init_std);
   write_pod<uint8_t>(file, config.tie_embeddings ? 1 : 0);
+  write_pod<uint8_t>(file, static_cast<uint8_t>(config.norm));
+  write_pod<uint8_t>(file, static_cast<uint8_t>(config.position));
+  write_pod<uint8_t>(file, static_cast<uint8_t>(config.ffn));
+  write_pod<uint8_t>(file, config.post_norm ? 1 : 0);
 }
 
 nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path) {
@@ -73,6 +77,11 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path) {
   config.norm_eps = read_pod<float>(file, path);
   config.init_std = read_pod<float>(file, path);
   config.tie_embeddings = read_pod<uint8_t>(file, path) != 0;
+  config.norm = static_cast<nn::NormKind>(read_pod<uint8_t>(file, path));
+  config.position =
+      static_cast<nn::PositionKind>(read_pod<uint8_t>(file, path));
+  config.ffn = static_cast<nn::FfnKind>(read_pod<uint8_t>(file, path));
+  config.post_norm = read_pod<uint8_t>(file, path) != 0;
   config.validate();
   return config;
 }

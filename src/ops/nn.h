@@ -31,6 +31,19 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
                        const Tensor& weight, float eps, Tensor* grad_input,
                        Tensor* grad_weight);
 
+// LayerNorm по последней оси: y = (x - mean) / sqrt(var + eps) * w + b.
+//
+// Существует в проекте ради сравнения с RMSNorm. Отличий два: вычитается
+// среднее (значит нужна вторая редукция по строке) и есть свободный член.
+// Смысл сравнения в том, чтобы увидеть, даёт ли центрирование что-нибудь —
+// современные модели от него отказались.
+Tensor layer_norm(const Tensor& input, const Tensor& weight, const Tensor& bias,
+                  float eps);
+
+void layer_norm_backward(const Tensor& grad_output, const Tensor& input,
+                         const Tensor& weight, float eps, Tensor* grad_input,
+                         Tensor* grad_weight, Tensor* grad_bias);
+
 // Softmax по последней оси. Вычитание максимума строки обязательно: без него
 // exp переполняется уже на логитах порядка 90.
 Tensor softmax(const Tensor& input);

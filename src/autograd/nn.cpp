@@ -53,6 +53,53 @@ Var rms_norm(const Var& input, const Var& weight, float eps) {
                       });
 }
 
+Var layer_norm(const Var& input, const Var& weight, const Var& bias,
+               float eps) {
+  Tensor value =
+      ops::layer_norm(input.value(), weight.value(), bias.value(), eps);
+  if (!grad_enabled() || (!input.requires_grad() && !weight.requires_grad() &&
+                          !bias.requires_grad())) {
+    return Var::constant(std::move(value));
+  }
+
+  std::vector<NodePtr> parents;
+  const NodePtr input_node = input.requires_grad() ? input.node() : nullptr;
+  const NodePtr weight_node = weight.requires_grad() ? weight.node() : nullptr;
+  const NodePtr bias_node = bias.requires_grad() ? bias.node() : nullptr;
+  if (input_node) {
+    parents.push_back(input_node);
+  }
+  if (weight_node) {
+    parents.push_back(weight_node);
+  }
+  if (bias_node) {
+    parents.push_back(bias_node);
+  }
+
+  const Tensor saved_input = input.value();
+  const Tensor saved_weight = weight.value();
+
+  return Var::from_op(std::move(value), "layer_norm", std::move(parents),
+                      [input_node, weight_node, bias_node, saved_input,
+                       saved_weight, eps](const Tensor& grad) {
+                        Tensor grad_input;
+                        Tensor grad_weight;
+                        Tensor grad_bias;
+                        ops::layer_norm_backward(grad, saved_input,
+                                                 saved_weight, eps, &grad_input,
+                                                 &grad_weight, &grad_bias);
+                        if (input_node) {
+                          input_node->accumulate(grad_input);
+                        }
+                        if (weight_node) {
+                          weight_node->accumulate(grad_weight);
+                        }
+                        if (bias_node) {
+                          bias_node->accumulate(grad_bias);
+                        }
+                      });
+}
+
 Var softmax(const Var& input) {
   Tensor value = ops::softmax(input.value());
   if (!tracking(input)) {

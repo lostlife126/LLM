@@ -29,21 +29,40 @@ void ModelConfig::validate() const {
                 "размерность головы " << head_dim() << " должна быть чётной");
 }
 
+int64_t ModelConfig::ffn_hidden_matching(FfnKind other) const {
+  // Хотим, чтобы d * target * h_new совпало с d * current * h_current: иначе
+  // сравнивались бы не устройства FFN, а размеры моделей.
+  //
+  // Округления здесь нет намеренно. Выравнивание ширины ничего не даёт — наш
+  // GEMM одинаково работает с любыми размерами, — а вот округление до
+  // кратного 32 легко съедает всю точность подгонки: 36 превратилось бы в 64,
+  // то есть модель выросла бы в полтора раза, и сравнение перестало бы быть
+  // сравнением устройств.
+  const int64_t current = ffn_matrix_count();
+  const int64_t target = other == FfnKind::kSwiGlu ? 3 : 2;
+  // Деление с округлением к ближайшему: точное совпадение получается, когда
+  // ширина делится нацело, что верно для всех пресетов проекта.
+  return (ffn_hidden * current + target / 2) / target;
+}
+
 int64_t ModelConfig::parameter_count() const {
   int64_t total = vocab_size * d_model;  // таблица эмбеддингов
   if (!tie_embeddings) {
     total += vocab_size * d_model;  // отдельная выходная проекция
+  }
+  if (position == PositionKind::kLearned) {
+    total += max_seq_len * d_model;  // таблица позиций
   }
 
   const int64_t attention = d_model * d_model     // Q
                             + d_model * kv_dim()  // K
                             + d_model * kv_dim()  // V
                             + d_model * d_model;  // O
-  const int64_t ffn = 3 * d_model * ffn_hidden;   // gate, up, down
-  const int64_t norms = 2 * d_model;  // две нормировки в блоке
+  const int64_t ffn_weights = ffn_matrix_count() * d_model * ffn_hidden;
+  const int64_t norms = 2 * norm_parameter_count();
 
-  total += n_layers * (attention + ffn + norms);
-  total += d_model;  // финальная нормировка
+  total += n_layers * (attention + ffn_weights + norms);
+  total += norm_parameter_count();  // финальная нормировка
   return total;
 }
 
@@ -52,8 +71,34 @@ std::string ModelConfig::to_string() const {
   oss << "vocab=" << vocab_size << " d_model=" << d_model
       << " layers=" << n_layers << " heads=" << n_heads << "/" << n_kv_heads
       << " head_dim=" << head_dim() << " ffn=" << ffn_hidden
-      << " ctx=" << max_seq_len << " params=" << parameter_count();
+      << " ctx=" << max_seq_len;
+  oss << " norm=" << (norm == NormKind::kRmsNorm ? "rms" : "layer");
+  oss << (post_norm ? "/post" : "/pre");
+  oss << " pos=";
+  if (position == PositionKind::kRope) {
+    oss << "rope";
+  } else if (position == PositionKind::kLearned) {
+    oss << "learned";
+  } else {
+    oss << "none";
+  }
+  oss << " ffn_kind=" << (ffn == FfnKind::kSwiGlu ? "swiglu" : "gelu");
+  oss << (tie_embeddings ? " tied" : " untied");
+  oss << " params=" << parameter_count();
   return oss.str();
+}
+
+ModelConfig ModelConfig::ablation() {
+  ModelConfig config;
+  config.vocab_size = 1024;
+  config.d_model = 96;
+  config.n_layers = 3;
+  config.n_heads = 4;
+  config.n_kv_heads = 2;
+  config.max_seq_len = 64;
+  config.ffn_hidden = 256;
+  config.validate();
+  return config;
 }
 
 ModelConfig ModelConfig::nano() {
@@ -102,7 +147,9 @@ bool operator==(const ModelConfig& lhs, const ModelConfig& rhs) {
          lhs.max_seq_len == rhs.max_seq_len &&
          lhs.ffn_hidden == rhs.ffn_hidden && lhs.rope_theta == rhs.rope_theta &&
          lhs.norm_eps == rhs.norm_eps && lhs.init_std == rhs.init_std &&
-         lhs.tie_embeddings == rhs.tie_embeddings;
+         lhs.tie_embeddings == rhs.tie_embeddings && lhs.norm == rhs.norm &&
+         lhs.position == rhs.position && lhs.ffn == rhs.ffn &&
+         lhs.post_norm == rhs.post_norm;
 }
 
 bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs) {
@@ -110,6 +157,9 @@ bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs) {
 }
 
 ModelConfig ModelConfig::by_name(const std::string& name) {
+  if (name == "ablation") {
+    return ablation();
+  }
   if (name == "nano") {
     return nano();
   }
@@ -120,7 +170,8 @@ ModelConfig ModelConfig::by_name(const std::string& name) {
     return small();
   }
   LLM_CHECK_MSG(false, "неизвестный пресет '"
-                           << name << "', доступны: nano, tiny, small");
+                           << name
+                           << "', доступны: ablation, nano, tiny, small");
   return nano();
 }
 

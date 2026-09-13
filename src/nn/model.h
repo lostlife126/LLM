@@ -31,6 +31,27 @@ struct NamedParameter {
   autograd::Var* value;
 };
 
+// Нормировка, скрывающая выбор между RMSNorm и LayerNorm.
+//
+// Вынесена в отдельный класс именно ради сравнения: слоям всё равно, чем
+// нормировать, а у LayerNorm есть свободный член, которого у RMSNorm нет, и
+// без этой обёртки развилка расползлась бы по всем местам, где стоит
+// нормировка.
+class Norm {
+ public:
+  Norm() {}
+  explicit Norm(const ModelConfig& config, Rng* rng);
+
+  autograd::Var forward(const autograd::Var& input) const;
+  void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+
+ private:
+  NormKind kind_ = NormKind::kRmsNorm;
+  float eps_ = 1e-5f;
+  autograd::Var weight_;
+  autograd::Var bias_;  // существует только у LayerNorm
+};
+
 // Линейный слой без свободного члена.
 //
 // Веса хранятся как (вход, выход), а не (выход, вход), как в PyTorch. Тогда
@@ -86,11 +107,15 @@ class Attention {
   Linear output_;
 };
 
-// FFN со SwiGLU: down(silu(gate(x)) * up(x)).
+// FFN: либо SwiGLU, либо обычный двухматричный слой с GELU.
 //
-// Три матрицы вместо двух. Вентиль silu(gate(x)) умножается на up(x)
+// У SwiGLU три матрицы: вентиль silu(gate(x)) умножается на up(x)
 // поэлементно, то есть сеть сама решает, какие каналы пропустить дальше, а
-// какие подавить, и решение зависит от входа.
+// какие подавить, и решение зависит от входа. У варианта с GELU две матрицы и
+// никакого вентиля — так было в исходном трансформере.
+//
+// Чтобы сравнение было о устройстве, а не о размере, ширину второго варианта
+// берут в полтора раза больше: тогда числа параметров совпадают.
 class Mlp {
  public:
   Mlp() {}
@@ -100,19 +125,22 @@ class Mlp {
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
 
  private:
-  Linear gate_;
+  FfnKind kind_ = FfnKind::kSwiGlu;
+  Linear gate_;  // существует только у SwiGLU
   Linear up_;
   Linear down_;
 };
 
-// Блок с пре-нормировкой: нормируется вход подслоя, а к результату
-// прибавляется НЕнормированный остаток.
+// Блок трансформера.
 //
-// Порядок существен. При пост-нормировке (как в исходном трансформере)
-// нормировка стоит на пути остатка, и градиент на каждом слое проходит через
-// неё; глубокая сеть без разогрева тогда не учится. При пре-нормировке путь
-// остатка от выхода до входа — чистое сложение, и градиент доходит до первого
-// слоя без искажений.
+// Пре-нормировка: нормируется вход подслоя, а к результату прибавляется
+// НЕнормированный остаток. Пост-нормировка: нормируется уже сумма.
+//
+// Порядок существен. При пост-нормировке нормировка стоит на пути остатка, и
+// градиент на каждом слое проходит через неё. При пре-нормировке путь остатка
+// от выхода до входа — чистое сложение, и градиент доходит до первого слоя без
+// искажений. Насколько это важно на четырёх слоях — вопрос к замеру, а не к
+// рассуждению.
 class Block {
  public:
   Block() {}
@@ -124,8 +152,8 @@ class Block {
 
  private:
   ModelConfig config_;
-  autograd::Var attention_norm_;
-  autograd::Var mlp_norm_;
+  Norm attention_norm_;
+  Norm mlp_norm_;
   Attention attention_;
   Mlp mlp_;
 };
@@ -159,8 +187,9 @@ class Model {
  private:
   ModelConfig config_;
   autograd::Var token_embedding_;
+  autograd::Var position_embedding_;  // только при обучаемых позициях
   std::vector<Block> blocks_;
-  autograd::Var final_norm_;
+  Norm final_norm_;
   Linear lm_head_;  // не используется при связанных эмбеддингах
 };
 

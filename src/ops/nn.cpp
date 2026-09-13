@@ -124,6 +124,129 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
   }
 }
 
+Tensor layer_norm(const Tensor& input, const Tensor& weight, const Tensor& bias,
+                  float eps) {
+  int64_t rows = 0;
+  int64_t width = 0;
+  row_layout(input, &rows, &width);
+  LLM_CHECK_MSG(weight.rank() == 1 && weight.dim(0) == width,
+                "вес LayerNorm формы " << weight.shape()
+                                       << " не подходит к входу "
+                                       << input.shape());
+  LLM_CHECK_MSG(bias.rank() == 1 && bias.dim(0) == width,
+                "свободный член формы " << bias.shape() << " не подходит");
+
+  Tensor input_holder;
+  Tensor weight_holder;
+  Tensor bias_holder;
+  const float* x = dense_data(input, &input_holder);
+  const float* w = dense_data(weight, &weight_holder);
+  const float* b = dense_data(bias, &bias_holder);
+
+  Tensor out = Tensor::uninitialized(input.shape());
+  float* y = out.data();
+
+  for (int64_t row = 0; row < rows; ++row) {
+    const float* x_row = x + row * width;
+    float* y_row = y + row * width;
+
+    // Две редукции вместо одной у RMSNorm: сначала среднее, потом дисперсия
+    // вокруг него.
+    double sum = 0.0;
+    for (int64_t i = 0; i < width; ++i) {
+      sum += x_row[i];
+    }
+    const double mean = sum / static_cast<double>(width);
+
+    double sum_squares = 0.0;
+    for (int64_t i = 0; i < width; ++i) {
+      const double centered = static_cast<double>(x_row[i]) - mean;
+      sum_squares += centered * centered;
+    }
+    const double scale =
+        1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
+
+    for (int64_t i = 0; i < width; ++i) {
+      const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
+      y_row[i] = static_cast<float>(normalized) * w[i] + b[i];
+    }
+  }
+  return out;
+}
+
+void layer_norm_backward(const Tensor& grad_output, const Tensor& input,
+                         const Tensor& weight, float eps, Tensor* grad_input,
+                         Tensor* grad_weight, Tensor* grad_bias) {
+  LLM_CHECK(grad_input != nullptr && grad_weight != nullptr &&
+            grad_bias != nullptr);
+  int64_t rows = 0;
+  int64_t width = 0;
+  row_layout(input, &rows, &width);
+
+  Tensor grad_holder;
+  Tensor input_holder;
+  Tensor weight_holder;
+  const float* g = dense_data(grad_output, &grad_holder);
+  const float* x = dense_data(input, &input_holder);
+  const float* w = dense_data(weight, &weight_holder);
+
+  *grad_input = Tensor::zeros(input.shape());
+  *grad_weight = Tensor::zeros(weight.shape());
+  *grad_bias = Tensor::zeros(weight.shape());
+  float* dx = grad_input->data();
+  float* dw = grad_weight->data();
+  float* db = grad_bias->data();
+
+  for (int64_t row = 0; row < rows; ++row) {
+    const float* x_row = x + row * width;
+    const float* g_row = g + row * width;
+    float* dx_row = dx + row * width;
+
+    double sum = 0.0;
+    for (int64_t i = 0; i < width; ++i) {
+      sum += x_row[i];
+    }
+    const double mean = sum / static_cast<double>(width);
+
+    double sum_squares = 0.0;
+    for (int64_t i = 0; i < width; ++i) {
+      const double centered = static_cast<double>(x_row[i]) - mean;
+      sum_squares += centered * centered;
+    }
+    const double scale =
+        1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
+
+    // Свободный член прибавляется как есть, поэтому его градиент — просто
+    // сумма по строкам.
+    for (int64_t i = 0; i < width; ++i) {
+      const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
+      db[i] += g_row[i];
+      dw[i] += g_row[i] * static_cast<float>(normalized);
+    }
+
+    // По входу зависимость идёт и через среднее, и через дисперсию, поэтому
+    // поправок две, а не одна как у RMSNorm.
+    double sum_h = 0.0;
+    double sum_h_normalized = 0.0;
+    for (int64_t i = 0; i < width; ++i) {
+      const double h = static_cast<double>(g_row[i]) * w[i];
+      const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
+      sum_h += h;
+      sum_h_normalized += h * normalized;
+    }
+    const double mean_h = sum_h / static_cast<double>(width);
+    const double mean_h_normalized =
+        sum_h_normalized / static_cast<double>(width);
+
+    for (int64_t k = 0; k < width; ++k) {
+      const double h = static_cast<double>(g_row[k]) * w[k];
+      const double normalized = (static_cast<double>(x_row[k]) - mean) * scale;
+      dx_row[k] = static_cast<float>(
+          scale * (h - mean_h - normalized * mean_h_normalized));
+    }
+  }
+}
+
 Tensor softmax(const Tensor& input) {
   int64_t rows = 0;
   int64_t width = 0;
