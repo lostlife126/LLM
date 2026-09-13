@@ -4,8 +4,10 @@
 #include <cmath>
 #include <sstream>
 
+#include "autograd/ops.h"
 #include "core/check.h"
 #include "core/iterate.h"
+#include "core/random.h"
 
 namespace llm {
 namespace testing {
@@ -39,6 +41,23 @@ double evaluate(
 }
 
 }  // namespace
+
+Tensor random_tensor(const Shape& shape, std::uint64_t seed, float low,
+                     float high) {
+  Rng rng(seed);
+  Tensor tensor = Tensor::uninitialized(shape);
+  Span<float> values = tensor.flat();
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = rng.uniform(low, high);
+  }
+  return tensor;
+}
+
+autograd::Var weighted_sum(const autograd::Var& output, std::uint64_t seed) {
+  const autograd::Var weights =
+      autograd::Var::constant(random_tensor(output.shape(), seed));
+  return autograd::sum_all(autograd::mul(output, weights));
+}
 
 GradCheckResult gradcheck(
     const std::function<autograd::Var(const std::vector<autograd::Var>&)>& fn,

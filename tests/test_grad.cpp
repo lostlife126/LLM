@@ -8,35 +8,14 @@
 #include <vector>
 
 #include "autograd/ops.h"
-#include "core/random.h"
 #include "gradcheck.h"
 #include "testing.h"
 
 namespace {
 
 using llm::autograd::Var;
-
-llm::Tensor random_tensor(const llm::Shape& shape, std::uint64_t seed,
-                          float low = -1.0f, float high = 1.0f) {
-  llm::Rng rng(seed);
-  llm::Tensor tensor = llm::Tensor::uninitialized(shape);
-  llm::Span<float> values = tensor.flat();
-  for (std::size_t i = 0; i < values.size(); ++i) {
-    values[i] = rng.uniform(low, high);
-  }
-  return tensor;
-}
-
-// Свёртка результата в скаляр со случайными весами.
-//
-// Простая сумма скрыла бы целый класс ошибок: например, backward, который
-// раздаёт всем элементам одинаковый градиент вместо правильного, дал бы на
-// сумме верный ответ. Случайные веса делают скаляр чувствительным к каждому
-// элементу по отдельности.
-Var weighted_sum(const Var& out, std::uint64_t seed) {
-  const Var weights = Var::constant(random_tensor(out.shape(), seed));
-  return llm::autograd::sum_all(llm::autograd::mul(out, weights));
-}
+using llm::testing::random_tensor;
+using llm::testing::weighted_sum;
 
 }  // namespace
 

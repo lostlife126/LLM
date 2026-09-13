@@ -35,9 +35,14 @@ add_library(llm_core
   src/core/storage.cpp
   src/core/str_view.cpp
   src/core/tensor.cpp
+  src/autograd/nn.cpp
   src/autograd/node.cpp
   src/autograd/ops.cpp
   src/ops/elementwise.cpp
+  src/ops/embedding.cpp
+  src/ops/loss.cpp
+  src/ops/nn.cpp
+  src/ops/rope.cpp
   src/ops/gemm.cpp
   src/ops/matmul.cpp
   src/ops/reduce.cpp
@@ -59,6 +64,7 @@ add_executable(llm_tests
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_matmul.cpp
+  tests/test_nn.cpp
   tests/test_random.cpp
   tests/test_shape.cpp
   tests/test_span.cpp
@@ -79,6 +85,7 @@ set(LLM_TEST_SUITES
   Grad
   Gemm
   Matmul
+  Nn
   Rng
   Shape
   Span

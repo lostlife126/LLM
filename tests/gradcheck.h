@@ -24,6 +24,7 @@
 #ifndef LLM_TESTS_GRADCHECK_H_
 #define LLM_TESTS_GRADCHECK_H_
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -41,6 +42,18 @@ struct GradCheckResult {
 };
 
 // fn получает переменные, построенные из inputs, и обязана вернуть скаляр.
+// Детерминированный случайный тензор: тесты должны воспроизводиться.
+Tensor random_tensor(const Shape& shape, std::uint64_t seed, float low = -1.0f,
+                     float high = 1.0f);
+
+// Свёртка результата операции в скаляр со случайными весами.
+//
+// Простая сумма скрыла бы целый класс ошибок: backward, раздающий всем
+// элементам одинаковый градиент вместо правильного, на сумме дал бы верный
+// ответ. Случайные веса делают скаляр чувствительным к каждому элементу
+// по отдельности.
+autograd::Var weighted_sum(const autograd::Var& output, std::uint64_t seed);
+
 GradCheckResult gradcheck(
     const std::function<autograd::Var(const std::vector<autograd::Var>&)>& fn,
     const std::vector<Tensor>& inputs, float step = 1e-2f,
