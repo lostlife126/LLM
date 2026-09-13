@@ -53,6 +53,22 @@ inline std::string pad_utf8(const std::string& text, std::size_t width) {
   return text + std::string(width - characters, ' ');
 }
 
+// То же выравнивание, но текст прижимается вправо. Нужно для шапок числовых
+// столбцов: printf выравнивает по байтам, а в кириллице их вдвое больше, чем
+// символов, и шапка уезжает относительно чисел под ней.
+inline std::string pad_utf8_right(const std::string& text, std::size_t width) {
+  std::size_t characters = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
+      ++characters;
+    }
+  }
+  if (characters >= width) {
+    return text;
+  }
+  return std::string(width - characters, ' ') + text;
+}
+
 inline bool is_aligned(const void* pointer, std::size_t alignment) {
   LLM_DCHECK_NE(alignment, static_cast<std::size_t>(0));
   return reinterpret_cast<std::uintptr_t>(pointer) % alignment == 0;

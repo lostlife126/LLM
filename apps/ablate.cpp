@@ -183,7 +183,62 @@ struct Outcome {
         *std::max_element(validation_loss.begin(), validation_loss.end());
     return high - low;
   }
+
+  // Разность с базовым вариантом, взятая по каждому зерну отдельно.
+  //
+  // Сравнение здесь парное: у одинаковых зёрен совпадают и начальная
+  // инициализация, и порядок данных, то есть различаются прогоны ровно
+  // проверяемым решением. Поэтому разброс средних по зёрнам — неправильная
+  // линейка: он меряет, насколько зёрна отличаются друг от друга, а не
+  // насколько неустойчив эффект. Правильная линейка — разброс самих
+  // разностей: если по каждому зерну вариант проигрывает базовому примерно
+  // одинаково, эффект есть, даже когда он меньше расстояния между зёрнами.
+  std::vector<float> paired_delta(const Outcome& baseline) const {
+    std::vector<float> delta;
+    const std::size_t count =
+        validation_loss.size() < baseline.validation_loss.size()
+            ? validation_loss.size()
+            : baseline.validation_loss.size();
+    for (std::size_t i = 0; i < count; ++i) {
+      delta.push_back(validation_loss[i] - baseline.validation_loss[i]);
+    }
+    return delta;
+  }
 };
+
+float mean_of(const std::vector<float>& values) {
+  if (values.empty()) {
+    return 0.0f;
+  }
+  double total = 0.0;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    total += values[i];
+  }
+  return static_cast<float>(total / static_cast<double>(values.size()));
+}
+
+float spread_of(const std::vector<float>& values) {
+  if (values.size() < 2) {
+    return 0.0f;
+  }
+  return *std::max_element(values.begin(), values.end()) -
+         *std::min_element(values.begin(), values.end());
+}
+
+// Совпал ли знак разности у всех зёрен. Разошедшийся знак означает, что
+// вариант на одном зерне лучше базового, а на другом хуже, — то есть эффекта
+// нет независимо от того, чему равно среднее.
+bool sign_agrees(const std::vector<float>& delta) {
+  if (delta.size() < 2) {
+    return false;
+  }
+  for (std::size_t i = 1; i < delta.size(); ++i) {
+    if (delta[i] * delta[0] <= 0.0f) {
+      return false;
+    }
+  }
+  return true;
+}
 
 std::string read_file(const std::string& path) {
   std::ifstream file(path.c_str(), std::ios::binary);
@@ -244,7 +299,9 @@ int main(int argc, char** argv) {
 
   std::vector<Outcome> outcomes;
   for (std::size_t v = 0; v < variants.size(); ++v) {
-    if (!wanted.empty()) {
+    // Базовый вариант считается всегда: без него колонка разностей меряла бы
+    // расстояние до случайного варианта, попавшего в выборку первым.
+    if (!wanted.empty() && v != 0) {
       bool matched = false;
       for (std::size_t w = 0; w < wanted.size(); ++w) {
         if (variants[v].name.find(wanted[w]) != std::string::npos) {
@@ -296,20 +353,28 @@ int main(int argc, char** argv) {
 
   LLM_CHECK_MSG(!outcomes.empty(),
                 "фильтр '" << filter << "' ничего не выбрал");
-  const float baseline_spread = outcomes[0].spread();
+  const Outcome& baseline = outcomes[0];
 
-  std::printf("\n%s %10s %8s %8s %10s %8s\n",
-              llm::pad_utf8("вариант", 26).c_str(), "параметров", "потери",
-              "разброс", "перплексия", "к базе");
+  std::printf("\n%s %s %s %s %s %s %s\n", llm::pad_utf8("вариант", 26).c_str(),
+              llm::pad_utf8_right("параметров", 10).c_str(),
+              llm::pad_utf8_right("потери", 8).c_str(),
+              llm::pad_utf8_right("перплексия", 10).c_str(),
+              llm::pad_utf8_right("парный Δ", 8).c_str(),
+              llm::pad_utf8_right("разбр Δ", 8).c_str(),
+              llm::pad_utf8_right("знак", 6).c_str());
   std::printf(
       "----------------------------------------------------------------------"
-      "-----------\n");
+      "--------------\n");
   for (std::size_t i = 0; i < sorted.size(); ++i) {
-    const float delta = sorted[i].mean() - outcomes[0].mean();
-    std::printf("%s %10lld %8.4f %8.4f %10.1f %+8.4f\n",
+    const std::vector<float> delta = sorted[i].paired_delta(baseline);
+    const bool is_baseline = sorted[i].name == baseline.name;
+    const std::string verdict =
+        is_baseline ? "-" : (sign_agrees(delta) ? "да" : "нет");
+    std::printf("%s %10lld %8.4f %10.1f %+8.4f %8.4f %s\n",
                 llm::pad_utf8(sorted[i].name, 26).c_str(),
                 static_cast<long long>(sorted[i].parameters), sorted[i].mean(),
-                sorted[i].spread(), std::exp(sorted[i].mean()), delta);
+                std::exp(sorted[i].mean()), mean_of(delta), spread_of(delta),
+                llm::pad_utf8_right(verdict, 6).c_str());
   }
 
   std::printf("\nчто проверял каждый вариант:\n");
@@ -317,9 +382,23 @@ int main(int argc, char** argv) {
     std::printf("  %s %s\n", llm::pad_utf8(outcomes[i].name, 26).c_str(),
                 outcomes[i].question.c_str());
   }
+
+  // Две линейки, и путать их нельзя.
+  //
+  // Разброс базового варианта по зёрнам говорит, насколько вообще шумит
+  // обучение. Он велик: одно зерно обгоняет другое сильнее, чем половина
+  // проверяемых решений что-либо меняет.
+  //
+  // Но сравниваются варианты не по средним, а по зёрнам попарно, и парная
+  // разность шумит на порядок меньше — из неё общий для обоих прогонов шум
+  // вычитается. Поэтому решает столбец «разбр Δ» вместе со столбцом «знак»:
+  // если знак разошёлся, эффекта нет, каким бы ни было среднее.
   std::printf(
-      "\nразброс базового варианта по зёрнам: %.4f — различия меньше этого "
-      "обсуждать нельзя\n",
-      baseline_spread);
+      "\nразброс базового варианта по зёрнам: %.4f — столько шумит само "
+      "обучение\n",
+      baseline.spread());
+  std::printf(
+      "сравнение парное (зёрна и порядок данных совпадают), поэтому решает не "
+      "он,\nа разброс парных разностей и совпадение их знака\n");
   return 0;
 }
