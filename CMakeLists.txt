@@ -46,6 +46,8 @@ add_library(llm_core
   src/ops/gemm.cpp
   src/ops/matmul.cpp
   src/ops/reduce.cpp
+  src/nn/config.cpp
+  src/nn/model.cpp
   src/tokenizer/bpe.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -55,6 +57,9 @@ target_link_libraries(bench_gemm PRIVATE llm_core)
 
 add_executable(bpe_train apps/bpe_train.cpp)
 target_link_libraries(bpe_train PRIVATE llm_core)
+
+add_executable(bench_model apps/bench_model.cpp)
+target_link_libraries(bench_model PRIVATE llm_core)
 
 enable_testing()
 
@@ -69,6 +74,7 @@ add_executable(llm_tests
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_matmul.cpp
+  tests/test_model.cpp
   tests/test_nn.cpp
   tests/test_random.cpp
   tests/test_shape.cpp
@@ -91,6 +97,7 @@ set(LLM_TEST_SUITES
   Grad
   Gemm
   Matmul
+  Model
   Nn
   Rng
   Shape

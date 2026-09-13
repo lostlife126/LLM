@@ -44,6 +44,11 @@ Var matmul(const Var& a, const Var& b);
 
 // --- Изменение формы: значения те же, меняется только их описание ---
 Var reshape(const Var& input, const Shape& shape);
+
+// Растягивает оси размера 1 до нужного размера. Обратный проход — суммирование
+// по размноженным осям: если элемент поучаствовал в ста позициях, обратно на
+// него приходит сумма ста градиентов.
+Var expand(const Var& input, const Shape& shape);
 Var transpose(const Var& input, int axis_a, int axis_b);
 Var permute(const Var& input, const std::vector<int>& order);
 Var slice(const Var& input, int axis, int64_t start, int64_t count);

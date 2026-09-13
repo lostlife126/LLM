@@ -222,6 +222,14 @@ Var reshape(const Var& input, const Shape& shape) {
                     });
 }
 
+Var expand(const Var& input, const Shape& shape) {
+  const Shape input_shape = input.shape();
+  return make_unary(input, "expand", input.value().expand(shape),
+                    [input_shape](const Tensor& grad) {
+                      return ops::reduce_to_shape(grad, input_shape);
+                    });
+}
+
 Var transpose(const Var& input, int axis_a, int axis_b) {
   return make_unary(input, "transpose", input.value().transpose(axis_a, axis_b),
                     [axis_a, axis_b](const Tensor& grad) {

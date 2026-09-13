@@ -66,5 +66,6 @@ jobs:
           clang-format-18 --dry-run --Werror \
             src/core/*.h src/core/*.cpp src/ops/*.h src/ops/*.cpp \
             src/autograd/*.h src/autograd/*.cpp \
+            src/nn/*.h src/nn/*.cpp \
             src/tokenizer/*.h src/tokenizer/*.cpp \
             apps/*.cpp tests/*.h tests/*.cpp

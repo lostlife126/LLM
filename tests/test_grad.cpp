@@ -178,6 +178,17 @@ LLM_TEST(Grad, Reshape) {
       fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({2, 3}), 27)}));
 }
 
+LLM_TEST(Grad, Expand) {
+  // Ровно то растяжение, которым GQA размножает общую голову ключей на
+  // несколько голов запросов.
+  const auto fn = [](const std::vector<Var>& v) {
+    return weighted_sum(llm::autograd::expand(v[0], llm::Shape({2, 3, 4})),
+                        123);
+  };
+  LLM_EXPECT_GRADCHECK(
+      fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({2, 1, 4}), 36)}));
+}
+
 LLM_TEST(Grad, Transpose) {
   const auto fn = [](const std::vector<Var>& v) {
     return weighted_sum(llm::autograd::transpose(v[0], 0, 1), 118);
