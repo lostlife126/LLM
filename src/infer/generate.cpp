@@ -58,6 +58,10 @@ GenerateResult generate(nn::Model* model, const std::vector<int32_t>& prompt,
       on_token(token);
     }
 
+    if (config.stop_token >= 0 && token == config.stop_token) {
+      result.stop_reason = StopReason::kStopToken;
+      break;
+    }
     if (static_cast<int64_t>(tokens.size()) >= context) {
       result.stop_reason = StopReason::kContextFull;
       break;

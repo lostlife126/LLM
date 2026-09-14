@@ -5,6 +5,7 @@
 // нужно: совпадать обязано не устройство, а номера токенов, и ошибка в них
 // ничем себя не выдаёт.
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,122 @@ std::string with_pretokenizer(const std::string& block) {
 }
 
 }  // namespace
+
+LLM_TEST(HfTokenizer, ByteAlphabetMatchesTheReference) {
+  // Отображение байтов в печатные символы у GPT-2 не произвольное, а задано
+  // конкретным правилом, и словари чужих моделей записаны именно в нём.
+  // Опорные точки взяты не из головы, а посчитаны эталонной функцией
+  // bytes_to_unicode: печатные знаки идут сами в себя, остальные — подряд от
+  // U+0100 в порядке возрастания байта.
+  //
+  // Видно здесь и то, почему проверять надо на краях: 0x7F непечатный и
+  // уезжает в U+0121, а 0xFF печатный и остаётся собой; 0xAD (мягкий перенос)
+  // выпадает из диапазона печатных, а соседние 0xAC и 0xAE — нет.
+  const llm::HfTokenizer tokenizer =
+      llm::HfTokenizer::parse(kTinyTokenizer, "проба");
+
+  struct Anchor {
+    int byte;
+    const char* utf8;
+  };
+  const Anchor anchors[] = {
+      {0x00, "\xC4\x80"},  // U+0100
+      {0x0A, "\xC4\x8A"},  // U+010A, перевод строки
+      {0x20, "\xC4\xA0"},  // U+0120, пробел — тот самый Ġ
+      {0x21, "!"},         // печатный, сам в себя
+      {0x7E, "~"},         //
+      {0x7F, "\xC4\xA1"},  // U+0121, непечатный
+      {0xA0, "\xC5\x82"},  // U+0142
+      {0xA1, "\xC2\xA1"},  // U+00A1, печатный
+      {0xAD, "\xC5\x83"},  // U+0143, мягкий перенос — не печатный
+      {0xAE, "\xC2\xAE"},  // U+00AE, печатный
+      {0xFF, "\xC3\xBF"},  // U+00FF, печатный
+  };
+  const std::size_t count = sizeof(anchors) / sizeof(anchors[0]);
+  for (std::size_t i = 0; i < count; ++i) {
+    // Проверяем через decode: один токен, состоящий из символа алфавита,
+    // обязан дать ровно исходный байт.
+    const std::string symbol = anchors[i].utf8;
+    std::string patched = kTinyTokenizer;
+    const std::size_t at = patched.find("\"h\": 0");
+    LLM_CHECK(at != std::string::npos);
+    patched = patched.substr(0, at) + "\"" + symbol + "\": 0" +
+              patched.substr(at + 6);
+
+    const llm::HfTokenizer with_symbol =
+        llm::HfTokenizer::parse(patched, "проба");
+    const std::string decoded = with_symbol.decode(std::vector<int32_t>(1, 0));
+    LLM_CHECK_EQ(decoded.size(), static_cast<std::size_t>(1));
+    LLM_CHECK_EQ(static_cast<int>(static_cast<unsigned char>(decoded[0])),
+                 anchors[i].byte);
+  }
+  (void)tokenizer;
+}
+
+namespace {
+
+// Словарь с полным байтовым алфавитом, собранный по правилу GPT-2, выписанному
+// здесь заново. Заново — потому что сверять реализацию с самой собой
+// бессмысленно: общая ошибка прошла бы круг незамеченной.
+std::string full_alphabet_tokenizer() {
+  std::string vocab;
+  int next = 256;
+  for (int byte = 0; byte < 256; ++byte) {
+    const bool printable = (byte >= '!' && byte <= '~') ||
+                           (byte >= 0xA1 && byte <= 0xAC) || (byte >= 0xAE);
+    const int code = printable ? byte : next++;
+
+    // Символ записывается escape-последовательностью: так он попадает в JSON
+    // независимо от того, печатный он или нет.
+    char escaped[16];
+    std::snprintf(escaped, sizeof(escaped), "\\u%04x", code);
+    if (!vocab.empty()) {
+      vocab += ",";
+    }
+    vocab += std::string("\"") + escaped + "\":" + std::to_string(byte);
+  }
+  return std::string(
+             "{\"added_tokens\":[],\"pre_tokenizer\":{\"type\":\"ByteLevel\","
+             "\"add_prefix_space\":false,\"use_regex\":true},"
+             "\"decoder\":{\"type\":\"ByteLevel\"},"
+             "\"model\":{\"type\":\"BPE\",\"dropout\":null,"
+             "\"unk_token\":null,\"vocab\":{") +
+         vocab + "},\"merges\":[]}}";
+}
+
+}  // namespace
+
+LLM_TEST(HfTokenizer, AnyBytesSurviveTheRoundTrip) {
+  // Байт-левел BPE обязан быть обратим на любом входе, а не только на
+  // английском тексте. Это и есть причина, по которой байты отображаются в
+  // печатные символы: иначе словарь не смог бы их назвать.
+  const llm::HfTokenizer tokenizer =
+      llm::HfTokenizer::parse(full_alphabet_tokenizer(), "полный алфавит");
+  LLM_CHECK_EQ(tokenizer.vocab_size(), static_cast<int64_t>(256));
+
+  const char* const cases[] = {
+      "Hello world, the end.",
+      "привет мир",
+      "\xF0\x9F\x98\x80 emoji",
+      "  \t\n  разные   пробелы  ",
+      "1234567890",
+      "don't — тире и кавычки «ёлочки»",
+      "\xFF\xFE\x00\x01 сырые байты",
+  };
+  const std::size_t count = sizeof(cases) / sizeof(cases[0]);
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::string text = cases[i];
+    const std::vector<int32_t> ids = tokenizer.encode(text);
+    LLM_CHECK_MSG(tokenizer.decode(ids) == text,
+                  "не совпало на '" << text << "': получилось '"
+                                    << tokenizer.decode(ids) << "'");
+  }
+
+  // Без слияний каждый байт — свой токен, и это удобный способ убедиться, что
+  // алфавит покрывает всё: длина в токенах обязана равняться длине в байтах.
+  const std::string mixed = "aж日\xF0\x9F\x98\x80";
+  LLM_CHECK_EQ(tokenizer.encode(mixed).size(), mixed.size());
+}
 
 LLM_TEST(HfTokenizer, ReadsVocabularyAndMerges) {
   const llm::HfTokenizer tokenizer =
