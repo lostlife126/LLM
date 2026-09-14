@@ -85,6 +85,9 @@ target_link_libraries(ablate PRIVATE llm_core)
 add_executable(finetune apps/finetune.cpp)
 target_link_libraries(finetune PRIVATE llm_core)
 
+add_executable(import_hf apps/import_hf.cpp)
+target_link_libraries(import_hf PRIVATE llm_core)
+
 enable_testing()
 
 add_executable(llm_tests
