@@ -52,6 +52,9 @@ add_library(llm_core
   src/tokenizer/bpe.cpp
   src/data/dataset.cpp
   src/serialize/checkpoint.cpp
+  src/tokenizer/pretokenize.cpp
+  src/tokenizer/unicode_tables.cpp
+  src/tokenizer/utf8.cpp
   src/serialize/hf_config.cpp
   src/serialize/hf_import.cpp
   src/serialize/json.cpp
@@ -104,6 +107,7 @@ add_executable(llm_tests
   tests/test_infer.cpp
   tests/test_json.cpp
   tests/test_lora.cpp
+  tests/test_pretokenize.cpp
   tests/test_safetensors.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
@@ -137,6 +141,7 @@ set(LLM_TEST_SUITES
   Matmul
   Model
   Nn
+  Pretokenize
   Rng
   Safetensors
   Sampler
