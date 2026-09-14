@@ -53,6 +53,7 @@ add_library(llm_core
   src/data/dataset.cpp
   src/serialize/checkpoint.cpp
   src/serialize/json.cpp
+  src/serialize/safetensors.cpp
   src/train/optimizer.cpp
   src/train/schedule.cpp
   src/train/trainer.cpp
@@ -97,6 +98,7 @@ add_executable(llm_tests
   tests/test_infer.cpp
   tests/test_json.cpp
   tests/test_lora.cpp
+  tests/test_safetensors.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
   tests/test_nn.cpp
@@ -129,6 +131,7 @@ set(LLM_TEST_SUITES
   Model
   Nn
   Rng
+  Safetensors
   Sampler
   Shape
   Span
