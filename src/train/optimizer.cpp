@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "core/check.h"
 
@@ -21,6 +22,24 @@ AdamW::AdamW(std::vector<nn::NamedParameter> parameters,
     // нормировок) от него освобождены.
     apply_decay_.push_back(value.rank() >= 2);
   }
+}
+
+void AdamW::restore(std::vector<Tensor> first, std::vector<Tensor> second,
+                    int64_t step) {
+  LLM_CHECK_MSG(
+      first.size() == parameters_.size() && second.size() == parameters_.size(),
+      "в состоянии " << first.size() << " моментов, а параметров "
+                     << parameters_.size());
+  for (std::size_t i = 0; i < parameters_.size(); ++i) {
+    const Shape& expected = parameters_[i].value->value().shape();
+    LLM_CHECK_MSG(
+        first[i].shape() == expected && second[i].shape() == expected,
+        "у параметра " << parameters_[i].name << " момент другой формы");
+  }
+  LLM_CHECK_GE(step, static_cast<int64_t>(0));
+  first_moment_ = std::move(first);
+  second_moment_ = std::move(second);
+  step_ = step;
 }
 
 int64_t AdamW::decayed_parameter_count() const {

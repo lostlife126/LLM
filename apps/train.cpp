@@ -17,6 +17,7 @@
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
 #include "tokenizer/bpe.h"
+#include "train/resume.h"
 #include "train/trainer.h"
 
 namespace {
@@ -88,6 +89,18 @@ int main(int argc, char** argv) {
   name << ".llmw";
   train_config.checkpoint_path = output.empty() ? name.str() : output;
 
+  // Снимок для возобновления кладётся рядом с чекпоинтом. Если он уже есть,
+  // обучение продолжится с него — это важнее неожиданности: прогон на несколько
+  // часов переживает и перезапуск машины, и случайный Ctrl-C, а начать заново
+  // всегда можно, удалив снимок.
+  train_config.resume_path = train_config.checkpoint_path + ".resume";
+
+  const bool continuing = llm::train::resume_exists(train_config.resume_path);
+  if (continuing) {
+    std::printf("найден снимок %s — обучение продолжится с него\n",
+                train_config.resume_path.c_str());
+  }
+
   // Защита от того, что уже случилось однажды: короткий проверочный прогон
   // запустили с тем же пресетом, и он молча затёр модель, обучавшуюся два
   // часа. Заметно это стало только по качеству текста.
@@ -95,7 +108,7 @@ int main(int argc, char** argv) {
   // Отказ, а не предупреждение: предупреждение в потоке вывода обучения никто
   // не прочтёт. Явно указанный путь снимает проверку — значит намерение
   // выражено.
-  if (output.empty()) {
+  if (output.empty() && !continuing) {
     std::ifstream existing(train_config.checkpoint_path.c_str(),
                            std::ios::binary);
     if (existing.good()) {
@@ -117,6 +130,10 @@ int main(int argc, char** argv) {
       llm::train::train(&model, dataset, train_config);
 
   std::printf("\nготово за %.1f мин\n", report.seconds / 60.0);
+  if (report.resumed_from > 0) {
+    std::printf("продолжено с шага %lld\n",
+                static_cast<long long>(report.resumed_from));
+  }
   std::printf("потери: начало %.4f -> конец %.4f\n",
               report.train_loss.empty() ? 0.0f : report.train_loss.front(),
               report.final_train_loss);

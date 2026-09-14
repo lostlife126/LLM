@@ -64,6 +64,7 @@ add_library(llm_core
   src/serialize/safetensors.cpp
   src/train/optimizer.cpp
   src/train/schedule.cpp
+  src/train/resume.cpp
   src/train/trainer.cpp
   src/infer/sampler.cpp
   src/infer/generate.cpp

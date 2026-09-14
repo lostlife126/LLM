@@ -13,6 +13,7 @@
 #include "serialize/checkpoint.h"
 #include "testing.h"
 #include "train/optimizer.h"
+#include "train/resume.h"
 #include "train/schedule.h"
 #include "train/trainer.h"
 
@@ -613,4 +614,174 @@ LLM_TEST(Train, WithoutValidationFallsBackToPeriodicSaving) {
   LLM_CHECK_EQ(llm::serialize::load_checkpoint(path, &loaded),
                static_cast<std::int64_t>(20));
   std::remove(path.c_str());
+}
+
+LLM_TEST(Train, ResumedRunMatchesUninterruptedOne) {
+  // Главная проверка возобновления, и она же единственная убедительная:
+  // прогон, прерванный посередине и продолженный со снимка, обязан дать ровно
+  // те же потери, что и непрерывный. Побитово, а не «примерно».
+  //
+  // Совпасть должно всё сразу: веса, моменты Адама, счётчик шагов для поправки
+  // на смещение, положение в расписании скорости и порядок батчей. Ошибка в
+  // любом из пяти сдвинет числа, и видно это будет с первого же шага после
+  // возобновления.
+  const std::string snapshot = "test_resume.snap";
+  const ModelConfig config = test_config();
+
+  std::vector<int32_t> tokens;
+  for (int repeat = 0; repeat < 300; ++repeat) {
+    for (int i = 0; i < 7; ++i) {
+      tokens.push_back((i * 3 + 1) % static_cast<int>(config.vocab_size));
+    }
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.1);
+
+  llm::train::TrainConfig base;
+  base.steps = 40;
+  base.batch_size = 4;
+  base.seq_len = 8;
+  base.warmup_steps = 4;
+  base.max_learning_rate = 3e-3f;
+  base.log_every = 0;
+  base.diagnostics_every = 0;
+  base.eval_batches = 0;
+  base.verbose = false;
+
+  // Непрерывный прогон — эталон.
+  Model whole(config, 21);
+  const llm::train::TrainReport full = llm::train::train(&whole, dataset, base);
+  LLM_CHECK_EQ(full.train_loss.size(), static_cast<std::size_t>(40));
+
+  // Тот же прогон, прерванный на двадцатом шаге. Расписание прежнее: steps
+  // по-прежнему 40, меняется только то, докуда дошли за запуск.
+  std::remove(snapshot.c_str());
+  Model piece(config, 21);
+  llm::train::TrainConfig first = base;
+  first.resume_path = snapshot;
+  first.checkpoint_every = 10;
+  first.stop_at_step = 20;
+  const llm::train::TrainReport part_one =
+      llm::train::train(&piece, dataset, first);
+  LLM_CHECK_EQ(part_one.train_loss.size(), static_cast<std::size_t>(20));
+
+  // Продолжение в свежей модели: так проверяется, что из снимка поднимается
+  // всё нужное, а не что-то осталось в памяти от прошлого прогона.
+  Model continued(config, 999);  // другое зерно, значит другие начальные веса
+  llm::train::TrainConfig second = base;
+  second.resume_path = snapshot;
+  second.checkpoint_every = 10;
+  const llm::train::TrainReport part_two =
+      llm::train::train(&continued, dataset, second);
+
+  LLM_CHECK_EQ(part_two.resumed_from, static_cast<std::int64_t>(20));
+  LLM_CHECK_EQ(part_two.train_loss.size(), static_cast<std::size_t>(20));
+
+  for (std::size_t i = 0; i < part_two.train_loss.size(); ++i) {
+    const float expected = full.train_loss[20 + i];
+    LLM_CHECK_MSG(part_two.train_loss[i] == expected,
+                  "шаг " << (21 + i) << " после возобновления: "
+                         << part_two.train_loss[i] << " вместо " << expected);
+  }
+  // Нормы градиента тоже: они чувствительнее потерь и поймают расхождение,
+  // которое потери успели бы сгладить.
+  for (std::size_t i = 0; i < part_two.grad_norm.size(); ++i) {
+    LLM_CHECK_EQ(part_two.grad_norm[i], full.grad_norm[20 + i]);
+  }
+  std::remove(snapshot.c_str());
+}
+
+LLM_TEST(Train, ResumeWithoutOptimizerStateWouldDiffer) {
+  // Проверка самой проверки: если бы моменты Адама не восстанавливались,
+  // совпадение выше было бы недостижимо. Убеждаемся, что это действительно
+  // так, а не что тест сошёлся бы при любой реализации.
+  //
+  // Модель поднимается из снимка обычным чекпоинтом — то есть с весами, но
+  // без моментов, — и первые же шаги обязаны разойтись с эталоном.
+  const std::string snapshot = "test_resume_control.snap";
+  const std::string checkpoint = "test_resume_control.llmw";
+  const ModelConfig config = test_config();
+
+  std::vector<int32_t> tokens;
+  for (int repeat = 0; repeat < 300; ++repeat) {
+    for (int i = 0; i < 7; ++i) {
+      tokens.push_back((i * 5 + 2) % static_cast<int>(config.vocab_size));
+    }
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.1);
+
+  llm::train::TrainConfig base;
+  base.steps = 40;
+  base.batch_size = 4;
+  base.seq_len = 8;
+  base.warmup_steps = 4;
+  base.max_learning_rate = 3e-3f;
+  base.log_every = 0;
+  base.diagnostics_every = 0;
+  base.eval_batches = 0;
+  base.verbose = false;
+
+  Model whole(config, 31);
+  const llm::train::TrainReport full = llm::train::train(&whole, dataset, base);
+
+  std::remove(snapshot.c_str());
+  Model piece(config, 31);
+  llm::train::TrainConfig first = base;
+  first.resume_path = snapshot;
+  first.checkpoint_path = checkpoint;
+  first.checkpoint_every = 20;
+  first.stop_at_step = 20;
+  llm::train::train(&piece, dataset, first);
+
+  // Продолжение только с весов: моменты нулевые, счётчик шагов нулевой.
+  Model without_moments(config, 999);
+  llm::serialize::load_checkpoint(checkpoint, &without_moments);
+  llm::train::TrainConfig tail = base;
+  tail.steps = 20;
+  tail.warmup_steps = 0;
+  const llm::train::TrainReport naive =
+      llm::train::train(&without_moments, dataset, tail);
+
+  bool differs = false;
+  for (std::size_t i = 0; i < naive.train_loss.size(); ++i) {
+    if (naive.train_loss[i] != full.train_loss[20 + i]) {
+      differs = true;
+    }
+  }
+  LLM_CHECK_MSG(differs,
+                "продолжение без моментов совпало с эталоном — значит "
+                "совпадение в предыдущем тесте ничего не доказывает");
+
+  std::remove(snapshot.c_str());
+  std::remove(checkpoint.c_str());
+}
+
+LLM_TEST(Train, ResumeRefusesAnotherModel) {
+  const std::string snapshot = "test_resume_other.snap";
+  std::remove(snapshot.c_str());
+
+  ModelConfig config = test_config();
+  Model model(config, 5);
+  llm::train::AdamWConfig adam;
+  llm::train::AdamW optimizer(model.trainable_parameters(), adam);
+
+  llm::train::ResumeState state;
+  state.step = 7;
+  llm::train::save_resume(snapshot, &model, optimizer, state);
+
+  ModelConfig other = config;
+  other.n_layers = 3;
+  Model different(other, 5);
+  llm::train::AdamW other_optimizer(different.trainable_parameters(), adam);
+  LLM_EXPECT_THROWS(
+      llm::train::load_resume(snapshot, &different, &other_optimizer));
+
+  // Тот же снимок в ту же модель читается и возвращает записанное.
+  Model same(config, 999);
+  llm::train::AdamW same_optimizer(same.trainable_parameters(), adam);
+  const llm::train::ResumeState back =
+      llm::train::load_resume(snapshot, &same, &same_optimizer);
+  LLM_CHECK_EQ(back.step, static_cast<std::int64_t>(7));
+  LLM_CHECK_EQ(same_optimizer.step_count(), static_cast<std::int64_t>(7));
+
+  std::remove(snapshot.c_str());
 }

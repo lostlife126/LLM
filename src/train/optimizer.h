@@ -78,6 +78,20 @@ class AdamW {
   // Число параметров, к которым применяется распад веса.
   int64_t decayed_parameter_count() const;
 
+  // Моменты и счётчик шагов — наружу ради возобновления прерванного обучения.
+  //
+  // Без них продолжить нельзя: Адам накапливает оценки первого и второго
+  // момента градиента, и обучение, начатое с нуля от середины, первые сотни
+  // шагов идёт вслепую. Счётчик нужен для поправки на смещение, которая от
+  // него и зависит.
+  const std::vector<Tensor>& first_moment() const { return first_moment_; }
+  const std::vector<Tensor>& second_moment() const { return second_moment_; }
+
+  // Восстанавливает состояние. Формы обязаны совпадать с параметрами: иначе
+  // это состояние от другой модели, и продолжать с него нельзя.
+  void restore(std::vector<Tensor> first, std::vector<Tensor> second,
+               int64_t step);
+
  private:
   std::vector<nn::NamedParameter> parameters_;
   std::vector<Tensor> first_moment_;

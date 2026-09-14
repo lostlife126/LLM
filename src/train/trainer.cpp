@@ -10,6 +10,7 @@
 #include "core/util.h"
 #include "nn/dropout.h"
 #include "serialize/checkpoint.h"
+#include "train/resume.h"
 
 namespace llm {
 namespace train {
@@ -242,6 +243,38 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
   bool saved_best = false;
   const Clock::time_point start_time = Clock::now();
 
+  // Возобновление. Веса и моменты берутся из снимка, а порядок батчей
+  // переигрывается: генератор создан с тем же зерном, и достаточно прокрутить
+  // выборку столько раз, сколько шагов уже сделано. Так порядок совпадает не
+  // «примерно», а по построению, и хранить состояние генератора не нужно.
+  int64_t start_step = 0;
+  if (!config.resume_path.empty() && resume_exists(config.resume_path)) {
+    const ResumeState state =
+        load_resume(config.resume_path, model, &optimizer);
+    start_step = state.step;
+    report.best_validation_loss = state.best_validation_loss;
+    report.best_step = state.best_step;
+    report.resumed_from = start_step;
+    LLM_CHECK_MSG(start_step <= config.steps,
+                  "снимок сделан на шаге " << start_step
+                                           << ", а расписание кончается на "
+                                           << config.steps);
+    for (int64_t skipped = 0; skipped < start_step; ++skipped) {
+      dataset.sample_batch(config.batch_size, seq, &rng, false);
+    }
+    if (config.verbose) {
+      std::printf("возобновлено с шага %lld, лучшее пока %.4f на шаге %lld\n",
+                  static_cast<long long>(start_step),
+                  state.best_validation_loss,
+                  static_cast<long long>(state.best_step));
+    }
+  }
+
+  const int64_t stop_step =
+      config.stop_at_step > 0 && config.stop_at_step < config.steps
+          ? config.stop_at_step
+          : config.steps;
+
   if (config.verbose) {
     std::printf(
         "параметров: %lld, обучаемых: %lld, из них с распадом веса: %lld\n",
@@ -253,11 +286,13 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
                 static_cast<long long>(dataset.validation_size()));
   }
 
-  for (int64_t step = 0; step < config.steps; ++step) {
+  for (int64_t step = start_step; step < stop_step; ++step) {
     const std::vector<int32_t> ids =
         dataset.sample_batch(config.batch_size, seq, &rng, false);
 
-    const bool last = step + 1 == config.steps;
+    // «Последний» — последний в этом запуске, а не в расписании: на нём надо
+    // снять диагностику и сохраниться, даже если расписание не кончилось.
+    const bool last = step + 1 == stop_step;
     const bool wants_log =
         config.log_every > 0 && ((step + 1) % config.log_every == 0 || last);
     const bool wants_diagnostics =
@@ -375,6 +410,18 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
         !config.checkpoint_path.empty() &&
         ((step + 1) % config.checkpoint_every == 0 || last)) {
       serialize::save_checkpoint(config.checkpoint_path, model, step + 1);
+    }
+
+    // Снимок пишется по тому же расписанию, что и чекпоинт, и обязательно на
+    // последнем шаге запуска: иначе прерванный прогон потеряет всё, что успел
+    // после предыдущего сохранения.
+    if (!config.resume_path.empty() && config.checkpoint_every > 0 &&
+        ((step + 1) % config.checkpoint_every == 0 || last)) {
+      ResumeState state;
+      state.step = step + 1;
+      state.best_validation_loss = report.best_validation_loss;
+      state.best_step = report.best_step;
+      save_resume(config.resume_path, model, optimizer, state);
     }
   }
 
