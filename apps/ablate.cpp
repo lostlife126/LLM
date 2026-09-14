@@ -329,7 +329,6 @@ int main(int argc, char** argv) {
       // инициализация, поэтому разброс отражает именно её.
       train_config.seed = 777;
       train_config.log_every = 0;
-      train_config.eval_every = steps;
       train_config.eval_batches = 16;
       train_config.verbose = false;
 

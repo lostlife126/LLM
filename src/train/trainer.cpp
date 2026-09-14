@@ -236,6 +236,9 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
 
   Rng rng(config.seed);
   TrainReport report;
+  // Стало ли сохранение «лучшим». Пока не стало, работает периодическое: иначе
+  // прогон без проверочной выборки не сохранил бы ничего.
+  bool saved_best = false;
   const Clock::time_point start_time = Clock::now();
 
   if (config.verbose) {
@@ -320,10 +323,25 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
       // тонула в шуме: она скакала от -0.15 до +0.27 без всякой системы, то
       // есть не говорила ничего.
       nn::ForwardStats shown = stats;
-      if (config.eval_batches > 0) {
+      // Ноль проверочных батчей бывает не только по просьбе, но и когда
+      // выборка короче одного окна. Тогда evaluate вернул бы ноль, и этот
+      // ноль стал бы «лучшим» результатом навсегда.
+      if (config.eval_batches > 0 &&
+          dataset.validation_batch_count(config.batch_size, seq) > 0) {
         validation = evaluate(model, dataset, config.batch_size, seq,
                               config.eval_batches, &shown);
         report.final_validation_loss = validation;
+
+        if (report.best_step == 0 || validation < report.best_validation_loss) {
+          report.best_validation_loss = validation;
+          report.best_step = step + 1;
+          // Сохраняем ровно здесь, а не в конце: к концу этот набор весов уже
+          // не существует.
+          if (config.keep_best && !config.checkpoint_path.empty()) {
+            serialize::save_checkpoint(config.checkpoint_path, model, step + 1);
+            saved_best = true;
+          }
+        }
       }
       report.final_accuracy = shown.top1_accuracy;
       report.final_prediction_entropy = shown.prediction_entropy;
@@ -337,7 +355,11 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
         std::fflush(stdout);
       }
     }
-    if (config.checkpoint_every > 0 && !config.checkpoint_path.empty() &&
+    // Периодическое сохранение остаётся для случая, когда мерить нечем: без
+    // проверочной выборки «лучший» определить невозможно, и последний —
+    // единственный разумный выбор.
+    if (!saved_best && config.checkpoint_every > 0 &&
+        !config.checkpoint_path.empty() &&
         ((step + 1) % config.checkpoint_every == 0 || last)) {
       serialize::save_checkpoint(config.checkpoint_path, model, step + 1);
     }

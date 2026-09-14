@@ -79,6 +79,19 @@ int main(int argc, char** argv) {
               report.train_loss.empty() ? 0.0f : report.train_loss.front(),
               report.final_train_loss);
   std::printf("проверочные потери: %.4f\n", report.final_validation_loss);
+
+  // Расхождение лучшего шага с последним — это переобучение, видимое одним
+  // числом. Молчать о нём нельзя: прогон выглядит успешным (обучающие потери
+  // падают до конца), а модель тем временем портится.
+  if (report.best_step > 0 && report.best_step < steps) {
+    std::printf(
+        "ЛУЧШЕЕ БЫЛО РАНЬШЕ: %.4f на шаге %lld из %lld, дальше только хуже\n",
+        report.best_validation_loss, static_cast<long long>(report.best_step),
+        static_cast<long long>(steps));
+    std::printf("  разница с концом прогона: %+.4f\n",
+                report.final_validation_loss - report.best_validation_loss);
+    std::printf("  сохранён именно лучший\n");
+  }
   std::printf("чекпоинт: %s\n", train_config.checkpoint_path.c_str());
   return 0;
 }

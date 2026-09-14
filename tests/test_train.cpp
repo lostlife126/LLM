@@ -498,7 +498,6 @@ LLM_TEST(Train, TrainingReducesLossOnRealData) {
   train_config.warmup_steps = 5;
   train_config.max_learning_rate = 3e-3f;
   train_config.log_every = 0;
-  train_config.eval_every = 60;
   train_config.verbose = false;
 
   const llm::train::TrainReport report =
@@ -513,4 +512,103 @@ LLM_TEST(Train, TrainingReducesLossOnRealData) {
   for (std::size_t i = 0; i < report.grad_norm.size(); ++i) {
     LLM_CHECK(std::isfinite(report.grad_norm[i]));
   }
+}
+
+LLM_TEST(Train, KeepsBestCheckpointNotLast) {
+  // Проверочные потери проходят минимум и дальше растут. Если сохранять
+  // последний чекпоинт, на диске окажется переобученная модель, а лучшая
+  // будет затёрта — ровно это случилось на первом длинном прогоне tiny, где
+  // минимум пришёлся на тысячный шаг из трёх тысяч.
+  //
+  // Чтобы переобучение случилось быстро и наверняка, корпус делается крошечным
+  // и случайным: обобщать в нём нечего, запомнить можно целиком.
+  const std::string path = "test_best_checkpoint.llmw";
+  ModelConfig config = test_config();
+  Model model(config, 77);
+
+  std::vector<int32_t> tokens;
+  llm::Rng rng(5);
+  for (int i = 0; i < 300; ++i) {
+    tokens.push_back(static_cast<int32_t>(
+        rng.index(static_cast<std::uint64_t>(config.vocab_size))));
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.2);
+
+  llm::train::TrainConfig train_config;
+  train_config.steps = 400;
+  train_config.batch_size = 4;
+  train_config.seq_len = 8;
+  train_config.warmup_steps = 5;
+  train_config.max_learning_rate = 5e-3f;
+  train_config.log_every = 0;
+  train_config.diagnostics_every = 50;
+  train_config.eval_batches = 2;
+  train_config.checkpoint_path = path;
+  train_config.checkpoint_every = train_config.steps;
+  train_config.verbose = false;
+
+  const llm::train::TrainReport report =
+      llm::train::train(&model, dataset, train_config);
+
+  // Проверка обязана быть содержательной: если переобучения не случилось,
+  // лучший чекпоинт совпадёт с последним, и тест пройдёт, ничего не проверив.
+  LLM_CHECK_MSG(report.best_step > 0 && report.best_step < train_config.steps,
+                "переобучение не случилось (лучший шаг "
+                    << report.best_step << " из " << train_config.steps
+                    << "), и проверка ничего не значит");
+  LLM_CHECK_MSG(
+      report.best_validation_loss < report.final_validation_loss,
+      "проверочные потери не выросли: " << report.best_validation_loss << " -> "
+                                        << report.final_validation_loss);
+
+  // На диске обязан лежать именно лучший, и узнать это можно по записанному
+  // в чекпоинт номеру шага.
+  Model loaded(config, 999);
+  const std::int64_t step = llm::serialize::load_checkpoint(path, &loaded);
+  LLM_CHECK_MSG(step == report.best_step, "сохранён шаг " << step
+                                                          << ", а лучший был "
+                                                          << report.best_step);
+
+  // И это должна быть именно та модель: проверочные потери загруженной
+  // обязаны совпасть с лучшими.
+  const float reloaded = llm::train::evaluate(&loaded, dataset, 4, 8, 4);
+  LLM_EXPECT_NEAR(reloaded, report.best_validation_loss, 1e-5);
+
+  std::remove(path.c_str());
+}
+
+LLM_TEST(Train, WithoutValidationFallsBackToPeriodicSaving) {
+  // Без проверочной выборки «лучший» определить нечем, и сохраняться должен
+  // последний — иначе прогон не сохранил бы ничего вовсе.
+  const std::string path = "test_periodic_checkpoint.llmw";
+  const ModelConfig config = test_config();
+  Model model(config, 3);
+
+  std::vector<int32_t> tokens;
+  for (int repeat = 0; repeat < 200; ++repeat) {
+    for (int i = 0; i < 7; ++i) {
+      tokens.push_back((i * 3 + 1) % static_cast<int>(config.vocab_size));
+    }
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.0);
+
+  llm::train::TrainConfig train_config;
+  train_config.steps = 20;
+  train_config.batch_size = 4;
+  train_config.seq_len = 8;
+  train_config.warmup_steps = 2;
+  train_config.log_every = 0;
+  train_config.eval_batches = 0;
+  train_config.checkpoint_path = path;
+  train_config.checkpoint_every = 10;
+  train_config.verbose = false;
+
+  const llm::train::TrainReport report =
+      llm::train::train(&model, dataset, train_config);
+  LLM_CHECK_EQ(report.best_step, static_cast<std::int64_t>(0));
+
+  Model loaded(config, 1);
+  LLM_CHECK_EQ(llm::serialize::load_checkpoint(path, &loaded),
+               static_cast<std::int64_t>(20));
+  std::remove(path.c_str());
 }

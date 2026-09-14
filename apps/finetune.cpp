@@ -93,7 +93,6 @@ int main(int argc, char** argv) {
   train_config.batch_size = 16;
   train_config.warmup_steps = steps / 20 + 1;
   train_config.log_every = 0;
-  train_config.eval_every = steps;
   train_config.eval_batches = 16;
   train_config.verbose = false;
 
