@@ -52,6 +52,7 @@ add_library(llm_core
   src/tokenizer/bpe.cpp
   src/data/dataset.cpp
   src/serialize/checkpoint.cpp
+  src/serialize/json.cpp
   src/train/optimizer.cpp
   src/train/schedule.cpp
   src/train/trainer.cpp
@@ -94,6 +95,7 @@ add_executable(llm_tests
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_infer.cpp
+  tests/test_json.cpp
   tests/test_lora.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
@@ -120,6 +122,7 @@ set(LLM_TEST_SUITES
   Elementwise
   Grad
   Infer
+  Json
   Lora
   Gemm
   Matmul
