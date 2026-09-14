@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 
+#include "core/check.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
@@ -37,7 +38,7 @@ int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
                  "использование: %s <корпус.txt> <словарь.bpe> [пресет] "
-                 "[шагов] [батч] [дропаут]\n",
+                 "[шагов] [батч] [дропаут] [зерно] [выход.llmw]\n",
                  argv[0]);
     return 1;
   }
@@ -48,6 +49,9 @@ int main(int argc, char** argv) {
   const int64_t batch = argc > 5 ? std::atoll(argv[5]) : 16;
   const float dropout =
       argc > 6 ? static_cast<float>(std::atof(argv[6])) : 0.0f;
+  const uint64_t seed =
+      argc > 7 ? static_cast<uint64_t>(std::atoll(argv[7])) : 1234;
+  const std::string output = argc > 8 ? argv[8] : std::string();
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(preset);
@@ -65,13 +69,15 @@ int main(int argc, char** argv) {
   const llm::data::TokenDataset dataset =
       llm::data::TokenDataset::from_text(text, tokenizer, 0.1);
 
-  llm::nn::Model model(config, 1234);
+  llm::nn::Model model(config, seed);
 
   llm::train::TrainConfig train_config;
   train_config.steps = steps;
   train_config.batch_size = batch;
   train_config.warmup_steps = steps / 20 + 1;
   train_config.checkpoint_every = steps / 4 > 0 ? steps / 4 : steps;
+  train_config.seed = seed;
+
   // Имя чекпоинта включает дропаут: иначе прогоны с разными его значениями
   // затирали бы друг друга, и сравнивать было бы нечего.
   std::ostringstream name;
@@ -80,7 +86,32 @@ int main(int argc, char** argv) {
     name << "_drop" << dropout;
   }
   name << ".llmw";
-  train_config.checkpoint_path = name.str();
+  train_config.checkpoint_path = output.empty() ? name.str() : output;
+
+  // Защита от того, что уже случилось однажды: короткий проверочный прогон
+  // запустили с тем же пресетом, и он молча затёр модель, обучавшуюся два
+  // часа. Заметно это стало только по качеству текста.
+  //
+  // Отказ, а не предупреждение: предупреждение в потоке вывода обучения никто
+  // не прочтёт. Явно указанный путь снимает проверку — значит намерение
+  // выражено.
+  if (output.empty()) {
+    std::ifstream existing(train_config.checkpoint_path.c_str(),
+                           std::ios::binary);
+    if (existing.good()) {
+      existing.close();
+      llm::nn::Model probe(
+          llm::serialize::read_config(train_config.checkpoint_path), 1);
+      const int64_t done =
+          llm::serialize::load_checkpoint(train_config.checkpoint_path, &probe);
+      LLM_CHECK_MSG(done < steps,
+                    "в " << train_config.checkpoint_path << " лежит модель, "
+                         << "обученная до шага " << done
+                         << ", а этот прогон дойдёт только до " << steps
+                         << ". Перезаписывать её молча нельзя; укажите путь "
+                            "последним аргументом, если так и задумано");
+    }
+  }
 
   const llm::train::TrainReport report =
       llm::train::train(&model, dataset, train_config);
