@@ -38,6 +38,7 @@ add_library(llm_core
   src/autograd/nn.cpp
   src/autograd/node.cpp
   src/autograd/ops.cpp
+  src/ops/dropout.cpp
   src/ops/elementwise.cpp
   src/ops/embedding.cpp
   src/ops/loss.cpp
@@ -47,6 +48,7 @@ add_library(llm_core
   src/ops/matmul.cpp
   src/ops/reduce.cpp
   src/nn/config.cpp
+  src/nn/dropout.cpp
   src/nn/kv_cache.cpp
   src/nn/model.cpp
   src/tokenizer/bpe.cpp
@@ -101,6 +103,7 @@ add_executable(llm_tests
   tests/test_autograd.cpp
   tests/test_bpe.cpp
   tests/test_check.cpp
+  tests/test_dropout.cpp
   tests/test_elementwise.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
@@ -133,6 +136,7 @@ set(LLM_TEST_SUITES
   Autograd
   Bpe
   Check
+  Dropout
   Elementwise
   Grad
   Hf

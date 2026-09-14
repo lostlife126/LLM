@@ -408,15 +408,17 @@ LLM_TEST(Train, ReadsOlderCheckpointFormat) {
   // эмбеддингов.
   const std::size_t after_v1 = 4 + 4 + 4 + 4 + 7 * 8 + 3 * 4 + 1;
   // Версия 2 добавила четыре байта развилок, версия 3 — байт QK-нормы и
-  // коэффициент z-loss.
+  // коэффициент z-loss, версия 4 — вероятность дропаута.
   const std::size_t v2_fields = 4;
   const std::size_t v3_fields = 1 + 4;
-  LLM_CHECK_GT(bytes.size(), after_v1 + v2_fields + v3_fields);
+  const std::size_t v4_fields = 4;
+  const std::size_t added = v2_fields + v3_fields + v4_fields;
+  LLM_CHECK_GT(bytes.size(), after_v1 + added);
   bytes[4] = 1;  // версия 1
   bytes[5] = 0;
   bytes[6] = 0;
   bytes[7] = 0;
-  bytes.erase(after_v1, v2_fields + v3_fields);
+  bytes.erase(after_v1, added);
 
   const std::string old_path = "test_v1.llmw";
   {

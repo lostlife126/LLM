@@ -12,7 +12,7 @@ namespace {
 
 const uint32_t kMagic = 0x574d4c4cu;  // "LLMW" в little-endian
 const uint32_t kVersion =
-    3;  // 2 — архитектурные развилки, 3 — QK-норма и z-loss
+    4;  // 2 — развилки, 3 — QK-норма и z-loss, 4 — дропаут
 
 // Метка представления чисел. Если файл читают на машине с другим порядком
 // байтов или другим форматом float, эти два значения не совпадут, и загрузка
@@ -65,6 +65,7 @@ void write_config(std::ofstream* file, const nn::ModelConfig& config) {
   write_pod<uint8_t>(file, config.post_norm ? 1 : 0);
   write_pod<uint8_t>(file, config.qk_norm ? 1 : 0);
   write_pod<float>(file, config.z_loss_coef);
+  write_pod<float>(file, config.dropout);
 }
 
 // Версия 1 не знала про архитектурные развилки. Их значения по умолчанию —
@@ -95,6 +96,11 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path,
   if (version >= 3) {
     config.qk_norm = read_pod<uint8_t>(file, path) != 0;
     config.z_loss_coef = read_pod<float>(file, path);
+  }
+  if (version >= 4) {
+    // Дропаут на веса не влияет вовсе — он существует только при обучении, —
+    // поэтому старые чекпоинты читаются с нулём и остаются правильными.
+    config.dropout = read_pod<float>(file, path);
   }
   config.validate();
   return config;

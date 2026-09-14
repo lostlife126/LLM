@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
                  "использование: %s <корпус.txt> <словарь.bpe> [пресет] "
-                 "[шагов] [батч]\n",
+                 "[шагов] [батч] [дропаут]\n",
                  argv[0]);
     return 1;
   }
@@ -46,6 +46,8 @@ int main(int argc, char** argv) {
   const std::string preset = argc > 3 ? argv[3] : "nano";
   const int64_t steps = argc > 4 ? std::atoll(argv[4]) : 2000;
   const int64_t batch = argc > 5 ? std::atoll(argv[5]) : 16;
+  const float dropout =
+      argc > 6 ? static_cast<float>(std::atof(argv[6])) : 0.0f;
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(preset);
@@ -54,6 +56,7 @@ int main(int argc, char** argv) {
   // файла: расхождение здесь проявилось бы не ошибкой, а бессмысленным
   // обучением.
   config.vocab_size = tokenizer.vocab_size();
+  config.dropout = dropout;
   config.validate();
 
   std::printf("модель: %s\n", config.to_string().c_str());
@@ -69,7 +72,15 @@ int main(int argc, char** argv) {
   train_config.batch_size = batch;
   train_config.warmup_steps = steps / 20 + 1;
   train_config.checkpoint_every = steps / 4 > 0 ? steps / 4 : steps;
-  train_config.checkpoint_path = "data/" + preset + ".llmw";
+  // Имя чекпоинта включает дропаут: иначе прогоны с разными его значениями
+  // затирали бы друг друга, и сравнивать было бы нечего.
+  std::ostringstream name;
+  name << "data/" << preset;
+  if (dropout > 0.0f) {
+    name << "_drop" << dropout;
+  }
+  name << ".llmw";
+  train_config.checkpoint_path = name.str();
 
   const llm::train::TrainReport report =
       llm::train::train(&model, dataset, train_config);

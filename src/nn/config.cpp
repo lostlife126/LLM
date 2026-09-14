@@ -15,6 +15,10 @@ void ModelConfig::validate() const {
   LLM_CHECK_GT(n_kv_heads, static_cast<int64_t>(0));
   LLM_CHECK_GT(max_seq_len, static_cast<int64_t>(0));
   LLM_CHECK_GT(ffn_hidden, static_cast<int64_t>(0));
+  LLM_CHECK_MSG(dropout >= 0.0f && dropout < 1.0f,
+                "вероятность дропаута " << dropout
+                                        << " должна быть в [0, 1); единица "
+                                           "занулила бы оба подслоя целиком");
 
   LLM_CHECK_MSG(
       d_model % n_heads == 0,
@@ -89,6 +93,9 @@ std::string ModelConfig::to_string() const {
   if (z_loss_coef > 0.0f) {
     oss << " z_loss=" << z_loss_coef;
   }
+  if (dropout > 0.0f) {
+    oss << " dropout=" << dropout;
+  }
   oss << (tie_embeddings ? " tied" : " untied");
   oss << " params=" << parameter_count();
   return oss.str();
@@ -156,7 +163,7 @@ bool operator==(const ModelConfig& lhs, const ModelConfig& rhs) {
          lhs.tie_embeddings == rhs.tie_embeddings && lhs.norm == rhs.norm &&
          lhs.position == rhs.position && lhs.ffn == rhs.ffn &&
          lhs.post_norm == rhs.post_norm && lhs.qk_norm == rhs.qk_norm &&
-         lhs.z_loss_coef == rhs.z_loss_coef;
+         lhs.z_loss_coef == rhs.z_loss_coef && lhs.dropout == rhs.dropout;
 }
 
 bool operator!=(const ModelConfig& lhs, const ModelConfig& rhs) {

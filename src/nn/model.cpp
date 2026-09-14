@@ -6,6 +6,7 @@
 #include "autograd/nn.h"
 #include "autograd/ops.h"
 #include "core/check.h"
+#include "nn/dropout.h"
 #include "ops/elementwise.h"
 #include "ops/loss.h"
 #include "ops/matmul.h"
@@ -428,18 +429,26 @@ Var Block::forward(const Var& input, int64_t position_offset, KvCache* cache,
     // Нормируется уже сумма остатка и подслоя, то есть нормировка стоит на
     // пути остатка.
     const Var attended =
-        attention_.forward(input, position_offset, cache, layer, stats);
+        dropout(attention_.forward(input, position_offset, cache, layer, stats),
+                config_.dropout);
     const Var after_attention =
         attention_norm_.forward(autograd::add(input, attended));
-    const Var transformed = mlp_.forward(after_attention, stats);
+    const Var transformed =
+        dropout(mlp_.forward(after_attention, stats), config_.dropout);
     output = mlp_norm_.forward(autograd::add(after_attention, transformed));
   } else {
     // Пре-нормировка: путь остатка от выхода к входу — чистое сложение.
-    const Var attended = attention_.forward(
-        attention_norm_.forward(input), position_offset, cache, layer, stats);
+    // Дропаут стоит на выходе подслоя, до сложения с остатком. Это
+    // общепринятое место: путь остатка остаётся чистым, а зануляется только
+    // поправка, которую подслой к нему добавляет.
+    const Var attended =
+        dropout(attention_.forward(attention_norm_.forward(input),
+                                   position_offset, cache, layer, stats),
+                config_.dropout);
     const Var after_attention = autograd::add(input, attended);
     const Var transformed =
-        mlp_.forward(mlp_norm_.forward(after_attention), stats);
+        dropout(mlp_.forward(mlp_norm_.forward(after_attention), stats),
+                config_.dropout);
     output = autograd::add(after_attention, transformed);
   }
 

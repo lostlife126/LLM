@@ -8,6 +8,7 @@
 
 #include "core/check.h"
 #include "core/util.h"
+#include "nn/dropout.h"
 #include "serialize/checkpoint.h"
 
 namespace llm {
@@ -270,14 +271,26 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
     nn::ForwardStats* stats_pointer =
         (wants_log || wants_diagnostics) ? &stats : nullptr;
 
-    autograd::Var loss =
-        model->loss(ids, config.batch_size, seq, stats_pointer);
-    const float loss_value = *loss.value().data();
-    LLM_CHECK_MSG(std::isfinite(loss_value),
-                  "потери перестали быть конечными на шаге " << step);
+    // Режим обучения включается ровно на прямой и обратный проход шага.
+    // Дальше по коду идут оценка на проверочной выборке и диагностика, и там
+    // дропаут был бы прямым враньём: проверочные потери зависели бы от
+    // случайной маски.
+    //
+    // Зерно связано с номером шага, поэтому маски у каждого шага свои, но весь
+    // прогон воспроизводится в точности.
+    float loss_value = 0.0f;
+    autograd::Var loss;
+    {
+      const nn::TrainingScope training(config.seed * 1000003u +
+                                       static_cast<uint64_t>(step));
+      loss = model->loss(ids, config.batch_size, seq, stats_pointer);
+      loss_value = *loss.value().data();
+      LLM_CHECK_MSG(std::isfinite(loss_value),
+                    "потери перестали быть конечными на шаге " << step);
 
-    optimizer.zero_grad();
-    loss.backward();
+      optimizer.zero_grad();
+      loss.backward();
+    }
     const float norm = optimizer.clip_grad_norm(config.grad_clip);
     const float learning_rate = learning_rate_at(schedule, step);
     optimizer.step(learning_rate);
