@@ -52,6 +52,7 @@ add_library(llm_core
   src/tokenizer/bpe.cpp
   src/data/dataset.cpp
   src/serialize/checkpoint.cpp
+  src/tokenizer/hf_tokenizer.cpp
   src/tokenizer/pretokenize.cpp
   src/tokenizer/unicode_tables.cpp
   src/tokenizer/utf8.cpp
@@ -104,6 +105,7 @@ add_executable(llm_tests
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_hf.cpp
+  tests/test_hf_tokenizer.cpp
   tests/test_infer.cpp
   tests/test_json.cpp
   tests/test_lora.cpp
@@ -134,6 +136,7 @@ set(LLM_TEST_SUITES
   Elementwise
   Grad
   Hf
+  HfTokenizer
   Infer
   Json
   Lora
