@@ -13,7 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "core/cpu.h"
 #include "core/random.h"
+#include "core/thread_pool.h"
 #include "nn/model.h"
 
 namespace {
@@ -41,6 +43,9 @@ int main(int argc, char** argv) {
   const int64_t seq = config.max_seq_len;
   const std::vector<int32_t> ids = random_ids(batch * seq, config.vocab_size);
 
+  std::printf("процессор: %s, ядер %d, потоков в работе %d\n",
+              llm::cpu_features().to_string().c_str(), llm::detect_core_count(),
+              llm::parallel_width());
   std::printf("пресет %s: %s\n", preset.c_str(), config.to_string().c_str());
   std::printf("батч %lld x %lld = %lld токенов на шаг\n",
               static_cast<long long>(batch), static_cast<long long>(seq),
@@ -84,9 +89,14 @@ int main(int argc, char** argv) {
 
   // Оценка полезной арифметики: 6 * параметров * токенов — общепринятое
   // приближение для прямого и обратного прохода вместе.
+  //
+  // Пик умножения матриц не подставляется числом: он зависит от машины, от
+  // выбранного микроядра и от числа потоков, и зашитая константа врала бы при
+  // каждом из этих изменений. Считать его надо ./bench_gemm, там же, где
+  // считается этот замер.
   const double flops = 6.0 * static_cast<double>(config.parameter_count()) *
                        static_cast<double>(batch * seq);
-  std::printf("эффективно %.1f GFLOPS (при пике GEMM около 21)\n",
+  std::printf("эффективно %.1f GFLOPS (пик умножения матриц — ./bench_gemm)\n",
               flops / step_seconds / 1e9);
   return 0;
 }

@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "core/check.h"
+#include "ops/parallel.h"
 
 namespace llm {
 namespace ops {
@@ -31,27 +32,40 @@ Tensor cross_entropy(const Tensor& logits,
   const Tensor dense = logits.contiguous();
   const float* data = dense.data();
 
-  double total = 0.0;
-  for (int64_t row = 0; row < rows; ++row) {
-    const float* row_data = data + row * vocab;
-    const int64_t target = targets[static_cast<std::size_t>(row)];
-    LLM_CHECK_MSG(target >= 0 && target < vocab,
-                  "цель " << target << " вне словаря размера " << vocab);
+  // Сумма по строкам делится на фиксированное число частей: порядок сложения
+  // влияет на младшие разряды, а значение потерь не должно зависеть от числа
+  // ядер — иначе сравнение вариантов обучения теряет смысл.
+  double partial[kSumParts] = {};
+  for_row_parts(rows, vocab, [&](int64_t part, int64_t first, int64_t last) {
+    double sum = 0.0;
+    for (int64_t row = first; row < last; ++row) {
+      const float* row_data = data + row * vocab;
+      const int64_t target = targets[static_cast<std::size_t>(row)];
+      LLM_CHECK_MSG(target >= 0 && target < vocab,
+                    "цель " << target << " вне словаря размера " << vocab);
 
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int64_t i = 0; i < vocab; ++i) {
-      if (row_data[i] > maximum) {
-        maximum = row_data[i];
+      float maximum = -std::numeric_limits<float>::infinity();
+      for (int64_t i = 0; i < vocab; ++i) {
+        if (row_data[i] > maximum) {
+          maximum = row_data[i];
+        }
       }
+      double sum_exp = 0.0;
+      for (int64_t i = 0; i < vocab; ++i) {
+        sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
+      }
+      // -log p[target] = logsumexp(logits) - logits[target], и вычитание
+      // максимума делает обе части конечными при любых логитах.
+      const double log_sum_exp =
+          static_cast<double>(maximum) + std::log(sum_exp);
+      sum += log_sum_exp - static_cast<double>(row_data[target]);
     }
-    double sum_exp = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
-    }
-    // -log p[target] = logsumexp(logits) - logits[target], и вычитание
-    // максимума делает обе части конечными при любых логитах.
-    const double log_sum_exp = static_cast<double>(maximum) + std::log(sum_exp);
-    total += log_sum_exp - static_cast<double>(row_data[target]);
+    partial[part] = sum;
+  });
+
+  double total = 0.0;
+  for (int64_t part = 0; part < kSumParts; ++part) {
+    total += partial[part];
   }
 
   Tensor out = Tensor::uninitialized(Shape());
@@ -72,7 +86,8 @@ Tensor cross_entropy_backward(const Tensor& logits,
   float* grad = out.data();
   const float scale = 1.0f / static_cast<float>(rows);
 
-  for (int64_t row = 0; row < rows; ++row) {
+  // Строки независимы: у каждой свой softmax и своя цель.
+  for_rows(rows, vocab, [&](int64_t row) {
     const float* row_data = data + row * vocab;
     float* grad_row = grad + row * vocab;
 
@@ -95,7 +110,7 @@ Tensor cross_entropy_backward(const Tensor& logits,
     // Вычесть единицу в позиции правильного токена — вся разница между
     // предсказанным распределением и целевым.
     grad_row[targets[static_cast<std::size_t>(row)]] -= scale;
-  }
+  });
   return out;
 }
 
@@ -125,10 +140,19 @@ Tensor z_loss(const Tensor& logits) {
   const Tensor dense = logits.contiguous();
   const float* data = dense.data();
 
+  double partial[kSumParts] = {};
+  for_row_parts(rows, vocab, [&](int64_t part, int64_t first, int64_t last) {
+    double sum = 0.0;
+    for (int64_t row = first; row < last; ++row) {
+      const double z = row_log_sum_exp(data + row * vocab, vocab);
+      sum += z * z;
+    }
+    partial[part] = sum;
+  });
+
   double total = 0.0;
-  for (int64_t row = 0; row < rows; ++row) {
-    const double z = row_log_sum_exp(data + row * vocab, vocab);
-    total += z * z;
+  for (int64_t part = 0; part < kSumParts; ++part) {
+    total += partial[part];
   }
 
   Tensor out = Tensor::uninitialized(Shape());
@@ -147,7 +171,7 @@ Tensor z_loss_backward(const Tensor& logits, float grad_output) {
   Tensor out = Tensor::uninitialized(logits.shape());
   float* grad = out.data();
 
-  for (int64_t row = 0; row < rows; ++row) {
+  for_rows(rows, vocab, [&](int64_t row) {
     const float* row_data = data + row * vocab;
     float* grad_row = grad + row * vocab;
 
@@ -170,7 +194,7 @@ Tensor z_loss_backward(const Tensor& logits, float grad_output) {
     for (int64_t i = 0; i < vocab; ++i) {
       grad_row[i] = static_cast<float>(grad_row[i] * scale);
     }
-  }
+  });
   return out;
 }
 
@@ -183,41 +207,58 @@ PredictionStats prediction_stats(const Tensor& logits,
   const Tensor dense = logits.contiguous();
   const float* data = dense.data();
 
+  int64_t partial_correct[kSumParts] = {};
+  double partial_entropy[kSumParts] = {};
+  double partial_log_z[kSumParts] = {};
+
+  for_row_parts(rows, vocab, [&](int64_t part, int64_t first, int64_t last) {
+    int64_t correct_part = 0;
+    double entropy_part = 0.0;
+    double log_z_part = 0.0;
+    for (int64_t row = first; row < last; ++row) {
+      const float* row_data = data + row * vocab;
+
+      float maximum = -std::numeric_limits<float>::infinity();
+      int64_t best = 0;
+      for (int64_t i = 0; i < vocab; ++i) {
+        if (row_data[i] > maximum) {
+          maximum = row_data[i];
+          best = i;
+        }
+      }
+      if (best == targets[static_cast<std::size_t>(row)]) {
+        ++correct_part;
+      }
+
+      double sum_exp = 0.0;
+      for (int64_t i = 0; i < vocab; ++i) {
+        sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
+      }
+      // Энтропия через логарифм суммы экспонент: H = log(S) + max - E[x], где
+      // ожидание берётся по самому распределению. Так не нужен отдельный проход
+      // с материализацией вероятностей.
+      const double log_sum = std::log(sum_exp);
+      double weighted = 0.0;
+      for (int64_t i = 0; i < vocab; ++i) {
+        const double probability =
+            std::exp(static_cast<double>(row_data[i] - maximum)) / sum_exp;
+        weighted += probability * static_cast<double>(row_data[i] - maximum);
+      }
+      entropy_part += log_sum - weighted;
+      log_z_part += log_sum + static_cast<double>(maximum);
+    }
+    partial_correct[part] = correct_part;
+    partial_entropy[part] = entropy_part;
+    partial_log_z[part] = log_z_part;
+  });
+
   int64_t correct = 0;
   double entropy_total = 0.0;
   double log_z_total = 0.0;
-
-  for (int64_t row = 0; row < rows; ++row) {
-    const float* row_data = data + row * vocab;
-
-    float maximum = -std::numeric_limits<float>::infinity();
-    int64_t best = 0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      if (row_data[i] > maximum) {
-        maximum = row_data[i];
-        best = i;
-      }
-    }
-    if (best == targets[static_cast<std::size_t>(row)]) {
-      ++correct;
-    }
-
-    double sum_exp = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
-    }
-    // Энтропия через логарифм суммы экспонент: H = log(S) + max - E[x], где
-    // ожидание берётся по самому распределению. Так не нужен отдельный проход
-    // с материализацией вероятностей.
-    const double log_sum = std::log(sum_exp);
-    double weighted = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      const double probability =
-          std::exp(static_cast<double>(row_data[i] - maximum)) / sum_exp;
-      weighted += probability * static_cast<double>(row_data[i] - maximum);
-    }
-    entropy_total += log_sum - weighted;
-    log_z_total += log_sum + static_cast<double>(maximum);
+  for (int64_t part = 0; part < kSumParts; ++part) {
+    correct += partial_correct[part];
+    entropy_total += partial_entropy[part];
+    log_z_total += partial_log_z[part];
   }
 
   PredictionStats stats;
@@ -237,9 +278,8 @@ std::vector<float> per_row_loss(const Tensor& logits,
   const Tensor dense = logits.contiguous();
   const float* data = dense.data();
 
-  std::vector<float> losses;
-  losses.reserve(static_cast<std::size_t>(rows));
-  for (int64_t row = 0; row < rows; ++row) {
+  std::vector<float> losses(static_cast<std::size_t>(rows), 0.0f);
+  for_rows(rows, vocab, [&](int64_t row) {
     const float* row_data = data + row * vocab;
     float maximum = -std::numeric_limits<float>::infinity();
     for (int64_t i = 0; i < vocab; ++i) {
@@ -250,10 +290,10 @@ std::vector<float> per_row_loss(const Tensor& logits,
       sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
     }
     const double log_sum_exp = static_cast<double>(maximum) + std::log(sum_exp);
-    losses.push_back(static_cast<float>(
+    losses[static_cast<std::size_t>(row)] = static_cast<float>(
         log_sum_exp -
-        static_cast<double>(row_data[targets[static_cast<std::size_t>(row)]])));
-  }
+        static_cast<double>(row_data[targets[static_cast<std::size_t>(row)]]));
+  });
   return losses;
 }
 

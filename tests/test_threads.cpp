@@ -203,3 +203,24 @@ LLM_TEST(Threads, WidthIsClampedAndRestorable) {
   }
   LLM_CHECK_EQ(llm::parallel_width(), automatic);
 }
+
+LLM_TEST(Threads, VaryingTaskCountsDoNotLoseTasks) {
+  // Число задач меняется от области к области, и это не праздный случай.
+  // Именно он вскрыл гонку: пул будит ровно столько потоков, сколько нужно, и
+  // поток, проснувшийся с опозданием и в свою область не принятый, читал
+  // число участников уже от следующей. Проявлялось это не потерянной задачей,
+  // а счётчиком незавершённых, уходящим ниже нуля, — то есть зависанием.
+  //
+  // Проверка поэтому не только в том, что все задачи выполнены, но и в том,
+  // что тест вообще завершается.
+  const int width = llm::parallel_width();
+  for (int round = 0; round < 200; ++round) {
+    const int tasks = 1 + (round % (width + 2));
+    std::vector<int> visits(static_cast<std::size_t>(tasks), 0);
+    llm::parallel_for(
+        tasks, [&](int index) { ++visits[static_cast<std::size_t>(index)]; });
+    for (int i = 0; i < tasks; ++i) {
+      LLM_CHECK_EQ(visits[static_cast<std::size_t>(i)], 1);
+    }
+  }
+}

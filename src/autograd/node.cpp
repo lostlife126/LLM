@@ -4,7 +4,7 @@
 #include <unordered_set>
 
 #include "core/check.h"
-#include "core/iterate.h"
+#include "ops/elementwise.h"
 
 namespace llm {
 namespace autograd {
@@ -24,11 +24,10 @@ void Node::accumulate(const Tensor& contribution) {
   LLM_CHECK_MSG(grad_.shape() == contribution.shape(),
                 "вклад формы " << contribution.shape() << " в градиент формы "
                                << grad_.shape() << " (узел " << name_ << ")");
-  float* target = grad_.data();
-  const float* source = contribution.data();
-  for_each_offset2(
-      grad_.shape(), grad_.strides(), contribution.strides(),
-      [&](int64_t to, int64_t from) { target[to] += source[from]; });
+  // Прибавка идёт через ops::add_into: там обход кусками и деление по
+  // потокам, а накопление градиента — одно из самых частых действий обратного
+  // прохода.
+  ops::add_into(contribution, &grad_);
 }
 
 void Node::scale_grad(float factor) {

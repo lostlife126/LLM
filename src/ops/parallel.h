@@ -1,0 +1,89 @@
+// Деление работы между потоками внутри операций.
+//
+// Здесь собраны три способа поделить работу, и все три встречаются в операциях
+// по многу раз. Смысл вынести их сюда — не сокращение кода, а одно место, где
+// записан выбор зерна и правило про порядок суммирования.
+//
+// Зерно. Вход в параллельную область стоит около двух микросекунд, это
+// измерено. Отсюда и величина зерна: столько элементов, сколько поток успевает
+// пройти за это время, с запасом на порядок. Делить мелкую работу — значит
+// замедлить её: на квадрате 32 деление умножения матриц уже не окупалось.
+//
+// Порядок суммирования. Там, где операция складывает значения по всем строкам
+// — градиент веса нормировки, значение функции потерь, — порядок сложения
+// влияет на младшие разряды результата. Поэтому сумма делится на фиксированное
+// число частей, не зависящее от числа ядер, и частичные суммы складываются в
+// порядке номеров. Иначе обучение с одним зерном давало бы разные модели на
+// машинах с разным числом ядер, и сравнивать варианты стало бы нечем.
+
+#ifndef LLM_OPS_PARALLEL_H_
+#define LLM_OPS_PARALLEL_H_
+
+#include <algorithm>
+#include <cstdint>
+
+#include "core/thread_pool.h"
+
+namespace llm {
+namespace ops {
+
+// Сколько элементов стоит отдавать одному потоку.
+constexpr int64_t kElementGrain = 4096;
+
+// Наименьший объём работы, при котором деление окупается.
+constexpr int64_t kMinParallelWork = 1 << 14;
+
+// На сколько частей делится сумма по строкам. Восемь — чтобы делилось и на
+// два ядра, и на четыре.
+constexpr int64_t kSumParts = 8;
+
+// Плоский обход: fn применяется к каждому элементу независимо.
+template <typename Fn>
+void for_elements(int64_t total, Fn fn) {
+  parallel_range(total, kElementGrain, [&](int64_t begin, int64_t end) {
+    for (int64_t i = begin; i < end; ++i) {
+      fn(i);
+    }
+  });
+}
+
+// Обход по строкам: fn применяется к каждой строке независимо.
+//
+// Зерно задаётся в строках и потому зависит от длины строки: у softmax
+// внимания строка длиной 64, у слоя предсказания — размера словаря, и делить
+// их одинаковым числом строк было бы неверно.
+template <typename Fn>
+void for_rows(int64_t rows, int64_t width, Fn fn) {
+  const int64_t grain =
+      std::max<int64_t>(1, kElementGrain / std::max<int64_t>(width, 1));
+  parallel_range(rows, grain, [&](int64_t begin, int64_t end) {
+    for (int64_t row = begin; row < end; ++row) {
+      fn(row);
+    }
+  });
+}
+
+// Обход частями: fn(part, begin, end) для каждой из kSumParts частей.
+//
+// Границы частей зависят только от числа строк, поэтому и результат
+// суммирования не зависит от числа потоков — см. заголовок файла.
+template <typename Fn>
+void for_row_parts(int64_t rows, int64_t width, Fn fn) {
+  const int64_t parts = std::max<int64_t>(1, std::min<int64_t>(rows, kSumParts));
+  const auto body = [&](int64_t part) {
+    fn(part, rows * part / parts, rows * (part + 1) / parts);
+  };
+  if (parts == 1 || rows * width < kMinParallelWork) {
+    for (int64_t part = 0; part < parts; ++part) {
+      body(part);
+    }
+    return;
+  }
+  parallel_for(static_cast<int>(parts),
+               [&](int task) { body(static_cast<int64_t>(task)); });
+}
+
+}  // namespace ops
+}  // namespace llm
+
+#endif  // LLM_OPS_PARALLEL_H_

@@ -49,6 +49,26 @@ inline void spin_pause() {
 #endif
 }
 
+// Поколение области и число её участников лежат в одном атомарном слове:
+// поколение в старших разрядах, число участников в младших.
+//
+// Раздельно читать их нельзя, и это не осторожность, а исправленная ошибка.
+// Поток, проснувшийся с опозданием, прочитал бы поколение своей области, а
+// число участников — уже следующей; решив, что он в неё принят, он уменьшил бы
+// её счётчик незавершённых, не будучи в нём учтён, а затем, проснувшись
+// законно, уменьшил бы его второй раз. Счётчик ушёл бы ниже нуля, и ожидание
+// в run() не закончилось бы никогда. Атомарное слово делает пару
+// согласованной по построению.
+constexpr int kWorkerBits = 16;
+
+std::uint64_t make_epoch(std::uint64_t generation, int workers) {
+  return (generation << kWorkerBits) | static_cast<std::uint64_t>(workers);
+}
+
+int epoch_workers(std::uint64_t epoch) {
+  return static_cast<int>(epoch & ((1u << kWorkerBits) - 1));
+}
+
 class Pool {
  public:
   explicit Pool(int extra_threads) {
@@ -63,7 +83,8 @@ class Pool {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       stopping_.store(true, std::memory_order_relaxed);
-      generation_.fetch_add(1, std::memory_order_release);
+      ++generation_;
+      epoch_.store(make_epoch(generation_, 0), std::memory_order_release);
     }
     start_.notify_all();
     for (std::size_t i = 0; i < threads_.size(); ++i) {
@@ -101,16 +122,16 @@ class Pool {
       std::lock_guard<std::mutex> lock(mutex_);
       job_ = &task;
       job_tasks_ = tasks;
-      job_workers_ = workers;
       next_.store(0, std::memory_order_relaxed);
       busy_.store(workers, std::memory_order_relaxed);
       failure_ = nullptr;
-      // Счётчик поколений меняется под мьютексом сознательно. Вращающийся
-      // поток читает его без мьютекса и увидит новое значение сразу, а вот
-      // засыпающий проверяет условие, держа мьютекс, — и если бы поколение
+      // Слово области меняется под мьютексом сознательно. Вращающийся поток
+      // читает его без мьютекса и увидит новое значение сразу, а вот
+      // засыпающий проверяет условие, держа мьютекс, — и если бы слово
       // менялось снаружи, оповещение могло бы попасть точно между проверкой
       // условия и засыпанием и потеряться. Так пул встал бы намертво.
-      generation_.fetch_add(1, std::memory_order_release);
+      ++generation_;
+      epoch_.store(make_epoch(generation_, workers), std::memory_order_release);
     }
     start_.notify_all();
 
@@ -121,13 +142,14 @@ class Pool {
 
     wait_for_workers(workers);
 
+    // Описание области намеренно не сбрасывается. Сброс был бы записью,
+    // которую мог бы прочитать поток, проснувшийся с опозданием и в эту
+    // область не принятый; перезапишет его следующая область, а она не
+    // начнётся, пока не вернётся этот вызов.
     std::exception_ptr failure;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       failure = failure_;
-      job_ = nullptr;
-      job_tasks_ = 0;
-      job_workers_ = 0;
     }
     if (failure) {
       std::rethrow_exception(failure);
@@ -135,12 +157,13 @@ class Pool {
   }
 
  private:
-  // Ждёт новое поколение. Возвращает false, если пора заканчивать.
+  // Ждёт новую область. Возвращает false, если пора заканчивать.
   bool wait_for_work(std::uint64_t* seen) {
     const Clock::time_point deadline = Clock::now() + kSpinWindow;
     for (int spin = 0;; ++spin) {
-      if (generation_.load(std::memory_order_acquire) != *seen) {
-        *seen = generation_.load(std::memory_order_acquire);
+      const std::uint64_t epoch = epoch_.load(std::memory_order_acquire);
+      if (epoch != *seen) {
+        *seen = epoch;
         return !stopping_.load(std::memory_order_relaxed);
       }
       spin_pause();
@@ -154,9 +177,9 @@ class Pool {
 
     std::unique_lock<std::mutex> lock(mutex_);
     start_.wait(lock, [this, seen]() {
-      return generation_.load(std::memory_order_relaxed) != *seen;
+      return epoch_.load(std::memory_order_relaxed) != *seen;
     });
-    *seen = generation_.load(std::memory_order_relaxed);
+    *seen = epoch_.load(std::memory_order_relaxed);
     return !stopping_.load(std::memory_order_relaxed);
   }
 
@@ -193,8 +216,9 @@ class Pool {
         return;
       }
       // В область могло войти меньше потоков, чем создано. Лишние просто
-      // возвращаются к ожиданию и счётчик завершения не трогают.
-      if (index >= job_workers_) {
+      // возвращаются к ожиданию и счётчик завершения не трогают. Число
+      // участников берётся из того же слова, что и поколение, — см. выше.
+      if (index >= epoch_workers(seen)) {
         continue;
       }
       drain();
@@ -234,14 +258,17 @@ class Pool {
   std::condition_variable start_;
   std::condition_variable finish_;
 
-  // Описание текущей области. Пишется под mutex_ до увеличения поколения,
-  // читается после того, как поколение увидено: выпуск и захват на
-  // generation_ и делают эту передачу безопасной без мьютекса на чтении.
+  // Описание текущей области. Пишется под mutex_ до записи слова области,
+  // читается участниками после того, как слово увидено: выпуск и захват на
+  // epoch_ и делают эту передачу безопасной без мьютекса на чтении. Читают
+  // эти поля только участники, и только пока область не закончилась, — а
+  // перезаписать их может лишь следующая область, которая до тех пор не
+  // начнётся.
   const std::function<void(int)>* job_ = nullptr;
   int job_tasks_ = 0;
-  int job_workers_ = 0;
 
-  std::atomic<std::uint64_t> generation_{0};
+  std::atomic<std::uint64_t> epoch_{0};
+  std::uint64_t generation_ = 0;  // под mutex_
   std::atomic<int> next_{0};
   std::atomic<int> busy_{0};
   std::atomic<bool> stopping_{false};
@@ -298,6 +325,30 @@ void set_parallel_width(int width) {
 
 void parallel_for(int tasks, const std::function<void(int)>& task) {
   pool().run(tasks, task);
+}
+
+void parallel_range(std::int64_t count, std::int64_t grain,
+                    const std::function<void(std::int64_t, std::int64_t)>& fn) {
+  if (count <= 0) {
+    return;
+  }
+  const std::int64_t step = std::max<std::int64_t>(grain, 1);
+  const int width = parallel_width();
+  const int tasks = static_cast<int>(
+      std::max<std::int64_t>(1, std::min<std::int64_t>(width, count / step)));
+  if (tasks == 1) {
+    fn(0, count);
+    return;
+  }
+  parallel_for(tasks, [count, tasks, &fn](int index) {
+    // Границы считаются от номера куска, а не накоплением: так номер
+    // однозначно определяет отрезок, и куски не разъезжаются при округлении.
+    const std::int64_t begin = count * index / tasks;
+    const std::int64_t end = count * (index + 1) / tasks;
+    if (begin < end) {
+      fn(begin, end);
+    }
+  });
 }
 
 bool inside_parallel_region() { return g_inside_region; }

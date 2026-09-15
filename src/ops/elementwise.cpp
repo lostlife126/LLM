@@ -1,13 +1,21 @@
 #include "ops/elementwise.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/check.h"
 #include "core/iterate.h"
+#include "core/thread_pool.h"
 
 namespace llm {
 namespace ops {
 namespace {
+
+// Сколько элементов стоит отдавать одному потоку. Поэлементная операция
+// упирается в память, а не в арифметику: вход в параллельную область стоит
+// около двух микросекунд, за которые поток успевает пройти порядка десяти
+// килобайт.
+constexpr int64_t kElementGrain = 1 << 14;
 
 template <typename Fn>
 Tensor binary_op(const Tensor& a, const Tensor& b, Fn fn) {
@@ -27,19 +35,38 @@ Tensor binary_op(const Tensor& a, const Tensor& b, Fn fn) {
   // Быстрый путь: оба аргумента уже нужной формы и плотные — обходимся без
   // одометра. Это самый частый случай, и он же самый горячий.
   if (a_view.is_contiguous() && b_view.is_contiguous()) {
-    const int64_t total = out.numel();
-    for (int64_t i = 0; i < total; ++i) {
-      out_data[i] = fn(a_data[i], b_data[i]);
-    }
+    parallel_range(out.numel(), kElementGrain, [&](int64_t begin, int64_t end) {
+      for (int64_t i = begin; i < end; ++i) {
+        out_data[i] = fn(a_data[i], b_data[i]);
+      }
+    });
     return out;
   }
 
-  int64_t written = 0;
-  for_each_offset2(result, a_view.strides(), b_view.strides(),
-                   [&](int64_t a_offset, int64_t b_offset) {
-                     out_data[written++] =
-                         fn(a_data[a_offset], b_data[b_offset]);
-                   });
+  // Медленный путь: хотя бы один аргумент растянут или с перестановленными
+  // осями. Обход идёт кусками по обоим наборам шагов сразу — у растянутого
+  // аргумента шаг внутри куска оказывается нулевым, и цикл всё равно остаётся
+  // простым.
+  const BlockWalkN<2> walk =
+      block_walk2(result, a_view.strides(), b_view.strides());
+  const int64_t run = walk.run();
+  const int64_t a_step = walk.run_stride(0);
+  const int64_t b_step = walk.run_stride(1);
+  const int64_t grain =
+      std::max<int64_t>(1, kElementGrain / std::max<int64_t>(run, 1));
+  parallel_range(walk.blocks(), grain, [&](int64_t begin, int64_t end) {
+    BlockWalkN<2>::Cursor cursor = walk.at(begin);
+    float* dst = out_data + begin * run;
+    for (int64_t block = begin; block < end; ++block) {
+      const float* left = a_data + cursor.offset(0);
+      const float* right = b_data + cursor.offset(1);
+      for (int64_t i = 0; i < run; ++i) {
+        dst[i] = fn(left[i * a_step], right[i * b_step]);
+      }
+      dst += run;
+      cursor.advance();
+    }
+  });
   return out;
 }
 
@@ -51,10 +78,70 @@ Tensor unary_op(const Tensor& input, Fn fn) {
   }
   const float* in = input.data();
   float* result = out.data();
-  int64_t written = 0;
-  for_each_offset(input.shape(), input.strides(),
-                  [&](int64_t offset) { result[written++] = fn(in[offset]); });
+
+  if (input.is_contiguous()) {
+    parallel_range(out.numel(), kElementGrain, [&](int64_t begin, int64_t end) {
+      for (int64_t i = begin; i < end; ++i) {
+        result[i] = fn(in[i]);
+      }
+    });
+    return out;
+  }
+
+  const BlockWalkN<1> walk = block_walk(input.shape(), input.strides());
+  const int64_t run = walk.run();
+  const int64_t step = walk.run_stride(0);
+  const int64_t grain =
+      std::max<int64_t>(1, kElementGrain / std::max<int64_t>(run, 1));
+  parallel_range(walk.blocks(), grain, [&](int64_t begin, int64_t end) {
+    BlockWalkN<1>::Cursor cursor = walk.at(begin);
+    float* dst = result + begin * run;
+    for (int64_t block = begin; block < end; ++block) {
+      const float* src = in + cursor.offset(0);
+      for (int64_t i = 0; i < run; ++i) {
+        dst[i] = fn(src[i * step]);
+      }
+      dst += run;
+      cursor.advance();
+    }
+  });
   return out;
+}
+
+// Запись или прибавка одного тензора в другой, на месте. Оба обходятся
+// кусками: у цели шаги свои, и медленный поэлементный обход здесь ничем не
+// оправдан — на прибавке градиента в накопитель он один из самых горячих.
+void copy_or_add(const Tensor& source, Tensor* target, bool add) {
+  if (target->numel() == 0) {
+    return;
+  }
+  const float* in = source.data();
+  float* out = target->data();
+  const BlockWalkN<2> walk =
+      block_walk2(target->shape(), target->strides(), source.strides());
+  const int64_t run = walk.run();
+  const int64_t out_step = walk.run_stride(0);
+  const int64_t in_step = walk.run_stride(1);
+  const int64_t grain =
+      std::max<int64_t>(1, kElementGrain / std::max<int64_t>(run, 1));
+
+  parallel_range(walk.blocks(), grain, [&](int64_t begin, int64_t end) {
+    BlockWalkN<2>::Cursor cursor = walk.at(begin);
+    for (int64_t block = begin; block < end; ++block) {
+      float* dst = out + cursor.offset(0);
+      const float* src = in + cursor.offset(1);
+      if (add) {
+        for (int64_t i = 0; i < run; ++i) {
+          dst[i * out_step] += src[i * in_step];
+        }
+      } else {
+        for (int64_t i = 0; i < run; ++i) {
+          dst[i * out_step] = src[i * in_step];
+        }
+      }
+      cursor.advance();
+    }
+  });
 }
 
 }  // namespace
@@ -104,10 +191,7 @@ void copy_into(const Tensor& source, Tensor* target) {
   LLM_CHECK_MSG(source.shape() == target->shape(),
                 "copy_into: формы " << source.shape() << " и "
                                     << target->shape() << " не совпадают");
-  const float* in = source.data();
-  float* out = target->data();
-  for_each_offset2(target->shape(), target->strides(), source.strides(),
-                   [&](int64_t to, int64_t from) { out[to] = in[from]; });
+  copy_or_add(source, target, false);
 }
 
 void add_into(const Tensor& source, Tensor* target) {
@@ -115,10 +199,7 @@ void add_into(const Tensor& source, Tensor* target) {
   LLM_CHECK_MSG(source.shape() == target->shape(),
                 "add_into: формы " << source.shape() << " и " << target->shape()
                                    << " не совпадают");
-  const float* in = source.data();
-  float* out = target->data();
-  for_each_offset2(target->shape(), target->strides(), source.strides(),
-                   [&](int64_t to, int64_t from) { out[to] += in[from]; });
+  copy_or_add(source, target, true);
 }
 
 }  // namespace ops

@@ -1,9 +1,12 @@
 #include "ops/nn.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 #include "core/check.h"
+#include "ops/parallel.h"
 
 namespace llm {
 namespace ops {
@@ -50,7 +53,8 @@ Tensor rms_norm(const Tensor& input, const Tensor& weight, float eps) {
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
 
-  for (int64_t row = 0; row < rows; ++row) {
+  // Строки независимы: у каждой своя нормировка. Это и делит работу.
+  for_rows(rows, width, [&](int64_t row) {
     const float* x_row = x + row * width;
     float* y_row = y + row * width;
 
@@ -64,7 +68,7 @@ Tensor rms_norm(const Tensor& input, const Tensor& weight, float eps) {
     for (int64_t i = 0; i < width; ++i) {
       y_row[i] = x_row[i] * scale * w[i];
     }
-  }
+  });
   return out;
 }
 
@@ -88,38 +92,58 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
   float* dx = grad_input->data();
   float* dw = grad_weight->data();
 
-  for (int64_t row = 0; row < rows; ++row) {
-    const float* x_row = x + row * width;
-    const float* g_row = g + row * width;
-    float* dx_row = dx + row * width;
+  // Градиент по входу считается строка за строкой и делится свободно, а
+  // градиент веса — сумма по всем строкам, и её приходится собирать по
+  // частям: у каждой части свой накопитель, иначе потоки писали бы в один и
+  // тот же массив.
+  std::vector<double> partial_dw(static_cast<std::size_t>(kSumParts * width),
+                                 0.0);
 
-    double sum_squares = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      sum_squares += static_cast<double>(x_row[i]) * x_row[i];
+  for_row_parts(rows, width, [&](int64_t part, int64_t first, int64_t last) {
+    double* dw_part = partial_dw.data() + part * width;
+    for (int64_t row = first; row < last; ++row) {
+      const float* x_row = x + row * width;
+      const float* g_row = g + row * width;
+      float* dx_row = dx + row * width;
+
+      double sum_squares = 0.0;
+      for (int64_t i = 0; i < width; ++i) {
+        sum_squares += static_cast<double>(x_row[i]) * x_row[i];
+      }
+      const double mean_square = sum_squares / static_cast<double>(width);
+      const double scale = 1.0 / std::sqrt(mean_square + eps);
+
+      // Вес умножается на нормированный вход, поэтому его градиент — сумма по
+      // всем строкам от g * x * scale.
+      for (int64_t i = 0; i < width; ++i) {
+        dw_part[i] += g_row[i] * static_cast<float>(x_row[i] * scale);
+      }
+
+      // Производная по входу. Пусть h_i = g_i * w_i — градиент по
+      // нормированному значению. Тогда, поскольку нормировка зависит от всей
+      // строки,
+      //   dx_k = scale * h_k - x_k * scale^3 * (sum_i h_i x_i) / width.
+      // Первое слагаемое — «прямой» вклад, второе — через общий множитель.
+      double dot = 0.0;
+      for (int64_t i = 0; i < width; ++i) {
+        dot += static_cast<double>(g_row[i]) * w[i] * x_row[i];
+      }
+      const double correction =
+          dot * scale * scale * scale / static_cast<double>(width);
+
+      for (int64_t k = 0; k < width; ++k) {
+        const double direct = static_cast<double>(g_row[k]) * w[k] * scale;
+        dx_row[k] = static_cast<float>(direct - x_row[k] * correction);
+      }
     }
-    const double mean_square = sum_squares / static_cast<double>(width);
-    const double scale = 1.0 / std::sqrt(mean_square + eps);
+  });
 
-    // Вес умножается на нормированный вход, поэтому его градиент — сумма по
-    // всем строкам от g * x * scale.
+  // Частичные суммы складываются в порядке номеров частей — всегда в одном и
+  // том же, независимо от того, какой поток какую часть считал.
+  for (int64_t part = 0; part < kSumParts; ++part) {
+    const double* dw_part = partial_dw.data() + part * width;
     for (int64_t i = 0; i < width; ++i) {
-      dw[i] += g_row[i] * static_cast<float>(x_row[i] * scale);
-    }
-
-    // Производная по входу. Пусть h_i = g_i * w_i — градиент по нормированному
-    // значению. Тогда, поскольку нормировка зависит от всей строки,
-    //   dx_k = scale * h_k - x_k * scale^3 * (sum_i h_i x_i) / width.
-    // Первое слагаемое — «прямой» вклад, второе — через общий множитель.
-    double dot = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      dot += static_cast<double>(g_row[i]) * w[i] * x_row[i];
-    }
-    const double correction =
-        dot * scale * scale * scale / static_cast<double>(width);
-
-    for (int64_t k = 0; k < width; ++k) {
-      const double direct = static_cast<double>(g_row[k]) * w[k] * scale;
-      dx_row[k] = static_cast<float>(direct - x_row[k] * correction);
+      dw[i] += static_cast<float>(dw_part[i]);
     }
   }
 }
@@ -146,7 +170,7 @@ Tensor layer_norm(const Tensor& input, const Tensor& weight, const Tensor& bias,
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
 
-  for (int64_t row = 0; row < rows; ++row) {
+  for_rows(rows, width, [&](int64_t row) {
     const float* x_row = x + row * width;
     float* y_row = y + row * width;
 
@@ -170,7 +194,7 @@ Tensor layer_norm(const Tensor& input, const Tensor& weight, const Tensor& bias,
       const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
       y_row[i] = static_cast<float>(normalized) * w[i] + b[i];
     }
-  }
+  });
   return out;
 }
 
@@ -197,52 +221,75 @@ void layer_norm_backward(const Tensor& grad_output, const Tensor& input,
   float* dw = grad_weight->data();
   float* db = grad_bias->data();
 
-  for (int64_t row = 0; row < rows; ++row) {
-    const float* x_row = x + row * width;
-    const float* g_row = g + row * width;
-    float* dx_row = dx + row * width;
+  // Те же две суммы по строкам, что у RMSNorm, плюс свободный член. Порядок
+  // суммирования фиксирован числом частей — см. for_row_parts.
+  std::vector<double> partial_dw(static_cast<std::size_t>(kSumParts * width),
+                                 0.0);
+  std::vector<double> partial_db(static_cast<std::size_t>(kSumParts * width),
+                                 0.0);
 
-    double sum = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      sum += x_row[i];
+  for_row_parts(rows, width, [&](int64_t part, int64_t first, int64_t last) {
+    double* dw_part = partial_dw.data() + part * width;
+    double* db_part = partial_db.data() + part * width;
+    for (int64_t row = first; row < last; ++row) {
+      const float* x_row = x + row * width;
+      const float* g_row = g + row * width;
+      float* dx_row = dx + row * width;
+
+      double sum = 0.0;
+      for (int64_t i = 0; i < width; ++i) {
+        sum += x_row[i];
+      }
+      const double mean = sum / static_cast<double>(width);
+
+      double sum_squares = 0.0;
+      for (int64_t i = 0; i < width; ++i) {
+        const double centered = static_cast<double>(x_row[i]) - mean;
+        sum_squares += centered * centered;
+      }
+      const double scale =
+          1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
+
+      // Свободный член прибавляется как есть, поэтому его градиент — просто
+      // сумма по строкам.
+      for (int64_t i = 0; i < width; ++i) {
+        const double normalized =
+            (static_cast<double>(x_row[i]) - mean) * scale;
+        db_part[i] += g_row[i];
+        dw_part[i] += g_row[i] * static_cast<float>(normalized);
+      }
+
+      // По входу зависимость идёт и через среднее, и через дисперсию, поэтому
+      // поправок две, а не одна как у RMSNorm.
+      double sum_h = 0.0;
+      double sum_h_normalized = 0.0;
+      for (int64_t i = 0; i < width; ++i) {
+        const double h = static_cast<double>(g_row[i]) * w[i];
+        const double normalized =
+            (static_cast<double>(x_row[i]) - mean) * scale;
+        sum_h += h;
+        sum_h_normalized += h * normalized;
+      }
+      const double mean_h = sum_h / static_cast<double>(width);
+      const double mean_h_normalized =
+          sum_h_normalized / static_cast<double>(width);
+
+      for (int64_t k = 0; k < width; ++k) {
+        const double h = static_cast<double>(g_row[k]) * w[k];
+        const double normalized =
+            (static_cast<double>(x_row[k]) - mean) * scale;
+        dx_row[k] = static_cast<float>(
+            scale * (h - mean_h - normalized * mean_h_normalized));
+      }
     }
-    const double mean = sum / static_cast<double>(width);
+  });
 
-    double sum_squares = 0.0;
+  for (int64_t part = 0; part < kSumParts; ++part) {
+    const double* dw_part = partial_dw.data() + part * width;
+    const double* db_part = partial_db.data() + part * width;
     for (int64_t i = 0; i < width; ++i) {
-      const double centered = static_cast<double>(x_row[i]) - mean;
-      sum_squares += centered * centered;
-    }
-    const double scale =
-        1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
-
-    // Свободный член прибавляется как есть, поэтому его градиент — просто
-    // сумма по строкам.
-    for (int64_t i = 0; i < width; ++i) {
-      const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
-      db[i] += g_row[i];
-      dw[i] += g_row[i] * static_cast<float>(normalized);
-    }
-
-    // По входу зависимость идёт и через среднее, и через дисперсию, поэтому
-    // поправок две, а не одна как у RMSNorm.
-    double sum_h = 0.0;
-    double sum_h_normalized = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      const double h = static_cast<double>(g_row[i]) * w[i];
-      const double normalized = (static_cast<double>(x_row[i]) - mean) * scale;
-      sum_h += h;
-      sum_h_normalized += h * normalized;
-    }
-    const double mean_h = sum_h / static_cast<double>(width);
-    const double mean_h_normalized =
-        sum_h_normalized / static_cast<double>(width);
-
-    for (int64_t k = 0; k < width; ++k) {
-      const double h = static_cast<double>(g_row[k]) * w[k];
-      const double normalized = (static_cast<double>(x_row[k]) - mean) * scale;
-      dx_row[k] = static_cast<float>(
-          scale * (h - mean_h - normalized * mean_h_normalized));
+      dw[i] += static_cast<float>(dw_part[i]);
+      db[i] += static_cast<float>(db_part[i]);
     }
   }
 }
@@ -258,7 +305,7 @@ Tensor softmax(const Tensor& input) {
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
 
-  for (int64_t row = 0; row < rows; ++row) {
+  for_rows(rows, width, [&](int64_t row) {
     const float* x_row = x + row * width;
     float* y_row = y + row * width;
 
@@ -281,7 +328,7 @@ Tensor softmax(const Tensor& input) {
     for (int64_t i = 0; i < width; ++i) {
       y_row[i] *= inverse;
     }
-  }
+  });
   return out;
 }
 
@@ -298,7 +345,7 @@ Tensor softmax_backward(const Tensor& grad_output, const Tensor& output) {
   Tensor out = Tensor::uninitialized(output.shape());
   float* dx = out.data();
 
-  for (int64_t row = 0; row < rows; ++row) {
+  for_rows(rows, width, [&](int64_t row) {
     const float* g_row = g + row * width;
     const float* y_row = y + row * width;
     float* dx_row = dx + row * width;
@@ -312,7 +359,7 @@ Tensor softmax_backward(const Tensor& grad_output, const Tensor& output) {
     for (int64_t i = 0; i < width; ++i) {
       dx_row[i] = y_row[i] * (g_row[i] - static_cast<float>(dot));
     }
-  }
+  });
   return out;
 }
 
@@ -321,10 +368,7 @@ Tensor silu(const Tensor& input) {
   const float* x = dense_data(input, &holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
-  const int64_t total = input.numel();
-  for (int64_t i = 0; i < total; ++i) {
-    y[i] = x[i] * sigmoid(x[i]);
-  }
+  for_elements(input.numel(), [&](int64_t i) { y[i] = x[i] * sigmoid(x[i]); });
   return out;
 }
 
@@ -335,12 +379,11 @@ Tensor silu_backward(const Tensor& grad_output, const Tensor& input) {
   const float* x = dense_data(input, &input_holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* dx = out.data();
-  const int64_t total = input.numel();
-  for (int64_t i = 0; i < total; ++i) {
+  for_elements(input.numel(), [&](int64_t i) {
     const float s = sigmoid(x[i]);
     // d/dx [x * s(x)] = s + x * s * (1 - s)
     dx[i] = g[i] * (s + x[i] * s * (1.0f - s));
-  }
+  });
   return out;
 }
 
@@ -349,13 +392,12 @@ Tensor gelu(const Tensor& input) {
   const float* x = dense_data(input, &holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
-  const int64_t total = input.numel();
-  for (int64_t i = 0; i < total; ++i) {
+  for_elements(input.numel(), [&](int64_t i) {
     const float value = x[i];
     const float inner =
         kGeluCoefficient * (value + kGeluCubic * value * value * value);
     y[i] = 0.5f * value * (1.0f + std::tanh(inner));
-  }
+  });
   return out;
 }
 
@@ -366,8 +408,7 @@ Tensor gelu_backward(const Tensor& grad_output, const Tensor& input) {
   const float* x = dense_data(input, &input_holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* dx = out.data();
-  const int64_t total = input.numel();
-  for (int64_t i = 0; i < total; ++i) {
+  for_elements(input.numel(), [&](int64_t i) {
     const float value = x[i];
     const float inner =
         kGeluCoefficient * (value + kGeluCubic * value * value * value);
@@ -377,7 +418,7 @@ Tensor gelu_backward(const Tensor& grad_output, const Tensor& input) {
     dx[i] = g[i] * (0.5f * (1.0f + tanh_inner) +
                     0.5f * value * (1.0f - tanh_inner * tanh_inner) *
                         inner_derivative);
-  }
+  });
   return out;
 }
 
@@ -470,15 +511,14 @@ Tensor causal_mask(const Tensor& scores, int64_t query_offset) {
   float* output = out.data();
 
   const float blocked = -std::numeric_limits<float>::infinity();
-  for (int64_t matrix = 0; matrix < matrices; ++matrix) {
-    for (int64_t query = 0; query < queries; ++query) {
-      const int64_t base = (matrix * queries + query) * keys;
-      for (int64_t key = 0; key < keys; ++key) {
-        output[base + key] =
-            is_visible(query, key, query_offset) ? input[base + key] : blocked;
-      }
+  for_rows(matrices * queries, keys, [&](int64_t row) {
+    const int64_t query = row % queries;
+    const int64_t base = row * keys;
+    for (int64_t key = 0; key < keys; ++key) {
+      output[base + key] =
+          is_visible(query, key, query_offset) ? input[base + key] : blocked;
     }
-  }
+  });
   return out;
 }
 
@@ -495,15 +535,14 @@ Tensor causal_mask_backward(const Tensor& grad_output, int64_t query_offset) {
   // Закрытые позиции на результат не влияли, значит их градиент — нуль.
   // Формально softmax и так обнулил бы его, но явный нуль надёжнее: он не
   // зависит от того, что стоит следующей операцией.
-  for (int64_t matrix = 0; matrix < matrices; ++matrix) {
-    for (int64_t query = 0; query < queries; ++query) {
-      const int64_t base = (matrix * queries + query) * keys;
-      for (int64_t key = 0; key < keys; ++key) {
-        output[base + key] =
-            is_visible(query, key, query_offset) ? input[base + key] : 0.0f;
-      }
+  for_rows(matrices * queries, keys, [&](int64_t row) {
+    const int64_t query = row % queries;
+    const int64_t base = row * keys;
+    for (int64_t key = 0; key < keys; ++key) {
+      output[base + key] =
+          is_visible(query, key, query_offset) ? input[base + key] : 0.0f;
     }
-  }
+  });
   return out;
 }
 

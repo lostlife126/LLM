@@ -6,6 +6,51 @@
 
 namespace llm {
 namespace ops {
+namespace {
+
+// Прибавляет вход к накопителю, пройдя форму кусками.
+//
+// Накопитель — это результат, растянутый до формы входа: по сокращаемым осям
+// у него шаг 0, и все элементы вдоль такой оси попадают в одну ячейку.
+// Суммирование получается само собой, без разбора случаев, — и это же
+// свойство позволяет схлопнуть хвост формы по обоим наборам шагов сразу.
+//
+// Внутри куска возможны ровно два случая, и оба сводятся к простому циклу:
+// шаг накопителя 1 — поэлементная прибавка; шаг 0 — весь кусок суммируется в
+// одну ячейку. Промежуточная сумма в этом случае берётся в double: она всё
+// равно нужна, а точность достаётся бесплатно.
+void accumulate_blocks(const Shape& shape,
+                       const std::vector<int64_t>& in_strides, const float* in,
+                       const std::vector<int64_t>& acc_strides, float* acc) {
+  const BlockWalkN<2> walk = block_walk2(shape, in_strides, acc_strides);
+  const int64_t run = walk.run();
+  const int64_t in_step = walk.run_stride(0);
+  const int64_t acc_step = walk.run_stride(1);
+
+  BlockWalkN<2>::Cursor cursor = walk.at(0);
+  for (int64_t block = 0; block < walk.blocks(); ++block) {
+    const float* src = in + cursor.offset(0);
+    float* dst = acc + cursor.offset(1);
+    if (in_step == 1 && acc_step == 1) {
+      for (int64_t i = 0; i < run; ++i) {
+        dst[i] += src[i];
+      }
+    } else if (in_step == 1 && acc_step == 0) {
+      double total = 0.0;
+      for (int64_t i = 0; i < run; ++i) {
+        total += src[i];
+      }
+      *dst += static_cast<float>(total);
+    } else {
+      for (int64_t i = 0; i < run; ++i) {
+        dst[i * acc_step] += src[i * in_step];
+      }
+    }
+    cursor.advance();
+  }
+}
+
+}  // namespace
 
 Tensor sum(const Tensor& input, const std::vector<int>& axes, bool keepdim) {
   const int rank = input.rank();
@@ -27,10 +72,8 @@ Tensor sum(const Tensor& input, const std::vector<int>& axes, bool keepdim) {
     // даёт шаг 0, то есть все элементы вдоль такой оси попадают в одну ячейку.
     // Суммирование получается само собой, без отдельного разбора случаев.
     Tensor accumulator = out.expand(input.shape());
-    const float* in = input.data();
-    float* acc = accumulator.data();
-    for_each_offset2(input.shape(), input.strides(), accumulator.strides(),
-                     [&](int64_t from, int64_t to) { acc[to] += in[from]; });
+    accumulate_blocks(input.shape(), input.strides(), input.data(),
+                      accumulator.strides(), accumulator.data());
   }
 
   if (keepdim) {

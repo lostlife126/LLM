@@ -6,8 +6,59 @@
 #include <sstream>
 
 #include "core/iterate.h"
+#include "core/thread_pool.h"
 
 namespace llm {
+namespace {
+
+// Сколько элементов стоит отдавать одному потоку при копировании.
+//
+// Копия упирается в память, а не в арифметику: на элемент приходится чтение и
+// запись четырёх байт. Вход в параллельную область стоит около двух
+// микросекунд, за которые один поток успевает скопировать порядка десяти
+// килобайт, — отсюда и порядок величины.
+constexpr int64_t kCopyGrain = 1 << 14;
+
+// Плотная копия тензора с произвольными шагами.
+//
+// Копирование идёт кусками подряд идущих элементов, а не по одному: см.
+// BlockWalk. Для плотного тензора кусок один на весь тензор, и всё сводится к
+// memcpy; для перестановки осей внимания кусок равен размеру головы.
+void copy_dense(const Shape& shape, const std::vector<int64_t>& strides,
+                const float* in, float* out) {
+  const BlockWalkN<1> walk = block_walk(shape, strides);
+  const int64_t run = walk.run();
+  const int64_t run_stride = walk.run_stride(0);
+  const int64_t grain =
+      std::max<int64_t>(1, kCopyGrain / std::max<int64_t>(run, 1));
+
+  parallel_range(walk.blocks(), grain, [&](int64_t begin, int64_t end) {
+    BlockWalkN<1>::Cursor cursor = walk.at(begin);
+    float* dst = out + begin * run;
+    if (run_stride == 1) {
+      for (int64_t block = begin; block < end; ++block) {
+        std::memcpy(dst, in + cursor.offset(0),
+                    static_cast<std::size_t>(run) * sizeof(float));
+        dst += run;
+        cursor.advance();
+      }
+      return;
+    }
+    // Неплотный хвост: чаще всего это транспонированный вид. Куском он не
+    // копируется, но шаг внутри куска постоянен, и это всё равно много лучше
+    // одометра на каждый элемент.
+    for (int64_t block = begin; block < end; ++block) {
+      const float* src = in + cursor.offset(0);
+      for (int64_t i = 0; i < run; ++i) {
+        dst[i] = src[i * run_stride];
+      }
+      dst += run;
+      cursor.advance();
+    }
+  });
+}
+
+}  // namespace
 
 Tensor::Tensor(std::shared_ptr<Storage> storage, float* data,
                const Shape& shape, std::vector<int64_t> strides)
@@ -242,12 +293,7 @@ Tensor Tensor::clone() const {
   if (numel() == 0) {
     return result;
   }
-  float* out = result.data();
-  const float* in = data_;
-  int64_t written = 0;
-  for_each_offset(shape_, strides_,
-                  [&](int64_t offset) { out[written++] = in[offset]; });
-  LLM_DCHECK_EQ(written, numel());
+  copy_dense(shape_, strides_, data_, result.data());
   return result;
 }
 

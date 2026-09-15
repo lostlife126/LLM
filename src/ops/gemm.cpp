@@ -41,41 +41,75 @@ int64_t ceil_div(int64_t value, int64_t divisor) {
 //      внутреннего цикла;
 //   3) хвост дополняется нулями до полной панели, поэтому микроядро не
 //      нуждается в проверках границ — нули не портят сумму.
+//
+// Цена упаковки не мелочь. По профилю шага обучения на неё приходилось больше
+// времени, чем на само умножение: внимание после разворота голов даёт десятки
+// тысяч вызовов gemm на матрицах вроде 64 x 32, а у мелкой матрицы упаковка
+// сравнима с умножением. Поэтому проверка границы вынесена из внутреннего
+// цикла, а там, где исходные данные лежат подряд, копирование идёт целой
+// строкой.
 void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
             int64_t col0, int64_t mc, int64_t kc, int64_t mr, float* apack) {
   const int64_t panels = ceil_div(mc, mr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = apack + panel * kc * mr;
-    for (int64_t p = 0; p < kc; ++p) {
-      for (int64_t ii = 0; ii < mr; ++ii) {
-        const int64_t i = panel * mr + ii;
-        float value = 0.0f;
-        if (i < mc) {
-          value = transpose_a ? a[(col0 + p) * lda + (row0 + i)]
-                              : a[(row0 + i) * lda + (col0 + p)];
-        }
-        dst[p * mr + ii] = value;
+    const int64_t first = panel * mr;
+    const int64_t rows = std::min(mr, mc - first);
+
+    if (transpose_a) {
+      // op(A) транспонировано: подряд в памяти идут строки панели, и каждая
+      // копируется как есть.
+      for (int64_t p = 0; p < kc; ++p) {
+        const float* src = a + (col0 + p) * lda + row0 + first;
+        std::copy(src, src + rows, dst + p * mr);
       }
+    } else {
+      // Подряд идёт шаг по глубине, а нужен шаг по строке — то самое
+      // транспонирование, которое упаковка и берёт на себя.
+      for (int64_t ii = 0; ii < rows; ++ii) {
+        const float* src = a + (row0 + first + ii) * lda + col0;
+        float* out = dst + ii;
+        for (int64_t p = 0; p < kc; ++p) {
+          out[p * mr] = src[p];
+        }
+      }
+    }
+
+    // Добивка нулями нужна только у последней панели блока.
+    for (int64_t p = 0; p < kc; ++p) {
+      std::fill(dst + p * mr + rows, dst + p * mr + mr, 0.0f);
     }
   }
 }
 
-// Упаковка блока B: kc x nc матрицы op(B), панелями по nr столбцов.
+// Упаковка блока B: kc x nc матрицы op(B), панелями по nr столбцов. Всё то же
+// самое, что у панели A, с обратным распределением случаев: подряд лежит
+// нужное как раз у нетранспонированного B.
 void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
             int64_t col0, int64_t kc, int64_t nc, int64_t nr, float* bpack) {
   const int64_t panels = ceil_div(nc, nr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = bpack + panel * kc * nr;
-    for (int64_t p = 0; p < kc; ++p) {
-      for (int64_t jj = 0; jj < nr; ++jj) {
-        const int64_t j = panel * nr + jj;
-        float value = 0.0f;
-        if (j < nc) {
-          value = transpose_b ? b[(col0 + j) * ldb + (row0 + p)]
-                              : b[(row0 + p) * ldb + (col0 + j)];
+    const int64_t first = panel * nr;
+    const int64_t cols = std::min(nr, nc - first);
+
+    if (transpose_b) {
+      for (int64_t jj = 0; jj < cols; ++jj) {
+        const float* src = b + (col0 + first + jj) * ldb + row0;
+        float* out = dst + jj;
+        for (int64_t p = 0; p < kc; ++p) {
+          out[p * nr] = src[p];
         }
-        dst[p * nr + jj] = value;
       }
+    } else {
+      for (int64_t p = 0; p < kc; ++p) {
+        const float* src = b + (row0 + p) * ldb + col0 + first;
+        std::copy(src, src + cols, dst + p * nr);
+      }
+    }
+
+    for (int64_t p = 0; p < kc; ++p) {
+      std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
     }
   }
 }
