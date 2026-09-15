@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "core/check.h"
+#include "ops/fast_exp.h"
 #include "ops/parallel.h"
 
 namespace llm {
@@ -19,6 +20,46 @@ void check_arguments(const Tensor& logits,
       logits.dim(0) == static_cast<int64_t>(targets.size()),
       "логитов " << logits.dim(0) << " строк, а целей " << targets.size());
   LLM_CHECK_GT(logits.dim(0), static_cast<int64_t>(0));
+}
+
+// Место под экспоненты одной строки.
+//
+// Экспонента считается массивом, и ей нужно куда писать; у cross-entropy
+// прямого прохода готового места нет — результат там скаляр. Буфер привязан к
+// потоку: строки считаются параллельно, и общий буфер пришлось бы защищать.
+// Строка — это словарь, от тысячи до восьми тысяч значений, то есть десятки
+// килобайт; выделять их на каждую строку было бы дороже самой экспоненты.
+float* row_scratch(int64_t width) {
+  thread_local std::vector<float> buffer;
+  if (static_cast<int64_t>(buffer.size()) < width) {
+    buffer.resize(static_cast<std::size_t>(width));
+  }
+  return buffer.data();
+}
+
+// Сумма экспонент строки со сдвигом на максимум и её логарифм.
+//
+// Сумма считается обычным последовательным циклом, а не внутри векторного
+// ядра: по дорожкам она сложилась бы в другом порядке, и значение потерь
+// зависело бы от набора инструкций процессора.
+double log_sum_exp_into(const float* row, float maximum, float* scratch,
+                        int64_t width) {
+  exp_shifted(row, maximum, scratch, width);
+  double sum = 0.0;
+  for (int64_t i = 0; i < width; ++i) {
+    sum += scratch[i];
+  }
+  return static_cast<double>(maximum) + std::log(sum);
+}
+
+float row_maximum(const float* row, int64_t width) {
+  float maximum = -std::numeric_limits<float>::infinity();
+  for (int64_t i = 0; i < width; ++i) {
+    if (row[i] > maximum) {
+      maximum = row[i];
+    }
+  }
+  return maximum;
 }
 
 }  // namespace
@@ -44,20 +85,10 @@ Tensor cross_entropy(const Tensor& logits,
       LLM_CHECK_MSG(target >= 0 && target < vocab,
                     "цель " << target << " вне словаря размера " << vocab);
 
-      float maximum = -std::numeric_limits<float>::infinity();
-      for (int64_t i = 0; i < vocab; ++i) {
-        if (row_data[i] > maximum) {
-          maximum = row_data[i];
-        }
-      }
-      double sum_exp = 0.0;
-      for (int64_t i = 0; i < vocab; ++i) {
-        sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
-      }
       // -log p[target] = logsumexp(logits) - logits[target], и вычитание
       // максимума делает обе части конечными при любых логитах.
-      const double log_sum_exp =
-          static_cast<double>(maximum) + std::log(sum_exp);
+      const double log_sum_exp = log_sum_exp_into(
+          row_data, row_maximum(row_data, vocab), row_scratch(vocab), vocab);
       sum += log_sum_exp - static_cast<double>(row_data[target]);
     }
     partial[part] = sum;
@@ -91,17 +122,12 @@ Tensor cross_entropy_backward(const Tensor& logits,
     const float* row_data = data + row * vocab;
     float* grad_row = grad + row * vocab;
 
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int64_t i = 0; i < vocab; ++i) {
-      if (row_data[i] > maximum) {
-        maximum = row_data[i];
-      }
-    }
+    // Экспоненты пишутся прямо в градиент: место там уже есть, и лишнего
+    // прохода по памяти не получается.
+    exp_shifted(row_data, row_maximum(row_data, vocab), grad_row, vocab);
     double sum_exp = 0.0;
     for (int64_t i = 0; i < vocab; ++i) {
-      const float value = std::exp(row_data[i] - maximum);
-      grad_row[i] = value;
-      sum_exp += value;
+      sum_exp += grad_row[i];
     }
     const float inverse = static_cast<float>(1.0 / sum_exp);
     for (int64_t i = 0; i < vocab; ++i) {
@@ -118,15 +144,8 @@ namespace {
 
 // Логарифм суммы экспонент строки, устойчивый к большим значениям.
 double row_log_sum_exp(const float* row, int64_t width) {
-  float maximum = -std::numeric_limits<float>::infinity();
-  for (int64_t i = 0; i < width; ++i) {
-    maximum = row[i] > maximum ? row[i] : maximum;
-  }
-  double sum = 0.0;
-  for (int64_t i = 0; i < width; ++i) {
-    sum += std::exp(static_cast<double>(row[i] - maximum));
-  }
-  return static_cast<double>(maximum) + std::log(sum);
+  return log_sum_exp_into(row, row_maximum(row, width), row_scratch(width),
+                          width);
 }
 
 }  // namespace
@@ -175,15 +194,11 @@ Tensor z_loss_backward(const Tensor& logits, float grad_output) {
     const float* row_data = data + row * vocab;
     float* grad_row = grad + row * vocab;
 
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int64_t i = 0; i < vocab; ++i) {
-      maximum = row_data[i] > maximum ? row_data[i] : maximum;
-    }
+    const float maximum = row_maximum(row_data, vocab);
+    exp_shifted(row_data, maximum, grad_row, vocab);
     double sum_exp = 0.0;
     for (int64_t i = 0; i < vocab; ++i) {
-      const float value = std::exp(row_data[i] - maximum);
-      grad_row[i] = value;
-      sum_exp += value;
+      sum_exp += grad_row[i];
     }
     const double z = static_cast<double>(maximum) + std::log(sum_exp);
     // Производная логарифма суммы экспонент по логиту — это softmax, а
@@ -230,9 +245,14 @@ PredictionStats prediction_stats(const Tensor& logits,
         ++correct_part;
       }
 
+      // Экспоненты считаются один раз и сохраняются. Раньше их считали
+      // дважды: сначала ради суммы, потом ради взвешенного среднего, — то
+      // есть вся строка словаря проходила через экспоненту два раза подряд.
+      float* probabilities = row_scratch(vocab);
+      exp_shifted(row_data, maximum, probabilities, vocab);
       double sum_exp = 0.0;
       for (int64_t i = 0; i < vocab; ++i) {
-        sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
+        sum_exp += probabilities[i];
       }
       // Энтропия через логарифм суммы экспонент: H = log(S) + max - E[x], где
       // ожидание берётся по самому распределению. Так не нужен отдельный проход
@@ -240,9 +260,8 @@ PredictionStats prediction_stats(const Tensor& logits,
       const double log_sum = std::log(sum_exp);
       double weighted = 0.0;
       for (int64_t i = 0; i < vocab; ++i) {
-        const double probability =
-            std::exp(static_cast<double>(row_data[i] - maximum)) / sum_exp;
-        weighted += probability * static_cast<double>(row_data[i] - maximum);
+        weighted += (static_cast<double>(probabilities[i]) / sum_exp) *
+                    static_cast<double>(row_data[i] - maximum);
       }
       entropy_part += log_sum - weighted;
       log_z_part += log_sum + static_cast<double>(maximum);
@@ -281,15 +300,8 @@ std::vector<float> per_row_loss(const Tensor& logits,
   std::vector<float> losses(static_cast<std::size_t>(rows), 0.0f);
   for_rows(rows, vocab, [&](int64_t row) {
     const float* row_data = data + row * vocab;
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int64_t i = 0; i < vocab; ++i) {
-      maximum = row_data[i] > maximum ? row_data[i] : maximum;
-    }
-    double sum_exp = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      sum_exp += std::exp(static_cast<double>(row_data[i] - maximum));
-    }
-    const double log_sum_exp = static_cast<double>(maximum) + std::log(sum_exp);
+    const double log_sum_exp = log_sum_exp_into(
+        row_data, row_maximum(row_data, vocab), row_scratch(vocab), vocab);
     losses[static_cast<std::size_t>(row)] = static_cast<float>(
         log_sum_exp -
         static_cast<double>(row_data[targets[static_cast<std::size_t>(row)]]));

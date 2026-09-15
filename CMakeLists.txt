@@ -44,6 +44,7 @@ add_library(llm_core
   src/ops/dropout.cpp
   src/ops/elementwise.cpp
   src/ops/embedding.cpp
+  src/ops/fast_exp.cpp
   src/ops/loss.cpp
   src/ops/nn.cpp
   src/ops/rope.cpp
@@ -85,6 +86,9 @@ target_link_libraries(llm_core PUBLIC Threads::Threads)
 add_executable(bench_gemm apps/bench_gemm.cpp)
 target_link_libraries(bench_gemm PRIVATE llm_core)
 
+add_executable(bench_exp apps/bench_exp.cpp)
+target_link_libraries(bench_exp PRIVATE llm_core)
+
 add_executable(bpe_train apps/bpe_train.cpp)
 target_link_libraries(bpe_train PRIVATE llm_core)
 
@@ -117,6 +121,7 @@ add_executable(llm_tests
   tests/test_check.cpp
   tests/test_dropout.cpp
   tests/test_elementwise.cpp
+  tests/test_fast_exp.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_hf.cpp
@@ -151,6 +156,7 @@ set(LLM_TEST_SUITES
   Check
   Dropout
   Elementwise
+  FastExp
   Grad
   Hf
   HfTokenizer

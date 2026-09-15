@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/check.h"
+#include "ops/fast_exp.h"
 #include "ops/parallel.h"
 
 namespace llm {
@@ -27,8 +28,6 @@ const float* dense_data(const Tensor& tensor, Tensor* holder) {
   *holder = tensor.contiguous();
   return holder->data();
 }
-
-float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 
 // Множитель sqrt(2/pi) из приближения GELU.
 const float kGeluCoefficient = 0.7978845608028654f;
@@ -318,11 +317,17 @@ Tensor softmax(const Tensor& input) {
       }
     }
 
+    // Экспонента считается массивом: поэлементный std::exp — вызов функции
+    // из libm, через который автовекторизатор не переступает, и на нём одном
+    // раньше уходила заметная часть шага обучения.
+    exp_shifted(x_row, maximum, y_row, width);
+
+    // Сумма — обычным последовательным циклом, и это существенно. Внутри
+    // векторного ядра она сложилась бы по дорожкам, в другом порядке, и
+    // результат зависел бы от набора инструкций.
     double total = 0.0;
     for (int64_t i = 0; i < width; ++i) {
-      const float value = std::exp(x_row[i] - maximum);
-      y_row[i] = value;
-      total += value;
+      total += y_row[i];
     }
     const float inverse = static_cast<float>(1.0 / total);
     for (int64_t i = 0; i < width; ++i) {
@@ -368,7 +373,20 @@ Tensor silu(const Tensor& input) {
   const float* x = dense_data(input, &holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* y = out.data();
-  for_elements(input.numel(), [&](int64_t i) { y[i] = x[i] * sigmoid(x[i]); });
+
+  // Сигмоида считается массивом прямо в результат, а потом домножается на
+  // вход. Два прохода по памяти вместо одного — и всё равно втрое быстрее
+  // поэлементного std::exp.
+  //
+  // Границы кусков на результат не влияют: ядро обрабатывает хвост куска тем
+  // же кодом, что и середину, через временный буфер. Иначе результат зависел
+  // бы от числа потоков, потому что куски режет parallel_range.
+  parallel_range(input.numel(), kElementGrain, [&](int64_t begin, int64_t end) {
+    sigmoid_array(x + begin, y + begin, end - begin);
+    for (int64_t i = begin; i < end; ++i) {
+      y[i] *= x[i];
+    }
+  });
   return out;
 }
 
@@ -379,10 +397,15 @@ Tensor silu_backward(const Tensor& grad_output, const Tensor& input) {
   const float* x = dense_data(input, &input_holder);
   Tensor out = Tensor::uninitialized(input.shape());
   float* dx = out.data();
-  for_elements(input.numel(), [&](int64_t i) {
-    const float s = sigmoid(x[i]);
-    // d/dx [x * s(x)] = s + x * s * (1 - s)
-    dx[i] = g[i] * (s + x[i] * s * (1.0f - s));
+  // Сигмоида пишется во временное место — в сам результат: он всё равно будет
+  // перезаписан следующей строкой.
+  parallel_range(input.numel(), kElementGrain, [&](int64_t begin, int64_t end) {
+    sigmoid_array(x + begin, dx + begin, end - begin);
+    for (int64_t i = begin; i < end; ++i) {
+      const float s = dx[i];
+      // d/dx [x * s(x)] = s + x * s * (1 - s)
+      dx[i] = g[i] * (s + x[i] * s * (1.0f - s));
+    }
   });
   return out;
 }
