@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/random.h"
+#include "core/thread_pool.h"
 #include "ops/gemm.h"
 #include "testing.h"
 
@@ -211,4 +212,58 @@ LLM_TEST(Gemm, RejectsBadLeadingDimension) {
                                    a.data(), 2, 0.0f, c.data(), 4));
   LLM_EXPECT_THROWS(llm::ops::gemm(false, false, 4, 4, 4, 1.0f, a.data(), 4,
                                    a.data(), 4, 0.0f, c.data(), 2));
+}
+
+LLM_TEST(Gemm, ThreadCountDoesNotChangeResultBitForBit) {
+  // Деление по потокам сделано так, что каждый элемент C считает ровно один
+  // поток, и порядок накопления по глубине k у него тот же, что был бы у
+  // одного потока. Отсюда — совпадение побитовое, а не с допуском.
+  //
+  // Требование строгое сознательно. Совпадение с допуском проверяло бы только
+  // отсутствие грубой ошибки, а нам нужно большее: повторяемость обучения не
+  // должна зависеть ни от числа ядер на машине, ни от того, как в этот раз
+  // разошлись потоки. Иначе два запуска с одним зерном дают разные модели, и
+  // сравнивать варианты становится нечем.
+  llm::Rng rng(20260915);
+  const std::int64_t sizes[][3] = {
+      {256, 192, 160}, {512, 64, 300}, {64, 512, 300}, {129, 127, 131}};
+
+  for (std::size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+    const std::int64_t m = sizes[i][0];
+    const std::int64_t n = sizes[i][1];
+    const std::int64_t k = sizes[i][2];
+    const std::vector<float> a = random_matrix(&rng, m, k);
+    const std::vector<float> b = random_matrix(&rng, k, n);
+
+    llm::set_parallel_width(1);
+    std::vector<float> serial(static_cast<std::size_t>(m * n), 0.0f);
+    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                   serial.data(), n);
+
+    llm::set_parallel_width(0);
+    const int width = llm::parallel_width();
+    std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.0f);
+    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                   threaded.data(), n);
+
+    for (std::size_t index = 0; index < serial.size(); ++index) {
+      LLM_CHECK_MSG(serial[index] == threaded[index],
+                    "m=" << m << " n=" << n << " k=" << k << " потоков "
+                         << width << ": элемент " << index << " дал "
+                         << threaded[index] << " вместо " << serial[index]);
+    }
+  }
+}
+
+LLM_TEST(Gemm, ThreadedResultMatchesNaive) {
+  // Отдельно от побитовой проверки: та сравнивает многопоточный путь с
+  // однопоточным, и если оба ошибаются одинаково, она этого не заметит.
+  llm::set_parallel_width(0);
+  llm::Rng rng(7);
+  // Формы выбраны так, чтобы задеть оба способа деления: по строкам, когда их
+  // больше, и по столбцам, когда больше столбцов.
+  compare_with_naive(&rng, false, false, 600, 96, 200, 1.0f, 0.0f, 0);
+  compare_with_naive(&rng, false, false, 96, 600, 200, 1.0f, 0.0f, 3);
+  compare_with_naive(&rng, true, false, 300, 300, 300, 0.5f, 2.0f, 0);
+  compare_with_naive(&rng, false, true, 300, 300, 300, 1.0f, 1.0f, 5);
 }

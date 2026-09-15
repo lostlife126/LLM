@@ -15,6 +15,7 @@
 
 #include "core/cpu.h"
 #include "core/random.h"
+#include "core/thread_pool.h"
 #include "ops/gemm.h"
 #include "ops/micro_kernel.h"
 
@@ -132,10 +133,16 @@ void compare_kernels() {
   const llm::ops::MicroKernelChoice* table =
       llm::ops::all_micro_kernels(&count);
 
-  std::printf("процессор: %s\n", llm::cpu_features().to_string().c_str());
-  std::printf("\n%-18s %10s %10s\n", "микроядро", "GFLOPS", "доступно");
+  std::printf("процессор: %s, ядер %d\n",
+              llm::cpu_features().to_string().c_str(),
+              llm::detect_core_count());
+  std::printf("\nмикроядра на одном потоке, квадрат 512\n");
+  std::printf("%-18s %10s %10s\n", "микроядро", "GFLOPS", "доступно");
   std::printf("----------------------------------------\n");
 
+  // Ядра сравниваются на одном потоке. Иначе в цифру попадает ещё и то, как
+  // задача поделилась между ядрами процессора, а сравнивать надо микроядра.
+  llm::set_parallel_width(1);
   const std::int64_t size = 512;
   for (int i = 0; i < count; ++i) {
     if (!table[i].available) {
@@ -147,12 +154,68 @@ void compare_kernels() {
     std::printf("%-18s %10.1f %10s\n", table[i].kernel.name, gflops, "да");
   }
   llm::ops::force_micro_kernel(nullptr);
+  llm::set_parallel_width(0);
   std::printf("\nвыбрано автоматически: %s\n\n",
               llm::ops::best_micro_kernel().name);
 }
 
+// Как растёт пропускная способность с числом потоков.
+//
+// Смысл замера — не «стало быстрее», а масштабируемость: во сколько раз
+// быстрее на четырёх ядрах вместо одного. Идеал — вчетверо, и разница с
+// идеалом показывает, что мешает: пропускная способность памяти, ложное
+// разделение строк кэша или слишком мелкое деление работы.
+//
+// Формы взяты и большие, и мелкие: на мелких деление может оказаться в убыток,
+// и порог, ниже которого работа не делится, проверяется именно здесь.
+void compare_threads() {
+  struct Case {
+    const char* label;
+    std::int64_t m;
+    std::int64_t n;
+    std::int64_t k;
+  };
+  const Case cases[] = {
+      {"квадрат 64", 64, 64, 64},         {"квадрат 128", 128, 128, 128},
+      {"квадрат 256", 256, 256, 256},     {"квадрат 512", 512, 512, 512},
+      {"квадрат 1024", 1024, 1024, 1024}, {"nano: qkv", 1024, 128, 128},
+      {"nano: голова", 1024, 1024, 128},  {"tiny: голова", 2048, 4096, 256}};
+
+  llm::set_parallel_width(0);
+  const int max_width = llm::parallel_width();
+
+  std::printf("\nмасштабируемость по потокам (GFLOPS)\n");
+  std::printf("%-22s", "задача");
+  for (int width = 1; width <= max_width; ++width) {
+    std::printf(" %8d", width);
+  }
+  std::printf("  %8s\n", "ускор.");
+  std::printf(
+      "-------------------------------------------------------------------\n");
+
+  for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    std::printf("%-22s", cases[i].label);
+    double first = 0.0;
+    double last = 0.0;
+    for (int width = 1; width <= max_width; ++width) {
+      llm::set_parallel_width(width);
+      const double gflops = measure_blocked(cases[i].m, cases[i].n, cases[i].k);
+      std::printf(" %8.1f", gflops);
+      if (width == 1) {
+        first = gflops;
+      }
+      last = gflops;
+    }
+    std::printf("  %7.2fx\n", last / first);
+    std::fflush(stdout);
+  }
+  llm::set_parallel_width(0);
+  std::printf("\nпотоков по умолчанию: %d\n\n", llm::parallel_width());
+}
+
 int main() {
   compare_kernels();
+  compare_threads();
   std::printf("%-22s %6s %6s %6s  %9s  %9s  %8s\n", "задача", "m", "n", "k",
               "блочный", "наивный", "ускор.");
   std::printf(

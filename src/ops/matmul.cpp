@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/check.h"
+#include "core/thread_pool.h"
 #include "ops/gemm.h"
 
 namespace llm {
@@ -79,6 +80,11 @@ Tensor batch_slice(const Tensor& tensor, int64_t index) {
   return tensor.select(0, tensor.dim(0) == 1 ? 0 : index);
 }
 
+// Ниже какого объёма работы делить батч не стоит — тот же порог, что у
+// самого gemm, и по той же причине: вход в параллельную область стоит около
+// двух микросекунд.
+constexpr double kMinParallelFlops = 1.0e5;
+
 int64_t batch_size(const Tensor& tensor) {
   return tensor.rank() == 3 ? tensor.dim(0) : 1;
 }
@@ -121,7 +127,7 @@ void matmul_into(const Tensor& a, const Tensor& b, float alpha, float beta,
   const int64_t n = b.dim(-1);
   const int64_t batch = std::max(batch_size(a), batch_size(b));
 
-  for (int64_t index = 0; index < batch; ++index) {
+  const auto multiply = [&](int64_t index) {
     const Tensor a_slice = batch_slice(a, index);
     const Tensor b_slice = batch_slice(b, index);
     Tensor a_copy;
@@ -133,6 +139,33 @@ void matmul_into(const Tensor& a, const Tensor& b, float alpha, float beta,
     gemm(a_view.transposed, b_view.transposed, m, n, k, alpha, a_view.data,
          a_view.ld, b_view.data, b_view.ld, beta, out_slice.data(),
          out_slice.stride(0));
+  };
+
+  // Внимание — это не одно большое умножение, а множество мелких: после
+  // разворота голов батч равен batch * heads, а каждая матрица имеет форму
+  // вроде 64 x 32. По замеру такие умножения составляют девятнадцать из
+  // двадцати вызовов gemm за шаг обучения, и делить их внутри бесполезно —
+  // каждое слишком мало, чтобы окупить вход в параллельную область.
+  //
+  // Поэтому делится батч. Условие batch >= width, а не batch > 1: при двух
+  // элементах батча и четырёх ядрах выгоднее отдать оба умножения gemm,
+  // который займёт все четыре ядра каждым по очереди, чем занять два ядра и
+  // оставить два простаивать.
+  const int width = parallel_width();
+  const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) *
+                       static_cast<double>(k) * static_cast<double>(batch);
+  if (width > 1 && batch >= width && flops >= kMinParallelFlops &&
+      !inside_parallel_region()) {
+    parallel_for(width, [&](int task) {
+      for (int64_t index = task; index < batch; index += width) {
+        multiply(index);
+      }
+    });
+    return;
+  }
+
+  for (int64_t index = 0; index < batch; ++index) {
+    multiply(index);
   }
 }
 

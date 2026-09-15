@@ -18,8 +18,9 @@ option(LLM_SANITIZE "Собрать с ASan и UBSan" OFF)
 # указателях, -Wsign-compare и -Wunused ловят реальные баги.
 add_compile_options(-Wall -Wextra -Werror)
 
-# -O3 обязателен: единственный источник векторизации здесь — автовекторизатор,
-# ручных интринсиков в проекте нет по решению об однопоточности и читаемости.
+# -O3 обязателен. Векторные микроядра написаны интринсиками и собираются под
+# свои наборы инструкций через атрибут target, но всё вокруг них — упаковку,
+# нормировки, softmax — векторизует компилятор, и без -O3 он этого не делает.
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fno-omit-frame-pointer")
 
@@ -35,6 +36,7 @@ add_library(llm_core
   src/core/shape.cpp
   src/core/storage.cpp
   src/core/str_view.cpp
+  src/core/thread_pool.cpp
   src/core/tensor.cpp
   src/autograd/nn.cpp
   src/autograd/node.cpp
@@ -72,6 +74,13 @@ add_library(llm_core
   src/infer/generate.cpp
 )
 target_include_directories(llm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Потоки. Ищутся через find_package, а не флагом -pthread напрямую: флаг у
+# разных систем разный, а зависимость обязана дойти до всех, кто ссылается на
+# llm_core, — поэтому PUBLIC.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(llm_core PUBLIC Threads::Threads)
 
 add_executable(bench_gemm apps/bench_gemm.cpp)
 target_link_libraries(bench_gemm PRIVATE llm_core)
@@ -126,6 +135,7 @@ add_executable(llm_tests
   tests/test_storage.cpp
   tests/test_str_view.cpp
   tests/test_tensor.cpp
+  tests/test_threads.cpp
   tests/test_train.cpp
   tests/test_variants.cpp
   tests/test_util.cpp
@@ -160,6 +170,7 @@ set(LLM_TEST_SUITES
   Storage
   StrView
   Tensor
+  Threads
   Train
   Variants
   Util
