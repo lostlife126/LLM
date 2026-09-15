@@ -13,8 +13,10 @@
 #include <string>
 #include <vector>
 
+#include "core/cpu.h"
 #include "core/random.h"
 #include "ops/gemm.h"
+#include "ops/micro_kernel.h"
 
 namespace {
 
@@ -46,6 +48,29 @@ Measurement measure(Fn fn, double flops, double target_seconds) {
   result.seconds = elapsed / repetitions;
   result.gflops = flops / result.seconds / 1e9;
   return result;
+}
+
+// Пропускная способность блочного умножения на задаче m x n x k.
+double measure_blocked(std::int64_t m, std::int64_t n, std::int64_t k) {
+  llm::Rng rng(2026);
+  std::vector<float> a(static_cast<std::size_t>(m * k));
+  std::vector<float> b(static_cast<std::size_t>(k * n));
+  std::vector<float> c(static_cast<std::size_t>(m * n), 0.0f);
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    a[i] = rng.uniform(-1.0f, 1.0f);
+  }
+  for (std::size_t i = 0; i < b.size(); ++i) {
+    b[i] = rng.uniform(-1.0f, 1.0f);
+  }
+  const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) *
+                       static_cast<double>(k);
+  return measure(
+             [&]() {
+               llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k,
+                              b.data(), n, 0.0f, c.data(), n);
+             },
+             flops, 0.3)
+      .gflops;
 }
 
 void run_case(const std::string& label, std::int64_t m, std::int64_t n,
@@ -96,7 +121,38 @@ void run_case(const std::string& label, std::int64_t m, std::int64_t n,
 
 }  // namespace
 
+// Сравнение микроядер между собой.
+//
+// Ради этого замера ядра и вынесены в таблицу с принудительным выбором. Что
+// AVX-512 быстрее AVX2, кажется очевидным — оно вдвое шире. На деле многие
+// серверные Xeon при широких инструкциях снижают частоту, и выигрыш съедается
+// целиком. Проверять это надо на той машине, где считать.
+void compare_kernels() {
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
+
+  std::printf("процессор: %s\n", llm::cpu_features().to_string().c_str());
+  std::printf("\n%-18s %10s %10s\n", "микроядро", "GFLOPS", "доступно");
+  std::printf("----------------------------------------\n");
+
+  const std::int64_t size = 512;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      std::printf("%-18s %10s %10s\n", table[i].kernel.name, "-", "нет");
+      continue;
+    }
+    llm::ops::force_micro_kernel(&table[i].kernel);
+    const double gflops = measure_blocked(size, size, size);
+    std::printf("%-18s %10.1f %10s\n", table[i].kernel.name, gflops, "да");
+  }
+  llm::ops::force_micro_kernel(nullptr);
+  std::printf("\nвыбрано автоматически: %s\n\n",
+              llm::ops::best_micro_kernel().name);
+}
+
 int main() {
+  compare_kernels();
   std::printf("%-22s %6s %6s %6s  %9s  %9s  %8s\n", "задача", "m", "n", "k",
               "блочный", "наивный", "ускор.");
   std::printf(

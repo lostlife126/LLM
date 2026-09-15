@@ -30,6 +30,7 @@ endif()
 
 add_library(llm_core
   src/core/check.cpp
+  src/core/cpu.cpp
   src/core/random.cpp
   src/core/shape.cpp
   src/core/storage.cpp
@@ -45,6 +46,7 @@ add_library(llm_core
   src/ops/nn.cpp
   src/ops/rope.cpp
   src/ops/gemm.cpp
+  src/ops/micro_kernel.cpp
   src/ops/matmul.cpp
   src/ops/reduce.cpp
   src/nn/config.cpp

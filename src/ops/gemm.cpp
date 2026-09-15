@@ -4,16 +4,16 @@
 #include <vector>
 
 #include "core/check.h"
+#include "ops/micro_kernel.h"
 
 namespace llm {
 namespace ops {
 namespace {
 
-// Размеры плитки микроядра, подобранные замером (apps/bench_gemm) на этой
-// машине. 4 x 32 оказалось оптимумом и у GCC, и у clang; соседние формы
-// (4 x 24, 6 x 16, 2 x 32) отстают на 5-15%, а 4 x 8 и 4 x 48 — вдвое.
-constexpr int64_t kMicroM = 4;
-constexpr int64_t kMicroN = 32;
+// Форма плитки больше не константа: её задаёт выбранное микроядро, и от неё
+// зависит раскладка упакованных панелей. Параметризация обязательна — иначе
+// смена ядра молча поломала бы раскладку, а проявилось бы это неверными
+// числами, а не ошибкой.
 
 // Размеры блоков. Смысл — удержать переиспользуемые данные в нужном уровне
 // кэша:
@@ -31,7 +31,7 @@ int64_t ceil_div(int64_t value, int64_t divisor) {
 }
 
 // Упаковка панели A: блок mc x kc матрицы op(A), разложенный панелями по
-// kMicroM строк. Внутри панели порядок (p, ii) — сначала шаг по глубине,
+// mr строк. Внутри панели порядок (p, ii) — сначала шаг по глубине,
 // потом по строке.
 //
 // Упаковка делает три вещи сразу:
@@ -41,99 +41,40 @@ int64_t ceil_div(int64_t value, int64_t divisor) {
 //   3) хвост дополняется нулями до полной панели, поэтому микроядро не
 //      нуждается в проверках границ — нули не портят сумму.
 void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
-            int64_t col0, int64_t mc, int64_t kc, float* apack) {
-  const int64_t panels = ceil_div(mc, kMicroM);
+            int64_t col0, int64_t mc, int64_t kc, int64_t mr, float* apack) {
+  const int64_t panels = ceil_div(mc, mr);
   for (int64_t panel = 0; panel < panels; ++panel) {
-    float* dst = apack + panel * kc * kMicroM;
+    float* dst = apack + panel * kc * mr;
     for (int64_t p = 0; p < kc; ++p) {
-      for (int64_t ii = 0; ii < kMicroM; ++ii) {
-        const int64_t i = panel * kMicroM + ii;
+      for (int64_t ii = 0; ii < mr; ++ii) {
+        const int64_t i = panel * mr + ii;
         float value = 0.0f;
         if (i < mc) {
           value = transpose_a ? a[(col0 + p) * lda + (row0 + i)]
                               : a[(row0 + i) * lda + (col0 + p)];
         }
-        dst[p * kMicroM + ii] = value;
+        dst[p * mr + ii] = value;
       }
     }
   }
 }
 
-// Упаковка блока B: kc x nc матрицы op(B), панелями по kMicroN столбцов.
+// Упаковка блока B: kc x nc матрицы op(B), панелями по nr столбцов.
 void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
-            int64_t col0, int64_t kc, int64_t nc, float* bpack) {
-  const int64_t panels = ceil_div(nc, kMicroN);
+            int64_t col0, int64_t kc, int64_t nc, int64_t nr, float* bpack) {
+  const int64_t panels = ceil_div(nc, nr);
   for (int64_t panel = 0; panel < panels; ++panel) {
-    float* dst = bpack + panel * kc * kMicroN;
+    float* dst = bpack + panel * kc * nr;
     for (int64_t p = 0; p < kc; ++p) {
-      for (int64_t jj = 0; jj < kMicroN; ++jj) {
-        const int64_t j = panel * kMicroN + jj;
+      for (int64_t jj = 0; jj < nr; ++jj) {
+        const int64_t j = panel * nr + jj;
         float value = 0.0f;
         if (j < nc) {
           value = transpose_b ? b[(col0 + j) * ldb + (row0 + p)]
                               : b[(row0 + p) * ldb + (col0 + j)];
         }
-        dst[p * kMicroN + jj] = value;
+        dst[p * nr + jj] = value;
       }
-    }
-  }
-}
-
-// Микроядро: считает плитку kMicroM x kMicroN произведения и добавляет её в C.
-//
-// Главное отличие от наивного цикла — накопление в локальном массиве, а не
-// прямо в C. За один проход по глубине kc плитка загружает kMicroM значений A
-// и kMicroN значений B, то есть 20 чисел, и делает на них 4 * 16 * 2 = 128
-// операций. У наивного варианта на каждое умножение приходится своя загрузка,
-// поэтому он упирается в память, а не в арифметику.
-//
-// rows и cols — сколько строк и столбцов плитки реально попадают в C: панели
-// дополнены нулями, поэтому считать можно всегда полную плитку, а записывать
-// только действительную часть.
-void micro_kernel(int64_t kc, const float* __restrict apanel,
-                  const float* __restrict bpanel, float alpha,
-                  float* __restrict c, int64_t ldc, int64_t rows,
-                  int64_t cols) {
-  static_assert(kMicroM == 4, "развёртка ниже рассчитана ровно на 4 строки");
-
-  // Аккумуляторы каждой строки — отдельный массив, а сами строки развёрнуты
-  // вручную. Это не украшательство, а разница в 6 раз, измеренная на этой
-  // машине: у варианта с вложенным циклом по строкам GCC не разворачивает
-  // внешний цикл, аккумуляторы остаются в стеке, и каждое умножение
-  // превращается в загрузку, сложение и выгрузку — 4 GFLOPS против 23.
-  // Clang справляется с обеими формами, но опираться на это нельзя: разница
-  // между 4 x 16 и 4 x 32 у GCC доходила до двадцати раз, и такой обрыв под
-  // фундаментом проекта недопустим.
-  float acc0[kMicroN] = {};
-  float acc1[kMicroN] = {};
-  float acc2[kMicroN] = {};
-  float acc3[kMicroN] = {};
-
-  for (int64_t p = 0; p < kc; ++p) {
-    const float* a_values = apanel + p * kMicroM;
-    const float a0 = a_values[0];
-    const float a1 = a_values[1];
-    const float a2 = a_values[2];
-    const float a3 = a_values[3];
-    const float* b_values = bpanel + p * kMicroN;
-    // Одна загрузка B обслуживает сразу четыре строки: именно здесь берётся
-    // арифметическая интенсивность. На 36 загруженных чисел приходится
-    // 4 * 32 * 2 = 256 операций.
-    for (int64_t jj = 0; jj < kMicroN; ++jj) {
-      const float b = b_values[jj];
-      acc0[jj] += a0 * b;
-      acc1[jj] += a1 * b;
-      acc2[jj] += a2 * b;
-      acc3[jj] += a3 * b;
-    }
-  }
-
-  const float* accumulators[kMicroM] = {acc0, acc1, acc2, acc3};
-  for (int64_t ii = 0; ii < rows; ++ii) {
-    float* c_row = c + ii * ldc;
-    const float* acc = accumulators[ii];
-    for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
     }
   }
 }
@@ -201,37 +142,49 @@ void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
     return;
   }
 
+  // Микроядро выбирается по возможностям процессора — один раз, а не на
+  // каждый вызов: best_micro_kernel считает выбор при первом обращении.
+  const MicroKernel& kernel = best_micro_kernel();
+  const int64_t mr = kernel.mr;
+  const int64_t nr = kernel.nr;
+
+  // Блоки округляются вверх до кратного плитке. Иначе последняя плитка блока
+  // была бы неполной всегда, а не только на краю матрицы, и медленный путь
+  // записи срабатывал бы постоянно.
+  const int64_t block_m = ceil_div(kBlockM, mr) * mr;
+  const int64_t block_n = ceil_div(kBlockN, nr) * nr;
+
   // Буферы упаковки выделяются по фактическому размеру блоков, поэтому на
   // маленьких матрицах не платим за буферы, рассчитанные на большие.
-  const int64_t mc_max = std::min(kBlockM, m);
-  const int64_t nc_max = std::min(kBlockN, n);
+  const int64_t mc_max = std::min(block_m, m);
+  const int64_t nc_max = std::min(block_n, n);
   const int64_t kc_max = std::min(kBlockK, k);
   std::vector<float> apack(
-      static_cast<std::size_t>(ceil_div(mc_max, kMicroM) * kMicroM * kc_max));
+      static_cast<std::size_t>(ceil_div(mc_max, mr) * mr * kc_max));
   std::vector<float> bpack(
-      static_cast<std::size_t>(ceil_div(nc_max, kMicroN) * kMicroN * kc_max));
+      static_cast<std::size_t>(ceil_div(nc_max, nr) * nr * kc_max));
 
   // Порядок блочных циклов: jc снаружи, затем pc, затем ic. При таком порядке
   // упакованный блок B переиспользуется всеми блоками строк A, а он самый
   // большой и дороже всех в упаковке.
-  for (int64_t jc = 0; jc < n; jc += kBlockN) {
-    const int64_t nc = std::min(kBlockN, n - jc);
+  for (int64_t jc = 0; jc < n; jc += block_n) {
+    const int64_t nc = std::min(block_n, n - jc);
     for (int64_t pc = 0; pc < k; pc += kBlockK) {
       const int64_t kc = std::min(kBlockK, k - pc);
-      pack_b(transpose_b, b, ldb, pc, jc, kc, nc, bpack.data());
+      pack_b(transpose_b, b, ldb, pc, jc, kc, nc, nr, bpack.data());
 
-      for (int64_t ic = 0; ic < m; ic += kBlockM) {
-        const int64_t mc = std::min(kBlockM, m - ic);
-        pack_a(transpose_a, a, lda, ic, pc, mc, kc, apack.data());
+      for (int64_t ic = 0; ic < m; ic += block_m) {
+        const int64_t mc = std::min(block_m, m - ic);
+        pack_a(transpose_a, a, lda, ic, pc, mc, kc, mr, apack.data());
 
-        for (int64_t i = 0; i < mc; i += kMicroM) {
-          const float* apanel = apack.data() + (i / kMicroM) * kc * kMicroM;
-          const int64_t rows = std::min(kMicroM, mc - i);
-          for (int64_t j = 0; j < nc; j += kMicroN) {
-            const float* bpanel = bpack.data() + (j / kMicroN) * kc * kMicroN;
-            const int64_t cols = std::min(kMicroN, nc - j);
-            micro_kernel(kc, apanel, bpanel, alpha,
-                         c + (ic + i) * ldc + (jc + j), ldc, rows, cols);
+        for (int64_t i = 0; i < mc; i += mr) {
+          const float* apanel = apack.data() + (i / mr) * kc * mr;
+          const int64_t rows = std::min(mr, mc - i);
+          for (int64_t j = 0; j < nc; j += nr) {
+            const float* bpanel = bpack.data() + (j / nr) * kc * nr;
+            const int64_t cols = std::min(nr, nc - j);
+            kernel.run(kc, apanel, bpanel, alpha, c + (ic + i) * ldc + (jc + j),
+                       ldc, rows, cols);
           }
         }
       }
