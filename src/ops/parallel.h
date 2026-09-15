@@ -69,7 +69,8 @@ void for_rows(int64_t rows, int64_t width, Fn fn) {
 // суммирования не зависит от числа потоков — см. заголовок файла.
 template <typename Fn>
 void for_row_parts(int64_t rows, int64_t width, Fn fn) {
-  const int64_t parts = std::max<int64_t>(1, std::min<int64_t>(rows, kSumParts));
+  const int64_t parts =
+      std::max<int64_t>(1, std::min<int64_t>(rows, kSumParts));
   const auto body = [&](int64_t part) {
     fn(part, rows * part / parts, rows * (part + 1) / parts);
   };

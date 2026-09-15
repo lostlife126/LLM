@@ -6,6 +6,7 @@
 #include "core/random.h"
 #include "core/thread_pool.h"
 #include "ops/gemm.h"
+#include "ops/micro_kernel.h"
 #include "testing.h"
 
 namespace {
@@ -266,4 +267,86 @@ LLM_TEST(Gemm, ThreadedResultMatchesNaive) {
   compare_with_naive(&rng, false, false, 96, 600, 200, 1.0f, 0.0f, 3);
   compare_with_naive(&rng, true, false, 300, 300, 300, 0.5f, 2.0f, 0);
   compare_with_naive(&rng, false, true, 300, 300, 300, 1.0f, 1.0f, 5);
+}
+
+LLM_TEST(Gemm, VectorKernelsAgreeBitForBit) {
+  // Микроядра разной ширины считают одну и ту же плитку, но раскладывают её по
+  // регистрам по-разному. Порядок накопления по глубине k при этом у всех один
+  // и тот же — последовательный, — поэтому векторные ядра обязаны совпадать
+  // побитово, а не с допуском.
+  //
+  // Проверка важна не сама по себе. Из неё следует, что обучение не зависит от
+  // того, какой процессор достался: на машине без AVX-512 возьмётся AVX2, и
+  // получится тот же файл весов. Сравнивать варианты архитектуры, посчитанные
+  // на разных машинах, иначе было бы нельзя.
+  //
+  // Скалярное ядро в это равенство не входит, и это не упущение. Оно
+  // собирается под базовый x86-64, где инструкции умножения с накоплением
+  // нет, и делает умножение и сложение отдельно — с двумя округлениями вместо
+  // одного. Разница мала, но она есть, и требовать здесь побитового
+  // совпадения значило бы требовать невозможного. Проверяется поэтому
+  // величина расхождения.
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
+  LLM_CHECK_GT(count, 0);
+
+  llm::Rng rng(31337);
+  const std::int64_t m = 200;
+  const std::int64_t n = 150;
+  const std::int64_t k = 300;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+
+  std::vector<float> fused_reference;
+  const char* fused_name = "";
+  std::vector<float> plain_reference;
+  int fused_compared = 0;
+
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      continue;
+    }
+    llm::ops::force_micro_kernel(&table[i].kernel);
+    std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
+    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                   actual.data(), n);
+
+    if (!table[i].kernel.fused) {
+      plain_reference = actual;
+      continue;
+    }
+    if (fused_reference.empty()) {
+      fused_reference = actual;
+      fused_name = table[i].kernel.name;
+      continue;
+    }
+    ++fused_compared;
+    for (std::size_t index = 0; index < fused_reference.size(); ++index) {
+      LLM_CHECK_MSG(fused_reference[index] == actual[index],
+                    "ядра '" << fused_name << "' и '" << table[i].kernel.name
+                             << "' расходятся в " << index << ": "
+                             << fused_reference[index] << " против "
+                             << actual[index]);
+    }
+  }
+  llm::ops::force_micro_kernel(nullptr);
+
+  // Если векторных ядер на этой машине меньше двух, сравнивать нечего. Молча
+  // проходить в таком случае нельзя: пусть будет видно, что проверка не
+  // работала.
+  LLM_CHECK_MSG(fused_compared > 0 || count < 3,
+                "сравнить оказалось нечего: доступно ядер " << count);
+
+  // Скалярное ядро против векторного: расхождение от лишнего округления
+  // накапливается по k случайными знаками, то есть как корень из k, а не
+  // линейно. При k = 300 это должно оставаться на уровне единиц ulp.
+  if (!fused_reference.empty() && !plain_reference.empty()) {
+    const double error =
+        max_relative_error(plain_reference, fused_reference, m, n, n);
+    LLM_CHECK_MSG(error < 1e-6, "скалярное ядро расходится с векторным на "
+                                    << error
+                                    << " — это слишком много для "
+                                       "разницы в одном округлении");
+  }
 }

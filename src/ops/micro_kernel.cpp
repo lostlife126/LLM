@@ -292,18 +292,19 @@ const MicroKernelChoice* build_table(int* count) {
   if (!ready) {
     const CpuFeatures& cpu = cpu_features();
 
-    table[size].kernel =
-        MicroKernel{kScalarM, kScalarN, &scalar_kernel, "скалярное 4x32"};
+    table[size].kernel = MicroKernel{kScalarM, kScalarN, &scalar_kernel,
+                                     "скалярное 4x32", false};
     table[size].available = true;
     ++size;
 
 #if LLM_HAS_X86_SIMD
-    table[size].kernel = MicroKernel{kAvx2M, kAvx2N, &avx2_kernel, "AVX2 6x16"};
+    table[size].kernel =
+        MicroKernel{kAvx2M, kAvx2N, &avx2_kernel, "AVX2 6x16", true};
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
     table[size].kernel =
-        MicroKernel{kAvx512M, kAvx512N, &avx512_kernel, "AVX-512 8x32"};
+        MicroKernel{kAvx512M, kAvx512N, &avx512_kernel, "AVX-512 8x32", true};
     table[size].available = cpu.has_avx512();
     ++size;
 #endif
