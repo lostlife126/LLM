@@ -199,9 +199,73 @@ void compare_threads() {
   std::printf("\nпотоков по умолчанию: %d\n\n", llm::parallel_width());
 }
 
+// Прямой путь против блочного при малом числе строк.
+//
+// Порог между ними существует потому, что при малом m упаковка не окупается:
+// она стоит k * n работы при m * k * n самого умножения. Но у прямого пути
+// своя цена — он читает B на месте, с шагом в целую строку, и на машине, где
+// шаг дорог, это может перевесить.
+//
+// Порог записан в gemm.cpp константой, подобранной замером на x86. Здесь он
+// подменяется, чтобы то же сравнение можно было провести на любой машине —
+// потому что переносить такое число с одной машины на другую нельзя. Тем
+// более что упаковка B с тех пор стала читать матрицу подряд, а не с шагом, и
+// блочный путь от этого ускорился.
+void compare_paths() {
+  struct Case {
+    std::int64_t m;
+    std::int64_t n;
+    std::int64_t k;
+  };
+  // Формы генерации по одному токену и разбора короткой затравки.
+  const Case cases[] = {
+      {1, 4096, 256},  {1, 8192, 384}, {4, 4096, 256},
+      {8, 4096, 256},  {16, 4096, 256}, {32, 4096, 256},
+  };
+
+  std::printf("\nпрямой путь против блочного (мс, меньше — лучше)\n");
+  std::printf("%-22s %10s %10s %10s\n", "форма", "прямой", "блочный",
+              "прямой к блочному");
+  std::printf(
+      "-----------------------------------------------------------------\n");
+
+  for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    const Case& c = cases[i];
+    llm::Rng rng(2024);
+    std::vector<float> a(static_cast<std::size_t>(c.m * c.k));
+    std::vector<float> b(static_cast<std::size_t>(c.k * c.n));
+    std::vector<float> out(static_cast<std::size_t>(c.m * c.n));
+    for (std::size_t j = 0; j < a.size(); ++j) a[j] = rng.normal() * 0.05f;
+    for (std::size_t j = 0; j < b.size(); ++j) b[j] = rng.normal() * 0.05f;
+
+    const auto once = [&]() {
+      llm::ops::gemm(false, false, c.m, c.n, c.k, 1.0f, a.data(), c.k,
+                     b.data(), c.n, 0.0f, out.data(), c.n);
+    };
+
+    // Порог ниже числа строк выключает прямой путь, порог выше — включает.
+    llm::ops::force_direct_max_rows(c.m);
+    const double direct = bench::best_seconds(once, 0.3);
+    llm::ops::force_direct_max_rows(0);
+    const double blocked = bench::best_seconds(once, 0.3);
+    llm::ops::force_direct_max_rows(-1);
+
+    char label[64];
+    std::snprintf(label, sizeof(label), "m=%lld n=%lld k=%lld",
+                  static_cast<long long>(c.m), static_cast<long long>(c.n),
+                  static_cast<long long>(c.k));
+    std::printf("%-22s %8.3f мс %8.3f мс %14.2fx\n", label, direct * 1e3,
+                blocked * 1e3, blocked / direct);
+  }
+  std::printf(
+      "отношение больше единицы — прямой путь быстрее, и порог в gemm.cpp\n"
+      "должен его включать; меньше единицы — наоборот.\n");
+}
+
 int main() {
   compare_kernels();
   compare_threads();
+  compare_paths();
   std::printf("%-22s %6s %6s %6s  %9s  %9s  %8s\n", "задача", "m", "n", "k",
               "блочный", "наивный", "ускор.");
   std::printf(

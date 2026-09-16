@@ -442,6 +442,15 @@ constexpr double kDirectMaxBBytes = 256.0 * 1024.0;
 // по одному токену, где m равно единице.
 constexpr int64_t kDirectMaxRows = 8;
 
+// Замер вправе подменить порог, чтобы сравнить пути между собой на той машине,
+// где он выполняется. Библиотека сама этого никогда не делает.
+int64_t g_forced_direct_max_rows = -1;
+
+int64_t direct_max_rows() {
+  return g_forced_direct_max_rows >= 0 ? g_forced_direct_max_rows
+                                       : kDirectMaxRows;
+}
+
 // Кратность ширины результата, при которой прямой путь применим.
 //
 // Число подобрано так, чтобы делиться на ширину плитки любого микроядра: 32 у
@@ -488,7 +497,7 @@ bool use_direct(const GemmTask& task, int64_t m, int64_t n) {
   // Цена этой строгости мала: она отсекает только матрицы в полосе от 64 до
   // 128 килобайт в половинной разрядности, а у моделей этого проекта матрицы
   // либо заметно меньше нижней границы, либо на порядок больше верхней.
-  if (m <= kDirectMaxRows) {
+  if (m <= direct_max_rows()) {
     return true;
   }
   const double b_bytes =
@@ -630,6 +639,10 @@ void check_arguments(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
 }
 
 }  // namespace
+
+void force_direct_max_rows(int64_t rows) {
+  g_forced_direct_max_rows = rows;
+}
 
 void reset_traffic() {
   g_bytes_a.store(0);
