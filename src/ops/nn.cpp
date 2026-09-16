@@ -167,17 +167,8 @@ Tensor layer_norm(const Tensor& input, const Tensor& weight, const Tensor& bias,
 
     // Две редукции вместо одной у RMSNorm: сначала среднее, потом дисперсия
     // вокруг него.
-    double sum = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      sum += x_row[i];
-    }
-    const double mean = sum / static_cast<double>(width);
-
-    double sum_squares = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      const double centered = static_cast<double>(x_row[i]) - mean;
-      sum_squares += centered * centered;
-    }
+    const double mean = row_sum(x_row, width) / static_cast<double>(width);
+    const double sum_squares = row_sum_centered_squares(x_row, mean, width);
     const double scale =
         1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
 
@@ -227,39 +218,46 @@ void layer_norm_backward(const Tensor& grad_output, const Tensor& input,
       const float* g_row = g + row * width;
       float* dx_row = dx + row * width;
 
-      double sum = 0.0;
-      for (int64_t i = 0; i < width; ++i) {
-        sum += x_row[i];
-      }
-      const double mean = sum / static_cast<double>(width);
-
-      double sum_squares = 0.0;
-      for (int64_t i = 0; i < width; ++i) {
-        const double centered = static_cast<double>(x_row[i]) - mean;
-        sum_squares += centered * centered;
-      }
+      const double mean = row_sum(x_row, width) / static_cast<double>(width);
+      const double sum_squares = row_sum_centered_squares(x_row, mean, width);
       const double scale =
           1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps);
 
       // Свободный член прибавляется как есть, поэтому его градиент — просто
       // сумма по строкам.
-      for (int64_t i = 0; i < width; ++i) {
+      // Градиенты веса и свободного члена и обе поправки по входу считаются
+      // одним проходом: всем четырём нужно нормированное значение, а оно
+      // стоит вычитания и умножения. Раньше проходов было три, и normalized
+      // считалось трижды на каждый элемент.
+      //
+      // Накопителей по восемь у каждой из двух сумм — по той же причине, что
+      // и везде: цепочка сложений иначе упирается в задержку, а порядок
+      // остаётся заданным исходником. См. ops/row_reduce.h.
+      double sum_h_parts[kRowParts] = {};
+      double sum_hn_parts[kRowParts] = {};
+      const auto accumulate = [&](int64_t i, int j) {
         const double normalized =
             (static_cast<double>(x_row[i]) - mean) * scale;
+        const double h = static_cast<double>(g_row[i]) * w[i];
         db_part[i] += g_row[i];
         dw_part[i] += g_row[i] * static_cast<float>(normalized);
+        sum_h_parts[j] += h;
+        sum_hn_parts[j] += h * normalized;
+      };
+      int64_t i = 0;
+      for (; i + kRowParts <= width; i += kRowParts) {
+        for (int j = 0; j < kRowParts; ++j) {
+          accumulate(i + j, j);
+        }
       }
-
-      // По входу зависимость идёт и через среднее, и через дисперсию, поэтому
-      // поправок две, а не одна как у RMSNorm.
+      for (int j = 0; i < width; ++i, ++j) {
+        accumulate(i, j);
+      }
       double sum_h = 0.0;
       double sum_h_normalized = 0.0;
-      for (int64_t i = 0; i < width; ++i) {
-        const double h = static_cast<double>(g_row[i]) * w[i];
-        const double normalized =
-            (static_cast<double>(x_row[i]) - mean) * scale;
-        sum_h += h;
-        sum_h_normalized += h * normalized;
+      for (int j = 0; j < kRowParts; ++j) {
+        sum_h += sum_h_parts[j];
+        sum_h_normalized += sum_hn_parts[j];
       }
       const double mean_h = sum_h / static_cast<double>(width);
       const double mean_h_normalized =
@@ -485,10 +483,7 @@ float root_mean_square(const Tensor& input) {
   }
   Tensor holder;
   const float* data = dense_data(input, &holder);
-  double total = 0.0;
-  for (int64_t i = 0; i < input.numel(); ++i) {
-    total += static_cast<double>(data[i]) * data[i];
-  }
+  const double total = row_sum_squares(data, input.numel());
   return static_cast<float>(
       std::sqrt(total / static_cast<double>(input.numel())));
 }

@@ -5,6 +5,7 @@
 
 #include "core/check.h"
 #include "ops/elementwise.h"
+#include "ops/parallel.h"
 
 namespace llm {
 namespace autograd {
@@ -35,10 +36,10 @@ void Node::scale_grad(float factor) {
     return;
   }
   float* data = grad_.data();
-  const int64_t count = grad_.numel();
-  for (int64_t element = 0; element < count; ++element) {
-    data[element] *= factor;
-  }
+  // Обрезка нормы вызывает это для каждого параметра, то есть проход по всем
+  // градиентам модели. Делится так же, как поэлементные операции.
+  ops::for_elements(grad_.numel(),
+                    [&](int64_t element) { data[element] *= factor; });
 }
 
 const Tensor& Var::grad() const {

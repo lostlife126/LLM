@@ -1,8 +1,14 @@
-// Замер прямого и обратного прохода модели.
+// Замер шага обучения модели.
 //
 // Цифра нужна для честной оценки времени обучения: пропускная способность
 // GEMM — это верхняя граница, а реальный шаг тратит заметную часть времени на
 // нормировки, softmax и мелкие матрицы внутри внимания.
+//
+// Шаг оптимизатора меряется отдельной строкой, и это не педантизм. Раньше
+// здесь считались только прямой и обратный проходы, а обрезка нормы и AdamW —
+// два полных прохода по всем параметрам — не считались вовсе. Из этой цифры
+// выводилось «сколько займут 2000 шагов», и вывод получался оптимистичным на
+// то, чего в замере не было.
 //
 // Запуск: ./bench_model [пресет] [батч]
 
@@ -17,6 +23,7 @@
 #include "core/random.h"
 #include "core/thread_pool.h"
 #include "nn/model.h"
+#include "train/optimizer.h"
 
 namespace {
 
@@ -100,7 +107,37 @@ int main(int argc, char** argv) {
       step_seconds = seconds;
     }
   }
-  std::printf("шаг обучения (вперёд + назад): %.3f с\n", step_seconds);
+  std::printf("вперёд + назад: %.3f с\n", step_seconds);
+
+  // Шаг оптимизатора: обрезка нормы и сам AdamW. Градиенты для него нужны
+  // настоящие, поэтому перед серией делается один проход вперёд-назад, а
+  // замеряется только то, что идёт после.
+  double optimizer_seconds = 0.0;
+  {
+    llm::train::AdamWConfig adam_config;
+    llm::train::AdamW optimizer(model.parameters(), adam_config);
+    llm::autograd::Var loss = model.loss(ids, batch, seq);
+    loss.backward();
+    for (int trial = 0; trial < 4; ++trial) {
+      const Clock::time_point start = Clock::now();
+      int repetitions = 0;
+      double elapsed = 0.0;
+      do {
+        optimizer.clip_grad_norm(1.0f);
+        optimizer.step(1e-4f);
+        ++repetitions;
+        elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+      } while (elapsed < 1.0);
+      const double seconds = elapsed / repetitions;
+      if (optimizer_seconds == 0.0 || seconds < optimizer_seconds) {
+        optimizer_seconds = seconds;
+      }
+    }
+  }
+  std::printf("шаг оптимизатора: %.3f с (%.0f%% сверх прохода)\n",
+              optimizer_seconds, 100.0 * optimizer_seconds / step_seconds);
+  step_seconds += optimizer_seconds;
+  std::printf("шаг обучения целиком: %.3f с\n", step_seconds);
   std::printf("пропускная способность: %.0f токенов/с\n",
               static_cast<double>(batch * seq) / step_seconds);
   std::printf("2000 шагов заняли бы %.1f мин\n", 2000.0 * step_seconds / 60.0);

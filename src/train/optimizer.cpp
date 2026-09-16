@@ -5,6 +5,8 @@
 #include <utility>
 
 #include "core/check.h"
+#include "ops/parallel.h"
+#include "ops/row_reduce.h"
 
 namespace llm {
 namespace train {
@@ -52,6 +54,25 @@ int64_t AdamW::decayed_parameter_count() const {
   return total;
 }
 
+// Сумма квадратов одного градиента. Порядок фиксирован дважды: внутри части —
+// восемью накопителями row_sum_squares, между частями — по номерам частей.
+// Ни то, ни другое не зависит от числа потоков, поэтому норма получается
+// побитово одинаковой на любой машине.
+double AdamW::sum_squares(const Tensor& tensor) {
+  const float* data = tensor.data();
+  double parts[ops::kSumParts] = {};
+  ops::for_row_parts(tensor.numel(), 1,
+                     [&](int64_t part, int64_t first, int64_t last) {
+                       parts[part] = ops::row_sum_squares(data + first,
+                                                          last - first);
+                     });
+  double total = 0.0;
+  for (int part = 0; part < ops::kSumParts; ++part) {
+    total += parts[part];
+  }
+  return total;
+}
+
 float AdamW::clip_grad_norm(float max_norm) {
   double sum_squares = 0.0;
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
@@ -59,11 +80,7 @@ float AdamW::clip_grad_norm(float max_norm) {
     if (!grad.defined()) {
       continue;
     }
-    const float* data = grad.data();
-    const int64_t count = grad.numel();
-    for (int64_t element = 0; element < count; ++element) {
-      sum_squares += static_cast<double>(data[element]) * data[element];
-    }
+    sum_squares += AdamW::sum_squares(grad);
   }
   const double norm = std::sqrt(sum_squares);
   if (norm <= static_cast<double>(max_norm) || norm == 0.0) {
@@ -107,37 +124,55 @@ void AdamW::step(float learning_rate) {
 
     // Длины шага и самого веса копятся по ходу: отдельный проход ради них
     // стоил бы столько же, сколько сам шаг.
+    //
+    // Работа делится на фиксированные части — те же, что у сумм в ops. Части
+    // считаются разными потоками, а складываются по номерам, поэтому и сами
+    // веса, и отношение шага к весу не зависят от числа ядер.
+    double update_parts[ops::kSumParts] = {};
+    double weight_parts[ops::kSumParts] = {};
+
+    ops::for_row_parts(count, 1, [&](int64_t part, int64_t begin, int64_t end) {
+      double update_squares = 0.0;
+      double weight_squares = 0.0;
+
+      for (int64_t element = begin; element < end; ++element) {
+        const float gradient = gradients[element];
+        weight_squares +=
+            static_cast<double>(weights[element]) * weights[element];
+
+        first[element] =
+            config_.beta1 * first[element] + (1.0f - config_.beta1) * gradient;
+        second[element] = config_.beta2 * second[element] +
+                          (1.0f - config_.beta2) * gradient * gradient;
+
+        const double corrected_first =
+            static_cast<double>(first[element]) / bias1;
+        const double corrected_second =
+            static_cast<double>(second[element]) / bias2;
+
+        // Распад применяется к самому весу, а не к градиенту: в этом и состоит
+        // отличие AdamW от Adam.
+        if (apply_decay_[i] && config_.weight_decay != 0.0f) {
+          weights[element] -=
+              learning_rate * config_.weight_decay * weights[element];
+        }
+
+        const double update =
+            corrected_first /
+            (std::sqrt(corrected_second) + static_cast<double>(config_.eps));
+        const double step = static_cast<double>(learning_rate) * update;
+        update_squares += step * step;
+        weights[element] -= static_cast<float>(step);
+      }
+      update_parts[part] = update_squares;
+      weight_parts[part] = weight_squares;
+    });
+
     double update_squares = 0.0;
     double weight_squares = 0.0;
-
-    for (int64_t element = 0; element < count; ++element) {
-      const float gradient = gradients[element];
-      weight_squares +=
-          static_cast<double>(weights[element]) * weights[element];
-
-      first[element] =
-          config_.beta1 * first[element] + (1.0f - config_.beta1) * gradient;
-      second[element] = config_.beta2 * second[element] +
-                        (1.0f - config_.beta2) * gradient * gradient;
-
-      const double corrected_first =
-          static_cast<double>(first[element]) / bias1;
-      const double corrected_second =
-          static_cast<double>(second[element]) / bias2;
-
-      // Распад применяется к самому весу, а не к градиенту: в этом и состоит
-      // отличие AdamW от Adam.
-      if (apply_decay_[i] && config_.weight_decay != 0.0f) {
-        weights[element] -=
-            learning_rate * config_.weight_decay * weights[element];
-      }
-
-      const double update =
-          corrected_first /
-          (std::sqrt(corrected_second) + static_cast<double>(config_.eps));
-      const double step = static_cast<double>(learning_rate) * update;
-      update_squares += step * step;
-      weights[element] -= static_cast<float>(step);
+    for (int part = 0; part < ops::kSumParts; ++part) {
+      update_squares += update_parts[part];
+      weight_squares += weight_parts[part];
     }
 
     update_ratios_[i] = weight_squares > 0.0

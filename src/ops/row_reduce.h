@@ -101,6 +101,25 @@ inline double row_dot3(const float* a, const float* b, const float* c,
   return combine_parts(part);
 }
 
+// Сумма квадратов отклонений от заданного среднего. Нужна LayerNorm: там
+// дисперсия считается вторым проходом, уже зная среднее.
+inline double row_sum_centered_squares(const float* row, double mean,
+                                       int64_t width) {
+  double part[kRowParts] = {};
+  int64_t i = 0;
+  for (; i + kRowParts <= width; i += kRowParts) {
+    for (int j = 0; j < kRowParts; ++j) {
+      const double centered = static_cast<double>(row[i + j]) - mean;
+      part[j] += centered * centered;
+    }
+  }
+  for (int j = 0; i < width; ++i, ++j) {
+    const double centered = static_cast<double>(row[i]) - mean;
+    part[j] += centered * centered;
+  }
+  return combine_parts(part);
+}
+
 // Максимум ассоциативен и точен, поэтому порядок здесь ни на что не влияет —
 // восемь накопителей взяты только чтобы порвать цепочку сравнений.
 inline float row_max(const float* row, int64_t width) {

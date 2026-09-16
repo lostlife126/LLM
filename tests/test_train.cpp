@@ -10,6 +10,7 @@
 
 #include "autograd/ops.h"
 #include "core/random.h"
+#include "core/thread_pool.h"
 #include "serialize/checkpoint.h"
 #include "testing.h"
 #include "train/optimizer.h"
@@ -784,4 +785,101 @@ LLM_TEST(Train, ResumeRefusesAnotherModel) {
   LLM_CHECK_EQ(same_optimizer.step_count(), static_cast<std::int64_t>(7));
 
   std::remove(snapshot.c_str());
+}
+
+LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
+  // Сумма квадратов делится на фиксированные части и складывается по их
+  // номерам, поэтому не зависит от числа потоков. Сравнение идёт в двойной
+  // точности и побитово — на самой сумме, а не на весах после шага.
+  //
+  // Через веса эту проверку сделать нельзя, и это выяснилось попыткой: разница
+  // порядков сложения здесь порядка 1e-14 относительных, а норма и веса —
+  // float с разрешением 6e-8, и при сужении типа расхождение пропадает. Тест
+  // на весах проходил бы при любом порядке.
+  //
+  // Данные подобраны так, чтобы перегруппировка вообще была видна: единица и
+  // дальше числа величиной 2^-27. Их квадраты по отдельности пропадают при
+  // прибавлении к единице, а сложенные между собой — нет. На обычных случайных
+  // числах сумма шестидесяти тысяч квадратов к порядку нечувствительна.
+  const int64_t count = 1 << 16;
+  llm::Tensor gradient = llm::Tensor::uninitialized(llm::Shape({count}));
+  for (int64_t i = 0; i < count; ++i) {
+    gradient.data()[i] = std::ldexp(1.0f, -27);
+  }
+  gradient.data()[0] = 1.0f;
+
+  double serial = 0.0;
+  for (int64_t i = 0; i < count; ++i) {
+    serial += static_cast<double>(gradient.data()[i]) * gradient.data()[i];
+  }
+
+  llm::set_parallel_width(1);
+  const double one = llm::train::AdamW::sum_squares(gradient);
+  llm::set_parallel_width(4);
+  const double four = llm::train::AdamW::sum_squares(gradient);
+  llm::set_parallel_width(0);
+
+  // Печатать эти суммы обычным способом бесполезно: они отличаются в
+  // четырнадцатом знаке, а поток по умолчанию показывает шесть. Разница
+  // выводится явно.
+  LLM_CHECK_MSG(one != serial,
+                "данные не различают порядок сложения, проверка пуста");
+  LLM_CHECK_MSG(one == four, "сумма квадратов зависит от числа потоков, "
+                             "разница " << (one - four));
+}
+
+LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
+  // Шаг оптимизатора делится по потокам, и обе суммы внутри него — норма
+  // градиента и длина шага — складываются по фиксированным частям. Проверка
+  // на то, что порядок действительно фиксирован: те же данные, разное число
+  // потоков, побитово те же веса.
+  //
+  // Размер взят выше порога деления работы: с маленьким тензором многопоточная
+  // ветка не включилась бы, и проверка оказалась бы пустой.
+  //
+  // Тонкость самой суммы проверяется отдельно, тестом выше: здесь всё сужается
+  // до float, и расхождение порядков сложения до весов не доходит. Этот тест
+  // про другое — что вся цепочка шага целиком, включая поэлементную часть,
+  // даёт один и тот же ответ при любом числе потоков.
+  const int64_t count = 1 << 16;
+  llm::Rng rng(7);
+  llm::Tensor start = llm::Tensor::uninitialized(llm::Shape({count}));
+  llm::Tensor gradient = llm::Tensor::uninitialized(llm::Shape({count}));
+  for (int64_t i = 0; i < count; ++i) {
+    start.data()[i] = static_cast<float>(rng.normal());
+    gradient.data()[i] = static_cast<float>(rng.normal());
+  }
+
+  const auto run = [&](int width) {
+    llm::set_parallel_width(width);
+    Var parameter = Var::leaf(start.clone(), true);
+    std::vector<llm::nn::NamedParameter> handles;
+    llm::nn::NamedParameter handle;
+    handle.name = "w";
+    handle.value = &parameter;
+    handles.push_back(handle);
+
+    llm::train::AdamW optimizer(handles, llm::train::AdamWConfig());
+    float norm = 0.0f;
+    for (int step = 0; step < 3; ++step) {
+      parameter.node()->accumulate(gradient);
+      norm = optimizer.clip_grad_norm(1.0f);
+      optimizer.step(1e-3f);
+      optimizer.zero_grad();
+    }
+    llm::set_parallel_width(0);
+    return std::make_pair(parameter.value().clone(), norm);
+  };
+
+  const std::pair<llm::Tensor, float> one = run(1);
+  const std::pair<llm::Tensor, float> four = run(4);
+
+  LLM_CHECK_MSG(one.second == four.second,
+                "норма градиента разошлась: " << one.second << " и "
+                                              << four.second);
+  for (int64_t i = 0; i < count; ++i) {
+    LLM_CHECK_MSG(one.first.data()[i] == four.first.data()[i],
+                  "вес " << i << " разошёлся: " << one.first.data()[i]
+                         << " и " << four.first.data()[i]);
+  }
 }
