@@ -105,6 +105,9 @@ target_link_libraries(fingerprint PRIVATE llm_core)
 add_executable(bpe_train apps/bpe_train.cpp)
 target_link_libraries(bpe_train PRIVATE llm_core)
 
+add_executable(bench_generate apps/bench_generate.cpp)
+target_link_libraries(bench_generate PRIVATE llm_core)
+
 add_executable(bench_model apps/bench_model.cpp)
 target_link_libraries(bench_model PRIVATE llm_core)
 
