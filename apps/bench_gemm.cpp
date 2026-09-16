@@ -258,5 +258,11 @@ int main() {
   run_case("tiny: qkv", 2048, 256, 256, false);
   run_case("tiny: ffn вверх", 2048, 704, 256, false);
   run_case("tiny: голова", 2048, 4096, 256, false);
+
+  // Формы внимания: по одной матрице на голову, и таких на слой batch * heads.
+  // Они мелкие, и на них работает прямой путь — без упаковки вовсе.
+  std::printf("\n");
+  run_case("nano: внимание W*V", 64, 32, 64, false);
+  run_case("tiny: внимание W*V", 128, 32, 128, false);
   return 0;
 }

@@ -159,6 +159,7 @@ struct GemmTask {
   int64_t block_m;
   int64_t block_n;
   MicroKernelFn run;
+  MicroKernelRowsFn run_rows;
   PackTransposeFn pack_transpose;
 };
 
@@ -264,6 +265,132 @@ Partition choose_partition(int64_t m, int64_t n, int64_t k, int64_t mr,
   return out;
 }
 
+// --- прямой путь: умножение без упаковки ------------------------------------
+//
+// Упаковка существует ровно затем, чтобы микроядро читало память подряд. Когда
+// вся задача помещается в кэш, это перестаёт что-либо значить: чтение «не
+// подряд» из L1 стоит столько же, а упаковка остаётся чистым накладным
+// расходом. На формах внимания он не мелкий — замер давал 53 GFLOPS с
+// упаковкой против 96 без неё.
+//
+// Панель A не упаковывается никогда: микроядро прямого пути читает её
+// построчно, как она лежит. Панель B не упаковывается, если B лежит обычным
+// образом, — тогда её панель это сама матрица, и достаточно передать шаг
+// строки вместо ширины плитки. Упаковывать приходится только транспонированный
+// B, то есть Q * K^T во внимании: там подряд идут ключи, а микроядру нужны
+// подряд столбцы, и без перестановки не обойтись.
+
+// До какого размера B упаковка не окупается.
+//
+// Порог именно по B, и это выяснилось замером, а не выводилось заранее. Прямой
+// путь перечитывает B на каждую полосу строк C, и всё держится на том,
+// помещается ли B в кэш. A так не мешает: её плитка mr x k остаётся в L1 на всё
+// время прохода по столбцам. C записывается ровно один раз — и это второй
+// источник выигрыша, потому что блочный путь при k больше 128 делит глубину и
+// перечитывает C на каждый кусок.
+//
+// Замер на формах модели, отношение «прямой к упакованному»:
+//
+//   B = 128 КБ   1.02      B = 512 КБ   0.89
+//   B = 176 КБ   1.11      B = 704 КБ   0.94
+//   B = 176 КБ   1.57      B = 4 МБ     0.68
+//
+// Граница лежит между 176 и 512 килобайтами; взято 256. Кэш второго уровня
+// здесь мегабайт на ядро, то есть порог заметно ниже него — за B в кэше
+// борются ещё плитки A и запись C.
+constexpr double kDirectMaxBBytes = 256.0 * 1024.0;
+
+// Кратность ширины результата, при которой прямой путь применим.
+//
+// Число подобрано так, чтобы делиться на ширину плитки любого микроядра: 32 у
+// скалярного и у AVX-512, 16 у AVX2. Если появится ядро с шириной, на которую
+// оно не делится, прямой путь для него просто выключится — условие ниже это
+// проверяет, — но лучше подобрать ядру такую ширину, чтобы делилась.
+constexpr int64_t kDirectAlign = 32;
+
+bool use_direct(const GemmTask& task, int64_t m, int64_t n) {
+  if (task.run_rows == nullptr) {
+    return false;
+  }
+  // Транспонированное op(A) уже лежит так, как нужно упакованной панели, и
+  // отдельный путь для него ничего не даст.
+  if (task.transpose_a) {
+    return false;
+  }
+  // Плитка по столбцам обязана быть полной: микроядро прямого пути читает свои
+  // nr значений строки B без проверок, и неполная плитка вылезла бы за её
+  // конец.
+  //
+  // Проверяется при этом кратность не ширине плитки, а общему числу — и это не
+  // придирка. Ширина плитки у ядер разная: 32 у AVX-512, 16 у AVX2. Если
+  // спрашивать про неё, то при n = 48 машина с AVX2 пошла бы прямым путём, а
+  // машина с AVX-512 — блочным; пути делят глубину по-разному, и обучение на
+  // двух машинах разошлось бы в последних разрядах. Общее число делится на обе
+  // ширины, поэтому выбор пути одинаков везде.
+  if (n % kDirectAlign != 0 || kDirectAlign % task.nr != 0) {
+    return false;
+  }
+  (void)m;
+  const double b_bytes =
+      4.0 * static_cast<double>(task.k) * static_cast<double>(n);
+  return b_bytes <= kDirectMaxBBytes;
+}
+
+void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
+  const int64_t mr = task.mr;
+  const int64_t nr = task.nr;
+  const int64_t k = task.k;
+
+  const float* bbase = task.b;
+  int64_t bstride = task.ldb;
+  if (task.transpose_b) {
+    PackBuffers& buffers = pack_buffers();
+    buffers.b.resize(static_cast<std::size_t>(ceil_div(n, nr) * nr * k));
+    pack_b(true, task.b, task.ldb, 0, 0, k, n, nr, task.pack_transpose,
+           buffers.b.data());
+    bbase = buffers.b.data();
+    bstride = nr;
+  }
+
+  const auto compute = [&](int64_t first, int64_t last) {
+    scale_c(last - first, n, task.beta, task.c + first * task.ldc, task.ldc);
+    for (int64_t i = first; i < last; i += mr) {
+      const int64_t rows = std::min(mr, last - i);
+      for (int64_t j = 0; j < n; j += nr) {
+        const float* bpanel =
+            task.transpose_b ? bbase + (j / nr) * k * nr : bbase + j;
+        task.run_rows(k, task.a + i * task.lda, task.lda, bpanel, bstride,
+                      task.alpha, task.c + i * task.ldc + j, task.ldc, rows,
+                      nr);
+      }
+    }
+  };
+
+  // Деление то же, что у блочного пути, и по той же причине: границы кусков
+  // выравнены на плитку, каждый элемент C считает ровно один поток, порядок
+  // накопления по глубине у него тот же. Упаковка B, если она была нужна, уже
+  // сделана — потоки только читают её.
+  const int width = parallel_width();
+  const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) *
+                       static_cast<double>(k);
+  const int64_t units = ceil_div(m, mr);
+  const int tasks =
+      (width > 1 && !inside_parallel_region() && flops >= kMinParallelFlops)
+          ? static_cast<int>(std::min<int64_t>(width, units))
+          : 1;
+  if (tasks <= 1) {
+    compute(0, m);
+    return;
+  }
+  parallel_for(tasks, [&](int index) {
+    const int64_t begin = (units * index) / tasks * mr;
+    const int64_t end = std::min((units * (index + 1)) / tasks * mr, m);
+    if (begin < end) {
+      compute(begin, end);
+    }
+  });
+}
+
 void check_arguments(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
                      int64_t k, int64_t lda, int64_t ldb, int64_t ldc) {
   LLM_CHECK_GE(m, static_cast<int64_t>(0));
@@ -329,6 +456,7 @@ void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
   task.mr = kernel.mr;
   task.nr = kernel.nr;
   task.run = kernel.run;
+  task.run_rows = kernel.run_rows;
   task.pack_transpose = kernel.pack_transpose;
 
   // Блоки округляются вверх до кратного плитке. Иначе последняя плитка блока
@@ -336,6 +464,11 @@ void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
   // записи срабатывал бы постоянно.
   task.block_m = ceil_div(kBlockM, task.mr) * task.mr;
   task.block_n = ceil_div(kBlockN, task.nr) * task.nr;
+
+  if (use_direct(task, m, n)) {
+    gemm_direct(task, m, n);
+    return;
+  }
 
   const Partition split = choose_partition(m, n, k, task.mr, task.nr);
   if (split.tasks <= 1) {

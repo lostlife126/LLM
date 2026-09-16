@@ -198,6 +198,48 @@ void scalar_kernel(int64_t kc, const float* __restrict apanel,
 
 #if LLM_HAS_X86_SIMD
 
+// Тот же расчёт, но A читается построчно, как лежит. Указатели на строки
+// берутся заранее: недостающие показывают на последнюю действительную, и их
+// вклад в C всё равно не записывается.
+void scalar_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
+                        const float* __restrict b, int64_t bstride, float alpha,
+                        float* __restrict c, int64_t ldc, int64_t rows,
+                        int64_t cols) {
+  float acc0[kScalarN] = {};
+  float acc1[kScalarN] = {};
+  float acc2[kScalarN] = {};
+  float acc3[kScalarN] = {};
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float va0 = a0[p];
+    const float va1 = a1[p];
+    const float va2 = a2[p];
+    const float va3 = a3[p];
+    const float* b_values = b + p * bstride;
+    for (int64_t jj = 0; jj < kScalarN; ++jj) {
+      const float value = b_values[jj];
+      acc0[jj] += va0 * value;
+      acc1[jj] += va1 * value;
+      acc2[jj] += va2 * value;
+      acc3[jj] += va3 * value;
+    }
+  }
+
+  const float* accumulators[kScalarM] = {acc0, acc1, acc2, acc3};
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = accumulators[ii];
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
 // --- AVX2 -------------------------------------------------------------------
 //
 // Плитка 6 x 16: шесть строк по два вектора из восьми чисел. Форма не
@@ -311,6 +353,87 @@ __attribute__((target("avx2,fma"))) void avx2_kernel(
   }
 }
 
+__attribute__((target("avx2,fma"))) void avx2_kernel_rows(
+    int64_t kc, const float* __restrict a, int64_t lda,
+    const float* __restrict b, int64_t bstride, float alpha,
+    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+  __m256 acc00 = _mm256_setzero_ps();
+  __m256 acc01 = _mm256_setzero_ps();
+  __m256 acc10 = _mm256_setzero_ps();
+  __m256 acc11 = _mm256_setzero_ps();
+  __m256 acc20 = _mm256_setzero_ps();
+  __m256 acc21 = _mm256_setzero_ps();
+  __m256 acc30 = _mm256_setzero_ps();
+  __m256 acc31 = _mm256_setzero_ps();
+  __m256 acc40 = _mm256_setzero_ps();
+  __m256 acc41 = _mm256_setzero_ps();
+  __m256 acc50 = _mm256_setzero_ps();
+  __m256 acc51 = _mm256_setzero_ps();
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* a4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* a5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* b_values = b + p * bstride;
+    const __m256 b0 = _mm256_loadu_ps(b_values);
+    const __m256 b1 = _mm256_loadu_ps(b_values + 8);
+
+    __m256 av = _mm256_broadcast_ss(a0 + p);
+    acc00 = _mm256_fmadd_ps(av, b0, acc00);
+    acc01 = _mm256_fmadd_ps(av, b1, acc01);
+    av = _mm256_broadcast_ss(a1 + p);
+    acc10 = _mm256_fmadd_ps(av, b0, acc10);
+    acc11 = _mm256_fmadd_ps(av, b1, acc11);
+    av = _mm256_broadcast_ss(a2 + p);
+    acc20 = _mm256_fmadd_ps(av, b0, acc20);
+    acc21 = _mm256_fmadd_ps(av, b1, acc21);
+    av = _mm256_broadcast_ss(a3 + p);
+    acc30 = _mm256_fmadd_ps(av, b0, acc30);
+    acc31 = _mm256_fmadd_ps(av, b1, acc31);
+    av = _mm256_broadcast_ss(a4 + p);
+    acc40 = _mm256_fmadd_ps(av, b0, acc40);
+    acc41 = _mm256_fmadd_ps(av, b1, acc41);
+    av = _mm256_broadcast_ss(a5 + p);
+    acc50 = _mm256_fmadd_ps(av, b0, acc50);
+    acc51 = _mm256_fmadd_ps(av, b1, acc51);
+  }
+
+  float tile[kAvx2M * kAvx2N];
+  _mm256_storeu_ps(tile + 0 * kAvx2N, acc00);
+  _mm256_storeu_ps(tile + 0 * kAvx2N + 8, acc01);
+  _mm256_storeu_ps(tile + 1 * kAvx2N, acc10);
+  _mm256_storeu_ps(tile + 1 * kAvx2N + 8, acc11);
+  _mm256_storeu_ps(tile + 2 * kAvx2N, acc20);
+  _mm256_storeu_ps(tile + 2 * kAvx2N + 8, acc21);
+  _mm256_storeu_ps(tile + 3 * kAvx2N, acc30);
+  _mm256_storeu_ps(tile + 3 * kAvx2N + 8, acc31);
+  _mm256_storeu_ps(tile + 4 * kAvx2N, acc40);
+  _mm256_storeu_ps(tile + 4 * kAvx2N + 8, acc41);
+  _mm256_storeu_ps(tile + 5 * kAvx2N, acc50);
+  _mm256_storeu_ps(tile + 5 * kAvx2N + 8, acc51);
+
+  const __m256 scale = _mm256_set1_ps(alpha);
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = tile + ii * kAvx2N;
+    if (cols == kAvx2N) {
+      _mm256_storeu_ps(c_row, _mm256_fmadd_ps(scale, _mm256_loadu_ps(acc),
+                                              _mm256_loadu_ps(c_row)));
+      _mm256_storeu_ps(c_row + 8,
+                       _mm256_fmadd_ps(scale, _mm256_loadu_ps(acc + 8),
+                                       _mm256_loadu_ps(c_row + 8)));
+      continue;
+    }
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
 // --- AVX-512 ----------------------------------------------------------------
 //
 // Плитка 8 x 32: восемь строк по два вектора из шестнадцати чисел. Регистров у
@@ -415,6 +538,103 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel(
   }
 }
 
+__attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
+    int64_t kc, const float* __restrict a, int64_t lda,
+    const float* __restrict b, int64_t bstride, float alpha,
+    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+  __m512 acc00 = _mm512_setzero_ps();
+  __m512 acc01 = _mm512_setzero_ps();
+  __m512 acc10 = _mm512_setzero_ps();
+  __m512 acc11 = _mm512_setzero_ps();
+  __m512 acc20 = _mm512_setzero_ps();
+  __m512 acc21 = _mm512_setzero_ps();
+  __m512 acc30 = _mm512_setzero_ps();
+  __m512 acc31 = _mm512_setzero_ps();
+  __m512 acc40 = _mm512_setzero_ps();
+  __m512 acc41 = _mm512_setzero_ps();
+  __m512 acc50 = _mm512_setzero_ps();
+  __m512 acc51 = _mm512_setzero_ps();
+  __m512 acc60 = _mm512_setzero_ps();
+  __m512 acc61 = _mm512_setzero_ps();
+  __m512 acc70 = _mm512_setzero_ps();
+  __m512 acc71 = _mm512_setzero_ps();
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* a4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* a5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+  const float* a6 = a + (rows > 6 ? 6 : rows - 1) * lda;
+  const float* a7 = a + (rows > 7 ? 7 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* b_values = b + p * bstride;
+    const __m512 b0 = _mm512_loadu_ps(b_values);
+    const __m512 b1 = _mm512_loadu_ps(b_values + 16);
+
+    __m512 av = _mm512_set1_ps(a0[p]);
+    acc00 = _mm512_fmadd_ps(av, b0, acc00);
+    acc01 = _mm512_fmadd_ps(av, b1, acc01);
+    av = _mm512_set1_ps(a1[p]);
+    acc10 = _mm512_fmadd_ps(av, b0, acc10);
+    acc11 = _mm512_fmadd_ps(av, b1, acc11);
+    av = _mm512_set1_ps(a2[p]);
+    acc20 = _mm512_fmadd_ps(av, b0, acc20);
+    acc21 = _mm512_fmadd_ps(av, b1, acc21);
+    av = _mm512_set1_ps(a3[p]);
+    acc30 = _mm512_fmadd_ps(av, b0, acc30);
+    acc31 = _mm512_fmadd_ps(av, b1, acc31);
+    av = _mm512_set1_ps(a4[p]);
+    acc40 = _mm512_fmadd_ps(av, b0, acc40);
+    acc41 = _mm512_fmadd_ps(av, b1, acc41);
+    av = _mm512_set1_ps(a5[p]);
+    acc50 = _mm512_fmadd_ps(av, b0, acc50);
+    acc51 = _mm512_fmadd_ps(av, b1, acc51);
+    av = _mm512_set1_ps(a6[p]);
+    acc60 = _mm512_fmadd_ps(av, b0, acc60);
+    acc61 = _mm512_fmadd_ps(av, b1, acc61);
+    av = _mm512_set1_ps(a7[p]);
+    acc70 = _mm512_fmadd_ps(av, b0, acc70);
+    acc71 = _mm512_fmadd_ps(av, b1, acc71);
+  }
+
+  float tile[kAvx512M * kAvx512N];
+  _mm512_storeu_ps(tile + 0 * kAvx512N, acc00);
+  _mm512_storeu_ps(tile + 0 * kAvx512N + 16, acc01);
+  _mm512_storeu_ps(tile + 1 * kAvx512N, acc10);
+  _mm512_storeu_ps(tile + 1 * kAvx512N + 16, acc11);
+  _mm512_storeu_ps(tile + 2 * kAvx512N, acc20);
+  _mm512_storeu_ps(tile + 2 * kAvx512N + 16, acc21);
+  _mm512_storeu_ps(tile + 3 * kAvx512N, acc30);
+  _mm512_storeu_ps(tile + 3 * kAvx512N + 16, acc31);
+  _mm512_storeu_ps(tile + 4 * kAvx512N, acc40);
+  _mm512_storeu_ps(tile + 4 * kAvx512N + 16, acc41);
+  _mm512_storeu_ps(tile + 5 * kAvx512N, acc50);
+  _mm512_storeu_ps(tile + 5 * kAvx512N + 16, acc51);
+  _mm512_storeu_ps(tile + 6 * kAvx512N, acc60);
+  _mm512_storeu_ps(tile + 6 * kAvx512N + 16, acc61);
+  _mm512_storeu_ps(tile + 7 * kAvx512N, acc70);
+  _mm512_storeu_ps(tile + 7 * kAvx512N + 16, acc71);
+
+  const __m512 scale = _mm512_set1_ps(alpha);
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = tile + ii * kAvx512N;
+    if (cols == kAvx512N) {
+      _mm512_storeu_ps(c_row, _mm512_fmadd_ps(scale, _mm512_loadu_ps(acc),
+                                              _mm512_loadu_ps(c_row)));
+      _mm512_storeu_ps(c_row + 16,
+                       _mm512_fmadd_ps(scale, _mm512_loadu_ps(acc + 16),
+                                       _mm512_loadu_ps(c_row + 16)));
+      continue;
+    }
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
 #endif  // LLM_HAS_X86_SIMD
 
 const MicroKernelChoice* build_table(int* count) {
@@ -424,21 +644,34 @@ const MicroKernelChoice* build_table(int* count) {
   if (!ready) {
     const CpuFeatures& cpu = cpu_features();
 
-    table[size].kernel = MicroKernel{kScalarM,         kScalarN,
-                                     &scalar_kernel,   &plain_transpose_pack,
-                                     "скалярное 4x32", false};
+    table[size].kernel = MicroKernel{kScalarM,
+                                     kScalarN,
+                                     &scalar_kernel,
+                                     &scalar_kernel_rows,
+                                     &plain_transpose_pack,
+                                     "скалярное 4x32",
+                                     false};
     table[size].available = true;
     ++size;
 
 #if LLM_HAS_X86_SIMD
-    table[size].kernel = MicroKernel{
-        kAvx2M, kAvx2N, &avx2_kernel, &avx2_transpose_pack, "AVX2 6x16", true};
+    table[size].kernel = MicroKernel{kAvx2M,
+                                     kAvx2N,
+                                     &avx2_kernel,
+                                     &avx2_kernel_rows,
+                                     &avx2_transpose_pack,
+                                     "AVX2 6x16",
+                                     true};
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
-    table[size].kernel = MicroKernel{kAvx512M,       kAvx512N,
-                                     &avx512_kernel, &avx2_transpose_pack,
-                                     "AVX-512 8x32", true};
+    table[size].kernel = MicroKernel{kAvx512M,
+                                     kAvx512N,
+                                     &avx512_kernel,
+                                     &avx512_kernel_rows,
+                                     &avx2_transpose_pack,
+                                     "AVX-512 8x32",
+                                     true};
     table[size].available = cpu.has_avx512();
     ++size;
 #endif

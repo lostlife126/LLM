@@ -51,10 +51,33 @@ using MicroKernelFn = void (*)(int64_t kc, const float* apanel,
 using PackTransposeFn = void (*)(const float* src, int64_t lda, int64_t lanes,
                                  int64_t rows, int64_t kc, float* dst);
 
+// Микроядро прямого пути: A читается построчно, как лежит, без упаковки.
+//
+// Упаковка существует затем, чтобы микроядро читало память подряд. Когда вся
+// задача помещается в кэш, это перестаёт что-либо значить: читать «не подряд»
+// из L1 стоит столько же, а упаковка остаётся чистым накладным расходом. По
+// замеру на формах внимания — от двадцати до восьмидесяти процентов времени
+// умножения.
+//
+// Отличие от упакованного ядра ровно одно: значения A берутся как
+// a[ii * lda + p] вместо a[p * mr + ii]. Команда та же — рассылка одного
+// значения по всем дорожкам, — меняется только адрес.
+//
+// Требования, за которые отвечает вызывающий:
+//   cols == nr, то есть плитка по столбцам полная. Проверок границ внутри нет,
+//   и чтение nr значений подряд из строки B обязано оставаться в матрице;
+//   1 <= rows <= mr. Недостающие строки ядро берёт с последней действительной
+//   и в C не записывает — так не нужен ни буфер нулей, ни чтение за границей.
+using MicroKernelRowsFn = void (*)(int64_t kc, const float* a, int64_t lda,
+                                   const float* b, int64_t bstride, float alpha,
+                                   float* c, int64_t ldc, int64_t rows,
+                                   int64_t cols);
+
 struct MicroKernel {
   int64_t mr = 0;
   int64_t nr = 0;
   MicroKernelFn run = nullptr;
+  MicroKernelRowsFn run_rows = nullptr;
   PackTransposeFn pack_transpose = nullptr;
   const char* name = "";
 

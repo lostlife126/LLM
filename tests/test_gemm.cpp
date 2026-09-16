@@ -350,3 +350,125 @@ LLM_TEST(Gemm, VectorKernelsAgreeBitForBit) {
                                        "разницы в одном округлении");
   }
 }
+
+LLM_TEST(Gemm, DirectPathMatchesNaive) {
+  // Прямой путь — тот, где упаковки нет вовсе, — выбирается по размеру B, и
+  // обычные тесты в него попадают не всегда. Здесь формы подобраны так, чтобы
+  // попадали наверняка: ширина результата кратна плитке любого из ядер (32 и
+  // 16), а B заведомо мал.
+  //
+  // Проверяются ровно те места, где прямой путь отличается от блочного:
+  //   - неполная полоса строк: микроядро берёт недостающие строки с последней
+  //     действительной и не должно записать их в C;
+  //   - шаги строк больше ширины (pad), чтобы панель B бралась по ldb, а не по
+  //     ширине матрицы;
+  //   - транспонированный B, где упаковка остаётся и должна сойтись с прямым
+  //     чтением A;
+  //   - alpha и beta, потому что beta применяется отдельным проходом по своей
+  //     полосе строк.
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
+
+  llm::Rng rng(515);
+  const std::int64_t widths[] = {32, 64, 128};
+  const std::int64_t heights[] = {1, 7, 8, 13, 64, 129};
+
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      continue;
+    }
+    llm::ops::force_micro_kernel(&table[i].kernel);
+    for (std::size_t w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w) {
+      for (std::size_t h = 0; h < sizeof(heights) / sizeof(heights[0]); ++h) {
+        const std::int64_t n = widths[w];
+        const std::int64_t m = heights[h];
+        compare_with_naive(&rng, false, false, m, n, 40, 1.0f, 0.0f, 0);
+        compare_with_naive(&rng, false, false, m, n, 33, 0.5f, 2.0f, 3);
+        compare_with_naive(&rng, false, true, m, n, 40, 1.0f, 1.0f, 0);
+        compare_with_naive(&rng, false, true, m, n, 17, -1.5f, 0.0f, 5);
+      }
+    }
+  }
+  llm::ops::force_micro_kernel(nullptr);
+}
+
+LLM_TEST(Gemm, DirectPathDoesNotDependOnThreadCount) {
+  // То же требование, что и к блочному пути: число ядер не меняет результат
+  // побитово. У прямого пути деление своё, поэтому проверяется отдельно.
+  llm::Rng rng(90210);
+  const std::int64_t m = 300;
+  const std::int64_t n = 128;
+  const std::int64_t k = 48;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+
+  llm::set_parallel_width(1);
+  std::vector<float> serial(static_cast<std::size_t>(m * n), 0.0f);
+  llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                 serial.data(), n);
+
+  llm::set_parallel_width(0);
+  std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.0f);
+  llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                 threaded.data(), n);
+
+  for (std::size_t index = 0; index < serial.size(); ++index) {
+    LLM_CHECK_MSG(serial[index] == threaded[index],
+                  "элемент " << index << ": " << threaded[index] << " вместо "
+                             << serial[index]);
+  }
+}
+
+LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
+  // Прямой и блочный пути делят глубину по-разному, поэтому дают чуть разные
+  // младшие разряды. Это допустимо — но только если выбор пути одинаков на
+  // любой машине. Иначе обучение на процессоре с AVX2 и на процессоре с
+  // AVX-512 разошлось бы, и сравнивать их было бы нельзя.
+  //
+  // Проверяется это так: одна и та же задача считается всеми доступными
+  // ядрами, и требуется, чтобы расхождение оставалось на уровне одного
+  // округления. Если бы ядра выбирали разные пути, разница вышла бы заметно
+  // больше — глубина здесь нарочно взята больше блока, чтобы блочный путь её
+  // поделил.
+  //
+  // Ширина 48 — тот самый случай, ради которого условие проверяет кратность
+  // общему числу, а не ширине плитки: 48 делится на 16, но не на 32.
+  llm::Rng rng(1234);
+  const std::int64_t widths[] = {48, 64, 96, 128};
+  const std::int64_t m = 96;
+  const std::int64_t k = 300;
+
+  for (std::size_t w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w) {
+    const std::int64_t n = widths[w];
+    const std::vector<float> a = random_matrix(&rng, m, k);
+    const std::vector<float> b = random_matrix(&rng, k, n);
+
+    std::vector<float> reference;
+    const char* reference_name = "";
+    int count = 0;
+    const llm::ops::MicroKernelChoice* table =
+        llm::ops::all_micro_kernels(&count);
+    for (int i = 0; i < count; ++i) {
+      if (!table[i].available) {
+        continue;
+      }
+      llm::ops::force_micro_kernel(&table[i].kernel);
+      std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
+      llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n,
+                     0.0f, actual.data(), n);
+      if (reference.empty()) {
+        reference = actual;
+        reference_name = table[i].kernel.name;
+        continue;
+      }
+      const double error = max_relative_error(reference, actual, m, n, n);
+      LLM_CHECK_MSG(error < 1e-6,
+                    "ядра '" << reference_name << "' и '"
+                             << table[i].kernel.name << "' при n = " << n
+                             << " разошлись на " << error
+                             << " — похоже, они выбрали разные пути");
+    }
+    llm::ops::force_micro_kernel(nullptr);
+  }
+}
