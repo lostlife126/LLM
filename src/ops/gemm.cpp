@@ -148,14 +148,16 @@ void pack_b_half(const Half* b, int64_t ldb, int64_t row0, int64_t col0,
                  int64_t kc, int64_t nc, int64_t nr, float* bpack) {
   count_b(nc * kc * 2);
   const int64_t panels = ceil_div(nc, nr);
-  for (int64_t panel = 0; panel < panels; ++panel) {
-    float* dst = bpack + panel * kc * nr;
-    const int64_t first = panel * nr;
-    const int64_t cols = std::min(nr, nc - first);
-    for (int64_t p = 0; p < kc; ++p) {
-      const Half* src = b + (row0 + p) * ldb + col0 + first;
-      half_to_floats(src, dst + p * nr, cols);
-      std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
+  // Порядок циклов тот же, что у обычной разрядности, и по той же причине —
+  // разбор там.
+  for (int64_t p = 0; p < kc; ++p) {
+    const Half* row = b + (row0 + p) * ldb + col0;
+    for (int64_t panel = 0; panel < panels; ++panel) {
+      const int64_t first = panel * nr;
+      const int64_t cols = std::min(nr, nc - first);
+      float* dst = bpack + panel * kc * nr + p * nr;
+      half_to_floats(row + first, dst, cols);
+      std::fill(dst + cols, dst + nr, 0.0f);
     }
   }
 }
@@ -168,22 +170,43 @@ void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
             PackTransposeFn pack_transpose, float* bpack) {
   count_b(nc * kc * 4);
   const int64_t panels = ceil_div(nc, nr);
-  for (int64_t panel = 0; panel < panels; ++panel) {
-    float* dst = bpack + panel * kc * nr;
-    const int64_t first = panel * nr;
-    const int64_t cols = std::min(nr, nc - first);
 
-    if (transpose_b) {
+  if (transpose_b) {
+    for (int64_t panel = 0; panel < panels; ++panel) {
       // Внимание считает Q * K^T, то есть попадает сюда на каждом слое и на
       // каждой голове. Это та же перестановка, что у панели A, и делает её та
       // же функция микроядра — разница только в ширине панели.
-      pack_transpose(b + (col0 + first) * ldb + row0, ldb, nr, cols, kc, dst);
-    } else {
-      for (int64_t p = 0; p < kc; ++p) {
-        const float* src = b + (row0 + p) * ldb + col0 + first;
-        std::copy(src, src + cols, dst + p * nr);
-        std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
-      }
+      const int64_t first = panel * nr;
+      const int64_t cols = std::min(nr, nc - first);
+      pack_transpose(b + (col0 + first) * ldb + row0, ldb, nr, cols, kc,
+                     bpack + panel * kc * nr);
+    }
+    return;
+  }
+
+  // Порядок циклов: глубина снаружи, панели внутри. Наоборот было бы
+  // естественнее по раскладке буфера, но читалось бы при этом по тридцать два
+  // байта из каждой строки B с шагом ldb — то есть 16 килобайт при n = 4096, и
+  // каждое чтение попадало бы в новую страницу.
+  //
+  // Замер на Raspberry Pi 5 показал, во что это обходится: умножение при m = 1
+  // и B размером 4 МБ читало со скоростью 0.65 ГБ/с, тогда как линейное
+  // копирование на той же машине идёт со скоростью 9.4 ГБ/с. Разница в
+  // четырнадцать раз, и блочный путь был ничуть не лучше прямого — порядок
+  // чтения у них общий, и дело было в нём.
+  //
+  // В этом порядке читается целая строка блока подряд, до nc значений, а
+  // разбросанной оказывается запись — но пишется в буфер панелей, а он
+  // рассчитан на кэш второго уровня. Значения при этом те же и на тех же
+  // местах: перестановка циклов численно ничего не меняет.
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* row = b + (row0 + p) * ldb + col0;
+    for (int64_t panel = 0; panel < panels; ++panel) {
+      const int64_t first = panel * nr;
+      const int64_t cols = std::min(nr, nc - first);
+      float* dst = bpack + panel * kc * nr + p * nr;
+      std::copy(row + first, row + first + cols, dst);
+      std::fill(dst + cols, dst + nr, 0.0f);
     }
   }
 }
