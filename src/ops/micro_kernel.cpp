@@ -671,6 +671,68 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
 // слитным умножением с накоплением, и в конце c += alpha * acc тоже слитно.
 // Значит NEON обязан совпадать с AVX2 побитово, и это проверяется тестом.
 
+// Транспонирование блока 4 x 4 на месте.
+//
+// Два яруса: сначала соседние строки чередуются по парам значений, потом
+// собираются половины регистров. У NEON регистр вчетверо уже, чем у AVX-512, и
+// втрое меньше ярусов, чем у блока 8 x 8 на AVX2, — зато и границы половины
+// регистра, через которую там нельзя заглянуть одной командой, здесь нет:
+// vtrn1q/vtrn2q работают по всему регистру.
+inline void transpose4x4(float32x4_t* r) {
+  const float32x4_t t0 = vtrn1q_f32(r[0], r[1]);
+  const float32x4_t t1 = vtrn2q_f32(r[0], r[1]);
+  const float32x4_t t2 = vtrn1q_f32(r[2], r[3]);
+  const float32x4_t t3 = vtrn2q_f32(r[2], r[3]);
+  r[0] = vcombine_f32(vget_low_f32(t0), vget_low_f32(t2));
+  r[1] = vcombine_f32(vget_low_f32(t1), vget_low_f32(t3));
+  r[2] = vcombine_f32(vget_high_f32(t0), vget_high_f32(t2));
+  r[3] = vcombine_f32(vget_high_f32(t1), vget_high_f32(t3));
+}
+
+// Упаковка панели с транспонированием.
+//
+// Ширина плитки здесь восемь, то есть ровно два блока по четыре дорожки, и
+// остатка по дорожкам не бывает — в отличие от ядра AVX2, где плитка шириной
+// шесть и последний блок приходится записывать под маской.
+void neon_transpose_pack(const float* src, int64_t lda, int64_t lanes,
+                         int64_t rows, int64_t kc, float* dst) {
+  // Неполный блок бывает только на краю матрицы: векторный путь пришлось бы
+  // обкладывать проверками ради одного блока из нескольких десятков.
+  if (rows < lanes) {
+    plain_transpose_pack(src, lda, lanes, rows, kc, dst);
+    return;
+  }
+
+  int64_t lane0 = 0;
+  for (; lane0 + 4 <= lanes; lane0 += 4) {
+    int64_t p = 0;
+    for (; p + 4 <= kc; p += 4) {
+      float32x4_t r[4];
+      for (int64_t i = 0; i < 4; ++i) {
+        r[i] = vld1q_f32(src + (lane0 + i) * lda + p);
+      }
+      transpose4x4(r);
+      for (int64_t i = 0; i < 4; ++i) {
+        vst1q_f32(dst + (p + i) * lanes + lane0, r[i]);
+      }
+    }
+    // Хвост по глубине — поэлементно: он короче четырёх значений.
+    for (; p < kc; ++p) {
+      for (int64_t i = 0; i < 4; ++i) {
+        dst[p * lanes + lane0 + i] = src[(lane0 + i) * lda + p];
+      }
+    }
+  }
+  // Хвост по дорожкам: у ширины восемь его не бывает, но ядро могло бы
+  // получить другую ширину, и молча испортить панель было бы хуже.
+  for (; lane0 < lanes; ++lane0) {
+    const float* row = src + lane0 * lda;
+    for (int64_t p = 0; p < kc; ++p) {
+      dst[p * lanes + lane0] = row[p];
+    }
+  }
+}
+
 constexpr int64_t kNeonM = 12;
 constexpr int64_t kNeonN = 8;
 
@@ -1022,7 +1084,7 @@ const MicroKernelChoice* build_table(int* count) {
                                      kNeonN,
                                      &neon_kernel,
                                      &neon_kernel_rows,
-                                     &plain_transpose_pack,
+                                     &neon_transpose_pack,
                                      "NEON 12x8",
                                      true};
     table[size].available = cpu.has_neon();
