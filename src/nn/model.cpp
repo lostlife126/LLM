@@ -88,7 +88,24 @@ Linear::Linear(int64_t in_features, int64_t out_features, float init_std,
           normal_tensor(Shape({in_features, out_features}), init_std, rng),
           true, "linear.weight")) {}
 
+void Linear::pack_half() {
+  const Tensor& value = weight_.value();
+  half_.resize(static_cast<std::size_t>(value.numel()));
+  const Tensor dense = value.is_contiguous() ? value : value.contiguous();
+  floats_to_half(dense.data(), half_.data(), dense.numel());
+}
+
 Var Linear::forward(const Var& input) const {
+  if (uses_half() && !autograd::grad_enabled()) {
+    // Лента здесь не строится, и это не упрощение ради краткости: половинная
+    // разрядность применяется там, где градиента нет вовсе. Если построение
+    // ленты включено, значит идёт обучение, и путь ниже — обычный.
+    ops::HalfMatrix matrix;
+    matrix.values = half_.data();
+    matrix.rows = weight_.shape().dim(0);
+    matrix.columns = weight_.shape().dim(1);
+    return Var::constant(ops::matmul_half(input.value(), matrix));
+  }
   const Var base = autograd::matmul(input, weight_);
   if (!has_lora_) {
     return base;
@@ -335,6 +352,13 @@ void Attention::freeze() {
   output_.freeze();
 }
 
+void Attention::pack_half() {
+  query_.pack_half();
+  key_.pack_half();
+  value_.pack_half();
+  output_.pack_half();
+}
+
 void Attention::collect(const std::string& prefix,
                         std::vector<NamedParameter>* out) {
   if (config_.qk_norm) {
@@ -410,6 +434,14 @@ void Mlp::freeze() {
   down_.freeze();
 }
 
+void Mlp::pack_half() {
+  if (kind_ == FfnKind::kSwiGlu) {
+    gate_.pack_half();
+  }
+  up_.pack_half();
+  down_.pack_half();
+}
+
 void Mlp::collect(const std::string& prefix, std::vector<NamedParameter>* out) {
   if (kind_ == FfnKind::kSwiGlu) {
     gate_.collect(prefix + ".gate", out);
@@ -479,6 +511,11 @@ void Block::freeze() {
   mlp_norm_.freeze();
   attention_.freeze();
   mlp_.freeze();
+}
+
+void Block::pack_half() {
+  attention_.pack_half();
+  mlp_.pack_half();
 }
 
 void Block::collect(const std::string& prefix,
@@ -561,6 +598,13 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
   hidden = final_norm_.forward(hidden);
 
   if (config_.tie_embeddings) {
+    if (!half_embedding_transposed_.empty() && !autograd::grad_enabled()) {
+      ops::HalfMatrix matrix;
+      matrix.values = half_embedding_transposed_.data();
+      matrix.rows = config_.d_model;
+      matrix.columns = config_.vocab_size;
+      return Var::constant(ops::matmul_half(hidden.value(), matrix));
+    }
     // Та же матрица, что и на входе, только транспонированная. Строка таблицы
     // задаёт и representation токена на входе, и направление, близость к
     // которому даёт высокий логит на выходе.
@@ -639,6 +683,33 @@ Var Model::loss(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
   return autograd::add(
       cross_entropy,
       autograd::mul_scalar(autograd::z_loss(flat), config_.z_loss_coef));
+}
+
+void Model::pack_half() {
+  for (std::size_t i = 0; i < blocks_.size(); ++i) {
+    blocks_[i].pack_half();
+  }
+  if (!config_.tie_embeddings) {
+    lm_head_.pack_half();
+    return;
+  }
+
+  // Перекладывание с транспонированием. Стоит один проход по таблице, а
+  // взамен выходная проекция считается тем же ядром, что и все остальные
+  // умножения, — без отдельного пути для транспонированного B.
+  const Tensor& table = token_embedding_.value();
+  const Tensor dense = table.is_contiguous() ? table : table.contiguous();
+  const int64_t vocab = dense.dim(0);
+  const int64_t width = dense.dim(1);
+  half_embedding_transposed_.resize(static_cast<std::size_t>(vocab * width));
+  const float* values = dense.data();
+  for (int64_t row = 0; row < vocab; ++row) {
+    for (int64_t column = 0; column < width; ++column) {
+      half_embedding_transposed_[static_cast<std::size_t>(column * vocab +
+                                                          row)] =
+          half_from_float(values[row * width + column]);
+    }
+  }
 }
 
 std::vector<NamedParameter> Model::parameters() {

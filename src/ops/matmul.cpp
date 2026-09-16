@@ -169,6 +169,53 @@ void matmul_into(const Tensor& a, const Tensor& b, float alpha, float beta,
   }
 }
 
+Tensor matmul_half(const Tensor& a, const HalfMatrix& b) {
+  LLM_CHECK_MSG(a.rank() == 2 || a.rank() == 3,
+                "matmul_half ожидает ранг 2 или 3, получено " << a.shape());
+  LLM_CHECK_MSG(a.dim(-1) == b.rows,
+                "несовместимые формы: " << a.shape() << " и матрица "
+                                        << b.rows << " x " << b.columns);
+
+  const int64_t m = a.dim(-2);
+  const int64_t k = b.rows;
+  const int64_t n = b.columns;
+  const int64_t batch = a.rank() == 3 ? a.dim(0) : 1;
+
+  Tensor out = Tensor::uninitialized(a.rank() == 2 ? Shape{m, n}
+                                                   : Shape{batch, m, n});
+
+  // Вес общий для всего батча и транспонирования не знает: gemm_half_b его и
+  // не поддерживает. Поэтому здесь нет ни выбора вида матрицы B, ни запасной
+  // плотной копии — только у A.
+  const auto multiply = [&](int64_t index) {
+    const Tensor a_slice = batch_slice(a, index);
+    Tensor a_copy;
+    const MatrixView a_view = as_matrix(a_slice, &a_copy);
+    Tensor out_slice = out.rank() == 3 ? out.select(0, index) : out;
+    gemm_half_b(a_view.transposed, m, n, k, 1.0f, a_view.data, a_view.ld,
+                b.values, n, 0.0f, out_slice.data(), out_slice.stride(0));
+  };
+
+  // Деление то же и по той же причине, что у matmul_into.
+  const int width = parallel_width();
+  const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) *
+                       static_cast<double>(k) * static_cast<double>(batch);
+  if (width > 1 && batch >= width && flops >= kMinParallelFlops &&
+      !inside_parallel_region()) {
+    parallel_for(width, [&](int task) {
+      for (int64_t index = task; index < batch; index += width) {
+        multiply(index);
+      }
+    });
+    return out;
+  }
+
+  for (int64_t index = 0; index < batch; ++index) {
+    multiply(index);
+  }
+  return out;
+}
+
 Tensor matmul(const Tensor& a, const Tensor& b) {
   check_operands(a, b);
   Tensor out = Tensor::uninitialized(result_shape(a, b));

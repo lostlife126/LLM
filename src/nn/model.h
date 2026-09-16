@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/half.h"
 #include "autograd/node.h"
 #include "core/random.h"
 #include "nn/config.h"
@@ -93,12 +94,32 @@ class Linear {
   // как будто адаптера и не было.
   void merge_lora();
 
+  // Переводит вес в половинную разрядность для инференса.
+  //
+  // Копия, а не замена: обычный вес остаётся на месте. Так устроено потому,
+  // что половинная разрядность применяется только на прямом проходе без
+  // градиента — по замеру сходимости обучение в ней требует эталонных весов в
+  // fp32, то есть смысла заменять нет. Заодно остаётся возможность сравнить
+  // два прохода на одной модели, чем и пользуется проверка.
+  //
+  // Расход — половина размера веса сверх уже занятого. Для инференса это можно
+  // было бы убрать, освободив fp32, но тогда модель перестала бы быть
+  // обучаемой, а такой односторонний переход лучше делать явно и не здесь.
+  void pack_half();
+
+  // Пользуется ли прямой проход половинной разрядностью прямо сейчас.
+  // Адаптер LoRA её отключает: он живёт в обычной разрядности, и складывать
+  // его с базой, посчитанной иначе, значило бы получить третий результат,
+  // не равный ни одному из двух.
+  bool uses_half() const { return !half_.empty() && !has_lora_; }
+
  private:
   autograd::Var weight_;
   autograd::Var lora_a_;
   autograd::Var lora_b_;
   float lora_scale_ = 0.0f;
   bool has_lora_ = false;
+  std::vector<Half> half_;
 };
 
 // Размножение голов ключей и значений для GQA.
@@ -133,6 +154,8 @@ class Attention {
                         KvCache* cache = nullptr, int64_t layer = 0,
                         ForwardStats* stats = nullptr) const;
   void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+
+  void pack_half();
 
  private:
   autograd::Var split_heads(const autograd::Var& input, int64_t batch,
@@ -170,6 +193,8 @@ class Mlp {
   void merge_lora();
   void freeze();
 
+  void pack_half();
+
  private:
   FfnKind kind_ = FfnKind::kSwiGlu;
   Linear gate_;  // существует только у SwiGLU
@@ -200,6 +225,8 @@ class Block {
   void enable_lora(const LoraConfig& config, Rng* rng);
   void merge_lora();
   void freeze();
+
+  void pack_half();
 
  private:
   ModelConfig config_;
@@ -249,6 +276,19 @@ class Model {
   // Вплавляет все адаптеры в базовые веса.
   void merge_lora();
 
+  // Переводит веса всех линейных слоёв в половинную разрядность для инференса.
+  //
+  // Действует только на прямой проход без градиента: обучение после этого
+  // идёт как прежде, в обычной разрядности. Так и задумано — по замеру
+  // сходимости веса в половинной разрядности обучение выдерживает хуже, чем
+  // активации, и эталонная копия в fp32 нужна всё равно.
+  //
+  // При связанных эмбеддингах таблица токенов работает и выходной проекцией,
+  // причём транспонированной. Транспонированная копия готовится здесь же, один
+  // раз: gemm_half_b транспонирования не умеет, а при однократной подготовке
+  // проще переложить, чем учить.
+  void pack_half();
+
  private:
   ModelConfig config_;
   autograd::Var token_embedding_;
@@ -256,6 +296,11 @@ class Model {
   std::vector<Block> blocks_;
   Norm final_norm_;
   Linear lm_head_;  // не используется при связанных эмбеддингах
+
+  // Таблица эмбеддингов, уложенная транспонированной и в половинной
+  // разрядности: d_model строк, vocab столбцов. Пуста, пока pack_half не
+  // вызван или эмбеддинги не связаны.
+  std::vector<Half> half_embedding_transposed_;
 };
 
 }  // namespace nn

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "core/fp16.h"
 #include "core/random.h"
 #include "nn/config.h"
 #include "nn/model.h"
@@ -390,4 +391,94 @@ LLM_TEST(Model, GradientsMatchNumericDifference) {
                                             << error);
   }
   LLM_CHECK_EQ(checked, 60);
+}
+
+// --- половинная разрядность весов --------------------------------------------
+//
+// Обещание то же, что у gemm_half_b, только на уровне всей модели: прямой
+// проход на упакованных весах обязан дать ПОБИТОВО то же, что прямой проход на
+// обычных весах, уже прошедших округление. Не «близко» — побитово.
+//
+// Проверять с допуском здесь особенно бессмысленно: логиты модели после
+// округления весов и так сдвигаются в третьем знаке, и любой разумный допуск
+// пропустил бы перепутанную транспонированную таблицу или потерянный слой.
+namespace {
+
+void round_all_parameters(Model* model) {
+  const std::vector<llm::nn::NamedParameter> parameters = model->parameters();
+  for (std::size_t i = 0; i < parameters.size(); ++i) {
+    llm::Tensor& value = parameters[i].value->value();
+    float* data = value.data();
+    for (int64_t j = 0; j < value.numel(); ++j) {
+      data[j] = llm::round_to_fp16(data[j]);
+    }
+  }
+}
+
+std::vector<float> forward_logits(Model* model,
+                                  const std::vector<int32_t>& ids,
+                                  int64_t batch, int64_t seq) {
+  llm::autograd::NoGradGuard no_grad;
+  const Var logits = model->forward(ids, batch, seq);
+  const llm::Tensor dense = logits.value().contiguous();
+  return std::vector<float>(dense.data(), dense.data() + dense.numel());
+}
+
+void check_half_forward_matches(bool tie_embeddings) {
+  ModelConfig config = test_config();
+  config.tie_embeddings = tie_embeddings;
+  config.validate();
+
+  Model model(config, 12345);
+  round_all_parameters(&model);
+
+  const int64_t batch = 2;
+  const int64_t seq = 6;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 777);
+
+  const std::vector<float> reference = forward_logits(&model, ids, batch, seq);
+  model.pack_half();
+  const std::vector<float> actual = forward_logits(&model, ids, batch, seq);
+
+  LLM_CHECK_MSG(reference.size() == actual.size(), "формы логитов разошлись");
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    LLM_CHECK_MSG(reference[i] == actual[i],
+                  "связанные эмбеддинги = "
+                      << tie_embeddings << ": логит " << i << " равен "
+                      << actual[i] << " вместо " << reference[i]);
+  }
+}
+
+}  // namespace
+
+LLM_TEST(Model, HalfWeightsGiveTheSameLogits) {
+  check_half_forward_matches(true);
+  check_half_forward_matches(false);
+}
+
+// Обучение после упаковки идёт как прежде. Это не мелочь: половинная
+// разрядность здесь именно копия рядом, а не замена, и если бы прямой проход с
+// градиентом случайно пошёл по ней, обучение молча потеряло бы точность весов
+// — ровно то, что замер сходимости запретил.
+LLM_TEST(Model, PackingHalfDoesNotChangeTraining) {
+  ModelConfig config = test_config();
+  Model model(config, 999);
+
+  const int64_t batch = 2;
+  const int64_t seq = 6;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 4242);
+
+  const Var before = model.loss(ids, batch, seq);
+  const float before_value = before.value().data()[0];
+
+  model.pack_half();
+
+  const Var after = model.loss(ids, batch, seq);
+  const float after_value = after.value().data()[0];
+
+  LLM_CHECK_MSG(before_value == after_value,
+                "потери после упаковки стали " << after_value << " вместо "
+                                               << before_value);
 }

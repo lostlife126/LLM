@@ -13,12 +13,31 @@
 #ifndef LLM_OPS_MATMUL_H_
 #define LLM_OPS_MATMUL_H_
 
+#include "core/half.h"
 #include "core/tensor.h"
 
 namespace llm {
 namespace ops {
 
 Tensor matmul(const Tensor& a, const Tensor& b);
+
+// Плотная матрица весов в половинной разрядности: k строк, n столбцов,
+// построчно. Не Tensor, и это то же решение, что в core/half.h: тип элемента у
+// Tensor намеренно один, а вес операндом произвольной операции не бывает.
+struct HalfMatrix {
+  const Half* values = nullptr;
+  int64_t rows = 0;
+  int64_t columns = 0;
+};
+
+// Умножение на веса половинной разрядности. Транспонирование весов не
+// поддерживается; если веса нужны транспонированными, хранить их надо уже
+// транспонированными — при однократной подготовке это ничего не стоит.
+//
+// Численно совпадает с matmul, которому дали те же веса после округления, —
+// побитово. Отсюда и способ проверки: округлить, посчитать обоими и сравнить
+// на равенство.
+Tensor matmul_half(const Tensor& a, const HalfMatrix& b);
 
 // out = alpha * a * b + beta * out. Форма out должна совпадать с формой
 // результата matmul(a, b), размещение — плотное.
