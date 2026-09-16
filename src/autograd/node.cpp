@@ -1,6 +1,7 @@
 #include "autograd/node.h"
 
 #include <algorithm>
+#include <utility>
 #include <unordered_set>
 
 #include "core/check.h"
@@ -14,6 +15,19 @@ namespace {
 bool g_grad_enabled = true;
 
 }  // namespace
+
+void Node::accumulate(Tensor&& contribution) {
+  // Забрать буфер можно при двух условиях сразу. Временное значение — этого
+  // требует сама перегрузка. И единоличное владение: временным бывает и вид на
+  // чужой буфер (reshape, transpose), а он делит хранилище с живым тензором, и
+  // запись в накопленный градиент испортила бы чужие данные.
+  if (!grad_.defined() && contribution.is_contiguous() &&
+      contribution.owns_whole_storage()) {
+    grad_ = std::move(contribution);
+    return;
+  }
+  accumulate(static_cast<const Tensor&>(contribution));
+}
 
 void Node::accumulate(const Tensor& contribution) {
   if (!grad_.defined()) {

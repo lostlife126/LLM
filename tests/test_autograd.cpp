@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "autograd/node.h"
@@ -188,4 +189,40 @@ LLM_TEST(Autograd, GradientShapeMatchesVariable) {
   // четырёх единиц.
   LLM_EXPECT_NEAR(row.grad()(0, 0), 4.0, 1e-5);
   LLM_EXPECT_NEAR(block.grad()(0, 0), 2.0, 1e-5);
+}
+
+LLM_TEST(Autograd, AccumulateDoesNotStealSomeoneElsesBuffer) {
+  // Первый вклад в градиент забирается без копии — но только если это
+  // временное значение, владеющее своим буфером целиком. Проверка на то, что
+  // второе условие работает: вид на живой тензор тоже временное значение, а
+  // забирать его нельзя.
+  //
+  // Без этой проверки ошибка была бы тихой и злой: градиент меняется на месте,
+  // и запись в него портила бы данные постороннего тензора.
+  llm::Tensor source = llm::Tensor::zeros(llm::Shape({2, 3}));
+  for (int64_t i = 0; i < source.numel(); ++i) {
+    source.data()[i] = static_cast<float>(i + 1);
+  }
+
+  Var variable = Var::leaf(llm::Tensor::zeros(llm::Shape({6})), true);
+  // reshape отдаёт вид: временное значение, но буфер общий с source.
+  variable.node()->accumulate(source.reshape(llm::Shape({6})));
+  variable.node()->scale_grad(0.0f);
+
+  for (int64_t i = 0; i < source.numel(); ++i) {
+    LLM_CHECK_MSG(source.data()[i] == static_cast<float>(i + 1),
+                  "накопление испортило чужой буфер на элементе " << i);
+  }
+}
+
+LLM_TEST(Autograd, AccumulateAdoptsATemporaryOfItsOwn) {
+  // Обратная сторона: временное значение, владеющее буфером целиком, должно
+  // забираться, а не копироваться. Проверяется по указателю — единственный
+  // способ отличить забранный буфер от скопированного.
+  Var variable = Var::leaf(llm::Tensor::zeros(llm::Shape({4})), true);
+  llm::Tensor contribution = llm::Tensor::zeros(llm::Shape({4}));
+  const float* address = contribution.data();
+  variable.node()->accumulate(std::move(contribution));
+  LLM_CHECK_MSG(variable.grad().data() == address,
+                "временный буфер скопирован вместо того, чтобы быть забранным");
 }

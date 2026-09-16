@@ -127,6 +127,20 @@ class Tensor {
   void fill(float value);
   void zero() { fill(0.0f); }
 
+  // Держит ли этот тензор весь свой буфер и держит ли единолично. Нужно тем,
+  // кто хочет забрать буфер себе вместо копии.
+  //
+  // Условий два, и второе не для порядка. Единоличное владение запрещает
+  // забрать буфер, на который смотрит кто-то ещё. А совпадение с буфером
+  // целиком запрещает забрать кусок чужого: вид может начинаться не с начала
+  // хранилища, и тогда у забранного тензора не будет выравнивания, которое
+  // Storage обещает всем, кто выделяет память через него.
+  bool owns_whole_storage() const {
+    return storage_ && storage_.use_count() == 1 &&
+           static_cast<std::size_t>(numel()) * sizeof(float) ==
+               storage_->nbytes();
+  }
+
   bool shares_storage_with(const Tensor& other) const {
     return storage_ && storage_ == other.storage_;
   }
