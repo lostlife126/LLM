@@ -23,6 +23,12 @@
 namespace llm {
 
 struct CpuFeatures {
+  // На aarch64 NEON (asimd) обязателен самой архитектурой ARMv8-A, поэтому
+  // проверять его во время работы нечего: если бинарник собран под aarch64,
+  // NEON есть. Поле всё равно заведено — чтобы выбор ядра везде выглядел
+  // одинаково, а не «здесь спрашиваем, здесь знаем заранее».
+  bool neon = false;
+
   bool avx2 = false;
   bool fma = false;
   bool avx512f = false;
@@ -42,6 +48,8 @@ struct CpuFeatures {
   bool has_avx512() const {
     return avx512f && avx512bw && avx512vl && fma && avx2;
   }
+
+  bool has_neon() const { return neon; }
 
   std::string to_string() const;
 };

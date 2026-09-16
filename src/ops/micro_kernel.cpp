@@ -12,6 +12,17 @@
 #define LLM_HAS_X86_SIMD 0
 #endif
 
+// NEON, в отличие от AVX2, не нуждается в проверке во время работы: в ARMv8-A
+// он обязателен, и если бинарник собран под aarch64, он есть. Поэтому здесь
+// нет атрибутов target и нет ветвления по признакам — только условная
+// компиляция.
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define LLM_HAS_NEON 1
+#else
+#define LLM_HAS_NEON 0
+#endif
+
 namespace llm {
 namespace ops {
 namespace {
@@ -637,6 +648,175 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
 
 #endif  // LLM_HAS_X86_SIMD
 
+#if LLM_HAS_NEON
+
+// --- NEON -------------------------------------------------------------------
+//
+// У aarch64 тридцать два векторных регистра по четыре числа. Плитка 12 x 8
+// занимает 24 аккумулятора, плюс три регистра под значения A и два под B —
+// двадцать девять из тридцати двух.
+//
+// Ширина плитки восемь, а не двенадцать, и это не вкус. Прямой путь (без
+// упаковки) включается по условию «общее число 32 делится на ширину плитки»
+// — см. use_direct в gemm.cpp. Условие выбрано так, чтобы выбор пути не
+// зависел от машины: у AVX2 ширина 16, у AVX-512 — 32, обе делят 32. Ширина
+// 12 не делит, и тогда на ARM брался бы упакованный путь там, где на x86
+// прямой, а результаты обучения разошлись бы между машинами.
+//
+// Умножение с накоплением берёт множитель прямо из дорожки регистра
+// (vfmaq_laneq_f32), поэтому отдельной рассылки значения A по вектору, как на
+// x86, здесь не нужно — это и экономит регистры под A.
+//
+// Порядок арифметики тот же, что у ядер x86: накопление идёт по глубине
+// слитным умножением с накоплением, и в конце c += alpha * acc тоже слитно.
+// Значит NEON обязан совпадать с AVX2 побитово, и это проверяется тестом.
+
+constexpr int64_t kNeonM = 12;
+constexpr int64_t kNeonN = 8;
+
+void neon_kernel(int64_t kc, const float* __restrict apanel,
+                 const float* __restrict bpanel, float alpha,
+                 float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+  float32x4_t acc[kNeonM][2];
+  for (int i = 0; i < kNeonM; ++i) {
+    acc[i][0] = vdupq_n_f32(0.0f);
+    acc[i][1] = vdupq_n_f32(0.0f);
+  }
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* b_values = bpanel + p * kNeonN;
+    const float32x4_t b0 = vld1q_f32(b_values);
+    const float32x4_t b1 = vld1q_f32(b_values + 4);
+    const float* a_values = apanel + p * kNeonM;
+    const float32x4_t a0 = vld1q_f32(a_values);
+    const float32x4_t a1 = vld1q_f32(a_values + 4);
+    const float32x4_t a2 = vld1q_f32(a_values + 8);
+
+    acc[0][0] = vfmaq_laneq_f32(acc[0][0], b0, a0, 0);
+    acc[0][1] = vfmaq_laneq_f32(acc[0][1], b1, a0, 0);
+    acc[1][0] = vfmaq_laneq_f32(acc[1][0], b0, a0, 1);
+    acc[1][1] = vfmaq_laneq_f32(acc[1][1], b1, a0, 1);
+    acc[2][0] = vfmaq_laneq_f32(acc[2][0], b0, a0, 2);
+    acc[2][1] = vfmaq_laneq_f32(acc[2][1], b1, a0, 2);
+    acc[3][0] = vfmaq_laneq_f32(acc[3][0], b0, a0, 3);
+    acc[3][1] = vfmaq_laneq_f32(acc[3][1], b1, a0, 3);
+
+    acc[4][0] = vfmaq_laneq_f32(acc[4][0], b0, a1, 0);
+    acc[4][1] = vfmaq_laneq_f32(acc[4][1], b1, a1, 0);
+    acc[5][0] = vfmaq_laneq_f32(acc[5][0], b0, a1, 1);
+    acc[5][1] = vfmaq_laneq_f32(acc[5][1], b1, a1, 1);
+    acc[6][0] = vfmaq_laneq_f32(acc[6][0], b0, a1, 2);
+    acc[6][1] = vfmaq_laneq_f32(acc[6][1], b1, a1, 2);
+    acc[7][0] = vfmaq_laneq_f32(acc[7][0], b0, a1, 3);
+    acc[7][1] = vfmaq_laneq_f32(acc[7][1], b1, a1, 3);
+
+    acc[8][0] = vfmaq_laneq_f32(acc[8][0], b0, a2, 0);
+    acc[8][1] = vfmaq_laneq_f32(acc[8][1], b1, a2, 0);
+    acc[9][0] = vfmaq_laneq_f32(acc[9][0], b0, a2, 1);
+    acc[9][1] = vfmaq_laneq_f32(acc[9][1], b1, a2, 1);
+    acc[10][0] = vfmaq_laneq_f32(acc[10][0], b0, a2, 2);
+    acc[10][1] = vfmaq_laneq_f32(acc[10][1], b1, a2, 2);
+    acc[11][0] = vfmaq_laneq_f32(acc[11][0], b0, a2, 3);
+    acc[11][1] = vfmaq_laneq_f32(acc[11][1], b1, a2, 3);
+  }
+
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const int i = static_cast<int>(ii);
+    if (cols == kNeonN) {
+      vst1q_f32(c_row, vfmaq_n_f32(vld1q_f32(c_row), acc[i][0], alpha));
+      vst1q_f32(c_row + 4, vfmaq_n_f32(vld1q_f32(c_row + 4), acc[i][1], alpha));
+      continue;
+    }
+    // Неполная плитка бывает только у края матрицы. Выгружаем аккумуляторы в
+    // память и дописываем сколько нужно — редкий путь, скорость здесь не
+    // важна, важна правильность на границе.
+    float values[kNeonN];
+    vst1q_f32(values, acc[i][0]);
+    vst1q_f32(values + 4, acc[i][1]);
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * values[jj];
+    }
+  }
+}
+
+// Тот же расчёт, но A читается построчно, как лежит: прямой путь без упаковки.
+void neon_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
+                      const float* __restrict b, int64_t bstride, float alpha,
+                      float* __restrict c, int64_t ldc, int64_t rows,
+                      int64_t cols) {
+  float32x4_t acc[kNeonM][2];
+  for (int i = 0; i < kNeonM; ++i) {
+    acc[i][0] = vdupq_n_f32(0.0f);
+    acc[i][1] = vdupq_n_f32(0.0f);
+  }
+
+  // Указатели на строки берутся заранее: недостающие показывают на последнюю
+  // действительную, и их вклад в C всё равно не записывается.
+  const float* arow[kNeonM];
+  for (int i = 0; i < kNeonM; ++i) {
+    const int64_t index = i < rows ? i : rows - 1;
+    arow[i] = a + index * lda;
+  }
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* b_values = b + p * bstride;
+    const float32x4_t b0 = vld1q_f32(b_values);
+    const float32x4_t b1 = vld1q_f32(b_values + 4);
+    // Значения A собираются по строкам в вектор — только ради того, чтобы
+    // множитель брался из дорожки. Загрузка каждого по отдельности стоила бы
+    // ровно столько же.
+    const float32x4_t a0 = {arow[0][p], arow[1][p], arow[2][p], arow[3][p]};
+    const float32x4_t a1 = {arow[4][p], arow[5][p], arow[6][p], arow[7][p]};
+    const float32x4_t a2 = {arow[8][p], arow[9][p], arow[10][p], arow[11][p]};
+
+    acc[0][0] = vfmaq_laneq_f32(acc[0][0], b0, a0, 0);
+    acc[0][1] = vfmaq_laneq_f32(acc[0][1], b1, a0, 0);
+    acc[1][0] = vfmaq_laneq_f32(acc[1][0], b0, a0, 1);
+    acc[1][1] = vfmaq_laneq_f32(acc[1][1], b1, a0, 1);
+    acc[2][0] = vfmaq_laneq_f32(acc[2][0], b0, a0, 2);
+    acc[2][1] = vfmaq_laneq_f32(acc[2][1], b1, a0, 2);
+    acc[3][0] = vfmaq_laneq_f32(acc[3][0], b0, a0, 3);
+    acc[3][1] = vfmaq_laneq_f32(acc[3][1], b1, a0, 3);
+
+    acc[4][0] = vfmaq_laneq_f32(acc[4][0], b0, a1, 0);
+    acc[4][1] = vfmaq_laneq_f32(acc[4][1], b1, a1, 0);
+    acc[5][0] = vfmaq_laneq_f32(acc[5][0], b0, a1, 1);
+    acc[5][1] = vfmaq_laneq_f32(acc[5][1], b1, a1, 1);
+    acc[6][0] = vfmaq_laneq_f32(acc[6][0], b0, a1, 2);
+    acc[6][1] = vfmaq_laneq_f32(acc[6][1], b1, a1, 2);
+    acc[7][0] = vfmaq_laneq_f32(acc[7][0], b0, a1, 3);
+    acc[7][1] = vfmaq_laneq_f32(acc[7][1], b1, a1, 3);
+
+    acc[8][0] = vfmaq_laneq_f32(acc[8][0], b0, a2, 0);
+    acc[8][1] = vfmaq_laneq_f32(acc[8][1], b1, a2, 0);
+    acc[9][0] = vfmaq_laneq_f32(acc[9][0], b0, a2, 1);
+    acc[9][1] = vfmaq_laneq_f32(acc[9][1], b1, a2, 1);
+    acc[10][0] = vfmaq_laneq_f32(acc[10][0], b0, a2, 2);
+    acc[10][1] = vfmaq_laneq_f32(acc[10][1], b1, a2, 2);
+    acc[11][0] = vfmaq_laneq_f32(acc[11][0], b0, a2, 3);
+    acc[11][1] = vfmaq_laneq_f32(acc[11][1], b1, a2, 3);
+  }
+
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const int i = static_cast<int>(ii);
+    if (cols == kNeonN) {
+      vst1q_f32(c_row, vfmaq_n_f32(vld1q_f32(c_row), acc[i][0], alpha));
+      vst1q_f32(c_row + 4, vfmaq_n_f32(vld1q_f32(c_row + 4), acc[i][1], alpha));
+      continue;
+    }
+    float values[kNeonN];
+    vst1q_f32(values, acc[i][0]);
+    vst1q_f32(values + 4, acc[i][1]);
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * values[jj];
+    }
+  }
+}
+
+#endif  // LLM_HAS_NEON
+
 const MicroKernelChoice* build_table(int* count) {
   static MicroKernelChoice table[3];
   static int size = 0;
@@ -647,15 +827,44 @@ const MicroKernelChoice* build_table(int* count) {
     const CpuFeatures& cpu = cpu_features();
     (void)cpu;
 
+    // Слитное ли у скалярного ядра умножение с накоплением — зависит от
+    // архитектуры, и это выяснилось замером, а не из документации.
+    //
+    // Ядро написано как `acc += a * b`, то есть раздельно. На базовом x86-64
+    // команды слитного умножения нет, и компилятор оставляет два округления —
+    // отсюда и договор, описанный в README: ядра с FMA совпадают побитово,
+    // скалярное отличается на одно округление. На aarch64 слитная команда
+    // входит в базовый набор, компилятор её подставляет, и скалярное ядро
+    // оказывается слитным — его отпечаток совпал с отпечатком NEON и с
+    // отпечатками AVX2 и AVX-512, снятыми на другой машине.
+    //
+    // Флаг говорит правду об арифметике, а не о намерении, и от него зависит
+    // проверка: ядра, помеченные слитными, тест сверяет побитово. Если
+    // когда-нибудь окажется, что на aarch64 склейки не произошло, тест об
+    // этом скажет — и это верное поведение, а не ложная тревога.
     table[size].kernel = MicroKernel{kScalarM,
                                      kScalarN,
                                      &scalar_kernel,
                                      &scalar_kernel_rows,
                                      &plain_transpose_pack,
                                      "скалярное 4x32",
-                                     false};
+                                     LLM_HAS_NEON != 0};
     table[size].available = true;
     ++size;
+
+#if LLM_HAS_NEON
+    // Доступно всегда: NEON обязателен в ARMv8-A. Порядок в таблице задаёт
+    // выбор по умолчанию — берётся последнее доступное ядро.
+    table[size].kernel = MicroKernel{kNeonM,
+                                     kNeonN,
+                                     &neon_kernel,
+                                     &neon_kernel_rows,
+                                     &plain_transpose_pack,
+                                     "NEON 12x8",
+                                     true};
+    table[size].available = cpu.has_neon();
+    ++size;
+#endif
 
 #if LLM_HAS_X86_SIMD
     table[size].kernel = MicroKernel{kAvx2M,

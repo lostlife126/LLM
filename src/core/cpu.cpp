@@ -19,6 +19,9 @@ CpuFeatures probe() {
   out.avx512bw = __builtin_cpu_supports("avx512bw") != 0;
   out.avx512vl = __builtin_cpu_supports("avx512vl") != 0;
 #endif
+#if defined(__aarch64__)
+  out.neon = true;
+#endif
   return out;
 }
 
@@ -33,6 +36,9 @@ const CpuFeatures& cpu_features() {
 
 std::string CpuFeatures::to_string() const {
   std::ostringstream out;
+  if (neon) {
+    out << "neon ";
+  }
   if (avx2) {
     out << "avx2 ";
   }

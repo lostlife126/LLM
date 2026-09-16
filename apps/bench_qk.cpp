@@ -12,7 +12,12 @@
 // а не только прочитать. Разбор в README, раздел «Q*K^T без упаковки».
 //
 // Запуск: ./bench_qk
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#define LLM_QK_X86 1
+#else
+#define LLM_QK_X86 0
+#endif
 
 #include <cmath>
 #include <cstdint>
@@ -24,6 +29,8 @@
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "ops/gemm.h"
+
+#if LLM_QK_X86
 
 namespace {
 // Свёртка шестнадцати аккумуляторов в один вектор из шестнадцати сумм.
@@ -122,7 +129,19 @@ double best_gflops(double flops, Fn fn) {
 
 }  // namespace
 
+#else  // LLM_QK_X86
+
+// Ядро здесь написано под AVX-512 и никуда, кроме x86, не переносилось: оно
+// существует ради одного вывода про форму вычисления, а не ради работы. На
+// других архитектурах замер просто не проводится.
+
+#endif  // LLM_QK_X86
+
 int main() {
+#if !LLM_QK_X86
+  std::printf("замер написан под AVX-512 и на этой архитектуре не работает\n");
+  return 0;
+#else
   // Ядро написано только под AVX-512 — оно здесь не для переносимости, а для
   // одного вопроса. Без AVX-512 замер просто не проводится.
   if (!llm::cpu_features().has_avx512()) {
@@ -196,4 +215,5 @@ int main() {
     std::fflush(stdout);
   }
   return 0;
+#endif  // LLM_QK_X86
 }
