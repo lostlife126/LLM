@@ -33,6 +33,7 @@ add_library(llm_core
   src/core/check.cpp
   src/core/cpu.cpp
   src/core/half.cpp
+  src/core/quantize.cpp
   src/core/random.cpp
   src/core/shape.cpp
   src/core/storage.cpp
@@ -96,6 +97,9 @@ target_link_libraries(bench_half PRIVATE llm_core)
 add_executable(bench_qk apps/bench_qk.cpp)
 target_link_libraries(bench_qk PRIVATE llm_core)
 
+add_executable(precision_scope apps/precision_scope.cpp)
+target_link_libraries(precision_scope PRIVATE llm_core)
+
 add_executable(lora_scope apps/lora_scope.cpp)
 target_link_libraries(lora_scope PRIVATE llm_core)
 
@@ -139,6 +143,7 @@ add_executable(llm_tests
   tests/test_elementwise.cpp
   tests/test_fast_exp.cpp
   tests/test_fp16.cpp
+  tests/test_fp8.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_half.cpp
@@ -148,6 +153,7 @@ add_executable(llm_tests
   tests/test_json.cpp
   tests/test_lora.cpp
   tests/test_pretokenize.cpp
+  tests/test_quantize.cpp
   tests/test_safetensors.cpp
   tests/test_matmul.cpp
   tests/test_model.cpp
@@ -176,6 +182,7 @@ set(LLM_TEST_SUITES
   Elementwise
   FastExp
   Fp16
+  Fp8
   Grad
   Half
   Hf
@@ -189,6 +196,7 @@ set(LLM_TEST_SUITES
   Model
   Nn
   Pretokenize
+  Quantize
   Rng
   Safetensors
   Sampler
