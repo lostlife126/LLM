@@ -142,6 +142,22 @@ Var gelu(const Var& input) {
                       });
 }
 
+Var masked_softmax(const Var& scores, float scale, int64_t query_offset) {
+  Tensor value = ops::masked_softmax(scores.value(), scale, query_offset);
+  if (!tracking(scores)) {
+    return Var::constant(std::move(value));
+  }
+  // Как и обычному softmax, обратному проходу нужен выход, а не вход.
+  const Tensor saved_output = value;
+  const NodePtr node = scores.node();
+  return Var::from_op(std::move(value), "masked_softmax", {node},
+                      [node, saved_output, scale, query_offset](
+                          const Tensor& grad) {
+                        node->accumulate(ops::masked_softmax_backward(
+                            grad, saved_output, scale, query_offset));
+                      });
+}
+
 Var causal_mask(const Var& scores, int64_t query_offset) {
   Tensor value = ops::causal_mask(scores.value(), query_offset);
   if (!tracking(scores)) {

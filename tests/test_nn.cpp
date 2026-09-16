@@ -13,6 +13,7 @@
 #include "core/thread_pool.h"
 #include "autograd/ops.h"
 #include "gradcheck.h"
+#include "ops/elementwise.h"
 #include "ops/embedding.h"
 #include "ops/fast_exp.h"
 #include "ops/loss.h"
@@ -529,5 +530,33 @@ LLM_TEST(Nn, RowReductionsDoNotDependOnThreadCount) {
     expect_bitwise_equal("rms_norm", norm_one, llm::ops::rms_norm(x, w, kEps));
     expect_bitwise_equal("softmax_backward", softmax_back_one,
                          llm::ops::softmax_backward(g, softmax_one));
+  }
+}
+
+LLM_TEST(Nn, MaskedSoftmaxMatchesTheSeparateChainBitwise) {
+  // Слитая цепочка обязана совпадать с раздельной побитово, а не приблизительно.
+  // Это и есть условие, при котором её можно ставить в модель, не пересчитывая
+  // заново все числа обучения в README.
+  //
+  // Совпадение не случайно: закрытые позиции дают после экспоненты ровно нуль,
+  // нуль не меняет ни максимум, ни сумму, а номер накопителя у элемента зависит
+  // только от его индекса — значит укорочение строки не переставляет слагаемые.
+  const float scale = 0.3125f;  // степень двойки не берём: округление важно
+  for (int64_t offset = 0; offset <= 3; ++offset) {
+    const llm::Tensor scores = random_tensor(llm::Shape({2, 13, 13}), 905);
+
+    const llm::Tensor separate = llm::ops::softmax(
+        llm::ops::causal_mask(llm::ops::mul_scalar(scores, scale), offset));
+    const llm::Tensor fused = llm::ops::masked_softmax(scores, scale, offset);
+    expect_bitwise_equal("masked_softmax", separate, fused);
+
+    const llm::Tensor grad = random_tensor(llm::Shape({2, 13, 13}), 906);
+    const llm::Tensor separate_back = llm::ops::mul_scalar(
+        llm::ops::causal_mask_backward(
+            llm::ops::softmax_backward(grad, separate), offset),
+        scale);
+    const llm::Tensor fused_back =
+        llm::ops::masked_softmax_backward(grad, fused, scale, offset);
+    expect_bitwise_equal("masked_softmax_backward", separate_back, fused_back);
   }
 }

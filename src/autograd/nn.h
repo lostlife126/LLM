@@ -29,6 +29,10 @@ Var gelu(const Var& input);
 // Маска «не смотреть в будущее» на последние две оси.
 Var causal_mask(const Var& scores, int64_t query_offset);
 
+// Слитая цепочка внимания: softmax(маска(scores * scale)). Совпадает с
+// раздельной побитово — см. ops/nn.h.
+Var masked_softmax(const Var& scores, float scale, int64_t query_offset);
+
 // Выбор строк таблицы по индексам токенов. Результат: (ids.size(), dim).
 Var embedding(const Var& weight, const std::vector<int32_t>& ids);
 

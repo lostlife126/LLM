@@ -282,11 +282,14 @@ Var Attention::forward(const Var& input, int64_t position_offset,
   // около единицы. Без него при большой размерности softmax насыщается,
   // превращаясь в почти детерминированный выбор, и градиент исчезает.
   const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-  Var scores = autograd::mul_scalar(
-      autograd::matmul(queries, autograd::transpose(keys, -2, -1)), scale);
 
-  scores = autograd::causal_mask(scores, position_offset);
-  const Var weights = autograd::softmax(scores);
+  // Масштаб, маска и softmax — одной операцией. Порознь это шесть проходов по
+  // тензору оценок, слитно четыре и только по видимой половине строки.
+  // Результат совпадает с раздельной цепочкой побитово, и это проверяется
+  // тестом: иначе замена потребовала бы пересчитать все числа обучения.
+  const Var weights = autograd::masked_softmax(
+      autograd::matmul(queries, autograd::transpose(keys, -2, -1)), scale,
+      position_offset);
   if (stats != nullptr) {
     stats->attention_entropy.push_back(
         ops::attention_entropy(weights.value(), position_offset));

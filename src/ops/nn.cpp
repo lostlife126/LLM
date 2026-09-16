@@ -318,6 +318,101 @@ Tensor softmax(const Tensor& input) {
   return out;
 }
 
+Tensor masked_softmax(const Tensor& scores, float scale, int64_t query_offset) {
+  LLM_CHECK_MSG(scores.rank() >= 2, "маске нужны оси запросов и ключей");
+  const int64_t keys = scores.dim(-1);
+  const int64_t queries = scores.dim(-2);
+  const int64_t matrices = scores.numel() / (queries * keys);
+
+  Tensor holder;
+  const float* x = dense_data(scores, &holder);
+  Tensor out = Tensor::uninitialized(scores.shape());
+  float* y = out.data();
+
+  // Делится по матрицам, а не по строкам, и это не мелочь. Цена строки здесь
+  // растёт с номером запроса: маска открывает ему всё больше ключей. Деление
+  // подряд идущими кусками отдало бы последнему потоку семь шестнадцатых
+  // работы вместо четырёх, и шестикратный выигрыш на операции почти целиком
+  // съелся бы перекосом. У матриц профиль одинаковый, поэтому по ним делить
+  // ровно.
+  for_rows(matrices, queries * keys, [&](int64_t matrix) {
+    for (int64_t query = 0; query < queries; ++query) {
+      const int64_t row = matrix * queries + query;
+      // Сколько ключей видит этот запрос: себя и всё прошлое, но не больше, чем
+      // есть ключей.
+      const int64_t available = query + query_offset + 1;
+      const int64_t limit =
+          available < keys ? (available > 0 ? available : 0) : keys;
+      const float* x_row = x + row * keys;
+      float* y_row = y + row * keys;
+
+      // Умножение на масштаб и поиск максимума — одним проходом. Масштаб
+      // положителен, поэтому порядок «умножить, потом взять максимум» и
+      // «взять максимум, потом умножить» дали бы одно и то же; выбран первый,
+      // потому что умноженные значения всё равно нужны дальше.
+      float maximum = -std::numeric_limits<float>::infinity();
+      for (int64_t i = 0; i < limit; ++i) {
+        y_row[i] = x_row[i] * scale;
+        if (y_row[i] > maximum) {
+          maximum = y_row[i];
+        }
+      }
+
+      exp_shifted(y_row, maximum, y_row, limit);
+      const float inverse = static_cast<float>(1.0 / row_sum(y_row, limit));
+      for (int64_t i = 0; i < limit; ++i) {
+        y_row[i] *= inverse;
+      }
+      // Закрытые позиции: раздельная цепочка ставит туда минус бесконечность и
+      // получает после экспоненты нуль. Здесь нуль пишется сразу.
+      for (int64_t i = limit; i < keys; ++i) {
+        y_row[i] = 0.0f;
+      }
+    }
+  });
+  return out;
+}
+
+Tensor masked_softmax_backward(const Tensor& grad_output, const Tensor& output,
+                               float scale, int64_t query_offset) {
+  const int64_t keys = output.dim(-1);
+  const int64_t queries = output.dim(-2);
+  const int64_t matrices = output.numel() / (queries * keys);
+
+  Tensor grad_holder;
+  Tensor output_holder;
+  const float* g = dense_data(grad_output, &grad_holder);
+  const float* y = dense_data(output, &output_holder);
+
+  Tensor out = Tensor::uninitialized(output.shape());
+  float* dx = out.data();
+
+  // По матрицам, а не по строкам — по той же причине, что и в прямом проходе.
+  for_rows(matrices, queries * keys, [&](int64_t matrix) {
+    for (int64_t query = 0; query < queries; ++query) {
+      const int64_t row = matrix * queries + query;
+      const int64_t available = query + query_offset + 1;
+      const int64_t limit =
+          available < keys ? (available > 0 ? available : 0) : keys;
+      const float* g_row = g + row * keys;
+      const float* y_row = y + row * keys;
+      float* dx_row = dx + row * keys;
+
+      const double dot = row_dot(g_row, y_row, limit);
+      for (int64_t i = 0; i < limit; ++i) {
+        // Порядок множителей важен: раздельная цепочка сначала считает
+        // производную softmax, потом умножает её на масштаб. Другая расстановка
+        // скобок дала бы другое последнее округление.
+        dx_row[i] = y_row[i] * (g_row[i] - static_cast<float>(dot)) * scale;
+      }
+      for (int64_t i = limit; i < keys; ++i) {
+        dx_row[i] = 0.0f;
+      }
+    }
+  });
+  return out;
+}
+
 Tensor softmax_backward(const Tensor& grad_output, const Tensor& output) {
   int64_t rows = 0;
   int64_t width = 0;
