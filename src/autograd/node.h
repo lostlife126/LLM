@@ -49,6 +49,7 @@ class Node;
 // ленты, через accumulate). Градиенты важнее: именно они проваливаются в нуль
 // на малых значениях, и ради них всё и затевается.
 bool fp16_simulation();
+bool fp16_weight_simulation();
 void set_fp16_simulation(bool enabled);
 void apply_fp16_simulation(Tensor* tensor);
 

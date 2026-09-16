@@ -24,11 +24,19 @@ bool probe_fp16_from_environment() {
   return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+bool probe_fp16_weights_from_environment() {
+  const char* value = std::getenv("LLM_FP16_WEIGHTS");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 bool g_fp16_simulation = probe_fp16_from_environment();
+bool g_fp16_weight_simulation = probe_fp16_weights_from_environment();
 
 }  // namespace
 
 bool fp16_simulation() { return g_fp16_simulation; }
+
+bool fp16_weight_simulation() { return g_fp16_weight_simulation; }
 
 void set_fp16_simulation(bool enabled) { g_fp16_simulation = enabled; }
 

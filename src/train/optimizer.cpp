@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "core/check.h"
+#include "autograd/node.h"
 #include "ops/parallel.h"
 #include "ops/row_reduce.h"
 
@@ -173,6 +174,22 @@ void AdamW::step(float learning_rate) {
     for (int part = 0; part < ops::kSumParts; ++part) {
       update_squares += update_parts[part];
       weight_squares += weight_parts[part];
+    }
+
+    // Пессимистичная имитация: веса тоже уходят в половинную разрядность, то
+    // есть эталонной копии в fp32 не остаётся вовсе. Если обучение переживает
+    // и это, то реализация не потребует ни эталонных весов, ни масштабирования
+    // потерь — а это втрое меньше работы.
+    //
+    // Отдельный флаг, но он лишь добавляется к LLM_FP16: округление внутри
+    // apply_fp16_simulation выключено, пока не включён основной режим. Иначе
+    // получился бы бессмысленный опыт — точные активации при грубых весах.
+    //
+    // Округление идёт после шага, а не до: моменты и отношение шага к весу
+    // считаются по тем значениям, которые оптимизатор и получил бы, а в память
+    // ложится уже усечённое — ровно как при настоящем хранении в fp16.
+    if (autograd::fp16_weight_simulation()) {
+      autograd::apply_fp16_simulation(&value);
     }
 
     update_ratios_[i] = weight_squares > 0.0
