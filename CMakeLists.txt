@@ -182,6 +182,7 @@ set(LLM_TEST_SUITES
   HfTokenizer
   Infer
   Json
+  Linear
   Lora
   Gemm
   Matmul

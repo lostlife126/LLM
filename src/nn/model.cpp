@@ -88,6 +88,14 @@ Linear::Linear(int64_t in_features, int64_t out_features, float init_std,
           normal_tensor(Shape({in_features, out_features}), init_std, rng),
           true, "linear.weight")) {}
 
+void Linear::drop_half() {
+  // shrink_to_fit, а не только clear: у крупной модели копия занимает
+  // мегабайты, и держать их после того, как они стали недействительны, значит
+  // просто терять память.
+  half_.clear();
+  std::vector<Half>().swap(half_);
+}
+
 void Linear::pack_half() {
   const Tensor& value = weight_.value();
   half_.resize(static_cast<std::size_t>(value.numel()));
@@ -160,10 +168,23 @@ void Linear::merge_lora() {
   lora_b_ = Var();
   lora_scale_ = 0.0f;
   has_lora_ = false;
+  drop_half();
 }
 
 void Linear::collect(const std::string& prefix,
                      std::vector<NamedParameter>* out) {
+  // Копия половинной разрядности сбрасывается здесь, и это не перестраховка.
+  // Наружу отдаются ИЗМЕНЯЕМЫЕ ссылки на вес: так их берёт и оптимизатор, и
+  // загрузка чекпоинта, и импорт чужой модели. После этого копия может
+  // расходиться с весом, а расхождение это молчаливое — прямой проход считал
+  // бы по старым весам и ничего бы не сказал.
+  //
+  // Нашлось разбором, а не падением. Последовательность «упаковать, навесить
+  // адаптер, вплавить его» включала половинную разрядность обратно — вплавление
+  // ставит has_lora_ в ложь, и признак uses_half снова становился истиной, — но
+  // уже на копии, снятой до вплавления.
+  drop_half();
+
   NamedParameter parameter;
   parameter.name = prefix + ".weight";
   parameter.value = &weight_;
@@ -740,6 +761,16 @@ void Model::pack_half() {
 }
 
 std::vector<NamedParameter> Model::parameters() {
+  // Те же соображения, что у Linear::collect: наружу уходят изменяемые ссылки,
+  // значит подготовленные для инференса копии больше не обязаны совпадать с
+  // весами. Переложенная таблица эмбеддингов сбрасывается здесь, копии
+  // линейных слоёв — внутри их collect.
+  embedding_transposed_ = autograd::Var();
+  std::vector<Half>().swap(half_embedding_transposed_);
+  return collect_parameters();
+}
+
+std::vector<NamedParameter> Model::collect_parameters() {
   std::vector<NamedParameter> result;
 
   NamedParameter embedding;
@@ -818,7 +849,10 @@ int64_t Model::trainable_parameter_count() {
 
 int64_t Model::parameter_count() {
   int64_t total = 0;
-  const std::vector<NamedParameter> all = parameters();
+  // collect_parameters, а не parameters: подсчёт ничего не меняет, и сбрасывать
+  // из-за него подготовленные копии было бы неверно. apps/generate печатает
+  // размер модели уже после подготовки.
+  const std::vector<NamedParameter> all = collect_parameters();
   for (std::size_t i = 0; i < all.size(); ++i) {
     total += all[i].value->numel();
   }

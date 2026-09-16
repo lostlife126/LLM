@@ -134,6 +134,10 @@ class Linear {
   // не равный ни одному из двух.
   bool uses_half() const { return !half_.empty() && !has_lora_; }
 
+  // Объявляет копию половинной разрядности недействительной. Зовётся всюду,
+  // где вес может измениться.
+  void drop_half();
+
  private:
   autograd::Var weight_;
   autograd::Var lora_a_;
@@ -348,6 +352,9 @@ class Model {
   void prepare_inference();
 
  private:
+  // Сбор без сброса подготовленных копий — для подсчёта и прочих чтений.
+  std::vector<NamedParameter> collect_parameters();
+
   ModelConfig config_;
   autograd::Var token_embedding_;
   autograd::Var position_embedding_;  // только при обучаемых позициях

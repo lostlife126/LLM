@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "core/fp16.h"
 #include "core/random.h"
 #include "nn/config.h"
+#include "nn/lora.h"
 #include "nn/model.h"
+#include "train/optimizer.h"
 #include "testing.h"
 
 namespace {
@@ -552,4 +555,141 @@ LLM_TEST(Model, PackingHalfDoesNotChangeTraining) {
   LLM_CHECK_MSG(before_value == after_value,
                 "потери после упаковки стали " << after_value << " вместо "
                                                << before_value);
+}
+
+// --- недействительность подготовленных копий ------------------------------
+//
+// pack_half и prepare_inference делают КОПИИ весов. Если вес после этого
+// изменится, копия станет неверной, и прямой проход посчитает по старым весам,
+// ничего об этом не сказав. Это худший вид ошибки: не падение, а тихо неверный
+// ответ.
+//
+// Правило поэтому такое: любой, кто получил изменяемую ссылку на вес, тем самым
+// объявляет копии недействительными. Единственная точка, через которую такие
+// ссылки уходят наружу, — parameters(), и она же их сбрасывает. Плюс
+// merge_lora, который меняет вес сам, никого не спрашивая.
+namespace {
+
+// Первый параметр с таким окончанием имени.
+llm::autograd::Var* find_parameter(
+    const std::vector<llm::nn::NamedParameter>& parameters,
+    const std::string& suffix) {
+  for (std::size_t i = 0; i < parameters.size(); ++i) {
+    const std::string& name = parameters[i].name;
+    if (name.size() >= suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      return parameters[i].value;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+// Обучение после упаковки. Оптимизатор получает веса через parameters(), то
+// есть копии обязаны сброситься, и следующий прямой проход — считать по новым
+// весам.
+LLM_TEST(Model, TrainingAfterPackingInvalidatesTheHalfCopies) {
+  ModelConfig config = test_config();
+  const int64_t batch = 2;
+  const int64_t seq = 5;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 1357);
+
+  // Две модели с одним зерном — значит с одними весами. Одна проходит через
+  // упаковку, другая нет; после одинакового шага обучения логиты обязаны
+  // совпасть побитово.
+  Model packed(config, 2468);
+  Model plain(config, 2468);
+  packed.pack_half();
+  packed.prepare_inference();
+
+  Model* models[2] = {&packed, &plain};
+  std::vector<float> logits[2];
+  for (int which = 0; which < 2; ++which) {
+    Model* model = models[which];
+    Var loss = model->loss(ids, batch, seq);
+    loss.backward();
+    llm::train::AdamWConfig adam;
+    llm::train::AdamW optimizer(model->parameters(), adam);
+    optimizer.step(0.1f);
+    logits[which] = forward_logits(model, ids, batch, seq);
+  }
+
+  LLM_CHECK_MSG(logits[0].size() == logits[1].size(), "формы разошлись");
+  for (std::size_t i = 0; i < logits[0].size(); ++i) {
+    LLM_CHECK_MSG(logits[0][i] == logits[1][i],
+                  "логит " << i << " после шага обучения равен " << logits[0][i]
+                           << " вместо " << logits[1][i]);
+  }
+}
+
+// Вплавление адаптера. Оно меняет вес само, не проходя через parameters(), и
+// вдобавок снимает признак наличия адаптера — то есть именно оно возвращало
+// половинную разрядность к жизни на устаревшей копии.
+//
+// Проверяется на отдельном слое, а не на модели, и это важно. На уровне модели
+// сравнение неизбежно ложное: адаптер вешается не на все линейные слои, у
+// остальных копии остаются ВЕРНЫМИ и продолжают считать в половинной
+// разрядности — то есть сравнивались бы разрядности, а не свежесть копии.
+// Первые две версии этого теста попались именно на это, сначала через
+// связанные эмбеддинги, потом через слои без адаптера.
+LLM_TEST(Linear, MergingLoraInvalidatesTheHalfCopy) {
+  const int64_t in_features = 32;
+  const int64_t out_features = 64;
+
+  // Два слоя с одним зерном — значит с одним весом и одним адаптером.
+  llm::Rng rng_a(4242);
+  llm::Rng rng_b(4242);
+  llm::nn::Linear packed(in_features, out_features, 0.05f, &rng_a);
+  llm::nn::Linear plain(in_features, out_features, 0.05f, &rng_b);
+
+  llm::Rng lora_rng_a(77);
+  llm::Rng lora_rng_b(77);
+  packed.enable_lora(4, 8.0f, &lora_rng_a);
+  plain.enable_lora(4, 8.0f, &lora_rng_b);
+
+  llm::nn::Linear* layers[2] = {&packed, &plain};
+  std::vector<float> results[2];
+  for (int which = 0; which < 2; ++which) {
+    llm::nn::Linear* layer = layers[which];
+
+    // B адаптера рождается нулевой, и вплавление нулевого адаптера ничего не
+    // меняет — проверка вышла бы пустой.
+    std::vector<llm::nn::NamedParameter> parameters;
+    layer->collect("layer", &parameters);
+    llm::autograd::Var* b = find_parameter(parameters, ".lora_b");
+    LLM_CHECK_MSG(b != nullptr, "адаптер не навесился");
+    llm::Tensor& value = b->value();
+    for (int64_t i = 0; i < value.numel(); ++i) {
+      value.data()[i] = 0.02f * static_cast<float>((i % 5) - 2);
+    }
+
+    // Упаковка ПОСЛЕ заполнения: на этот момент копия верна. Недействительной
+    // её делает вплавление строкой ниже.
+    if (which == 0) {
+      layer->pack_half();
+      LLM_CHECK_MSG(!layer->uses_half(),
+                    "с адаптером половинная разрядность должна быть выключена");
+    }
+    layer->merge_lora();
+    LLM_CHECK_MSG(!layer->uses_half(),
+                  "после вплавления копия обязана стать недействительной");
+
+    llm::autograd::NoGradGuard no_grad;
+    llm::Tensor input = llm::Tensor::uninitialized(llm::Shape({3, in_features}));
+    llm::Rng input_rng(11);
+    for (int64_t i = 0; i < input.numel(); ++i) {
+      input.data()[i] = input_rng.normal() * 0.3f;
+    }
+    const Var out = layer->forward(Var::constant(input));
+    const llm::Tensor dense = out.value().contiguous();
+    results[which].assign(dense.data(), dense.data() + dense.numel());
+  }
+
+  for (std::size_t i = 0; i < results[0].size(); ++i) {
+    LLM_CHECK_MSG(results[0][i] == results[1][i],
+                  "элемент " << i << " после вплавления равен " << results[0][i]
+                             << " вместо " << results[1][i]);
+  }
 }
