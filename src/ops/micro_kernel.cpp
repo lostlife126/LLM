@@ -196,8 +196,6 @@ void scalar_kernel(int64_t kc, const float* __restrict apanel,
   }
 }
 
-#if LLM_HAS_X86_SIMD
-
 // Тот же расчёт, но A читается построчно, как лежит. Указатели на строки
 // берутся заранее: недостающие показывают на последнюю действительную, и их
 // вклад в C всё равно не записывается.
@@ -239,6 +237,8 @@ void scalar_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
     }
   }
 }
+
+#if LLM_HAS_X86_SIMD
 
 // --- AVX2 -------------------------------------------------------------------
 //
@@ -642,7 +642,10 @@ const MicroKernelChoice* build_table(int* count) {
   static int size = 0;
   static bool ready = false;
   if (!ready) {
+    // Признаки процессора нужны только векторным ветвям, а они есть не на
+    // всякой архитектуре.
     const CpuFeatures& cpu = cpu_features();
+    (void)cpu;
 
     table[size].kernel = MicroKernel{kScalarM,
                                      kScalarN,
