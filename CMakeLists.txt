@@ -91,6 +91,9 @@ target_link_libraries(bench_gemm PRIVATE llm_core)
 add_executable(bench_exp apps/bench_exp.cpp)
 target_link_libraries(bench_exp PRIVATE llm_core)
 
+add_executable(bench_fp8 apps/bench_fp8.cpp)
+target_link_libraries(bench_fp8 PRIVATE llm_core)
+
 add_executable(bench_half apps/bench_half.cpp)
 target_link_libraries(bench_half PRIVATE llm_core)
 
