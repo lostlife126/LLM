@@ -49,7 +49,8 @@ int64_t ceil_div(int64_t value, int64_t divisor) {
 // цикла, а там, где исходные данные лежат подряд, копирование идёт целой
 // строкой.
 void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
-            int64_t col0, int64_t mc, int64_t kc, int64_t mr, float* apack) {
+            int64_t col0, int64_t mc, int64_t kc, int64_t mr,
+            PackTransposeFn pack_transpose, float* apack) {
   const int64_t panels = ceil_div(mc, mr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = apack + panel * kc * mr;
@@ -58,26 +59,19 @@ void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
 
     if (transpose_a) {
       // op(A) транспонировано: подряд в памяти идут строки панели, и каждая
-      // копируется как есть.
+      // копируется как есть. Добивка нулями нужна только у последней панели
+      // блока, но обходится она дёшево.
       for (int64_t p = 0; p < kc; ++p) {
         const float* src = a + (col0 + p) * lda + row0 + first;
         std::copy(src, src + rows, dst + p * mr);
+        std::fill(dst + p * mr + rows, dst + p * mr + mr, 0.0f);
       }
     } else {
       // Подряд идёт шаг по глубине, а нужен шаг по строке — то самое
-      // транспонирование, которое упаковка и берёт на себя.
-      for (int64_t ii = 0; ii < rows; ++ii) {
-        const float* src = a + (row0 + first + ii) * lda + col0;
-        float* out = dst + ii;
-        for (int64_t p = 0; p < kc; ++p) {
-          out[p * mr] = src[p];
-        }
-      }
-    }
-
-    // Добивка нулями нужна только у последней панели блока.
-    for (int64_t p = 0; p < kc; ++p) {
-      std::fill(dst + p * mr + rows, dst + p * mr + mr, 0.0f);
+      // транспонирование, которое упаковка и берёт на себя. Делает его
+      // микроядро: раскладка панели его, и векторный способ переставить блок
+      // зависит от набора инструкций.
+      pack_transpose(a + (row0 + first) * lda + col0, lda, mr, rows, kc, dst);
     }
   }
 }
@@ -86,7 +80,8 @@ void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
 // самое, что у панели A, с обратным распределением случаев: подряд лежит
 // нужное как раз у нетранспонированного B.
 void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
-            int64_t col0, int64_t kc, int64_t nc, int64_t nr, float* bpack) {
+            int64_t col0, int64_t kc, int64_t nc, int64_t nr,
+            PackTransposeFn pack_transpose, float* bpack) {
   const int64_t panels = ceil_div(nc, nr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = bpack + panel * kc * nr;
@@ -94,22 +89,16 @@ void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
     const int64_t cols = std::min(nr, nc - first);
 
     if (transpose_b) {
-      for (int64_t jj = 0; jj < cols; ++jj) {
-        const float* src = b + (col0 + first + jj) * ldb + row0;
-        float* out = dst + jj;
-        for (int64_t p = 0; p < kc; ++p) {
-          out[p * nr] = src[p];
-        }
-      }
+      // Внимание считает Q * K^T, то есть попадает сюда на каждом слое и на
+      // каждой голове. Это та же перестановка, что у панели A, и делает её та
+      // же функция микроядра — разница только в ширине панели.
+      pack_transpose(b + (col0 + first) * ldb + row0, ldb, nr, cols, kc, dst);
     } else {
       for (int64_t p = 0; p < kc; ++p) {
         const float* src = b + (row0 + p) * ldb + col0 + first;
         std::copy(src, src + cols, dst + p * nr);
+        std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
       }
-    }
-
-    for (int64_t p = 0; p < kc; ++p) {
-      std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
     }
   }
 }
@@ -170,6 +159,7 @@ struct GemmTask {
   int64_t block_m;
   int64_t block_n;
   MicroKernelFn run;
+  PackTransposeFn pack_transpose;
 };
 
 // Считает прямоугольник C: строки [row0, row0 + rows), столбцы
@@ -194,14 +184,14 @@ void gemm_rect(const GemmTask& task, int64_t row0, int64_t rows, int64_t col0,
 
       buffers.b.resize(static_cast<std::size_t>(ceil_div(nc, nr) * nr * kc));
       pack_b(task.transpose_b, task.b, task.ldb, pc, col0 + jc, kc, nc, nr,
-             buffers.b.data());
+             task.pack_transpose, buffers.b.data());
 
       for (int64_t ic = 0; ic < rows; ic += task.block_m) {
         const int64_t mc = std::min(task.block_m, rows - ic);
 
         buffers.a.resize(static_cast<std::size_t>(ceil_div(mc, mr) * mr * kc));
         pack_a(task.transpose_a, task.a, task.lda, row0 + ic, pc, mc, kc, mr,
-               buffers.a.data());
+               task.pack_transpose, buffers.a.data());
 
         for (int64_t i = 0; i < mc; i += mr) {
           const float* apanel = buffers.a.data() + (i / mr) * kc * mr;
@@ -339,6 +329,7 @@ void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
   task.mr = kernel.mr;
   task.nr = kernel.nr;
   task.run = kernel.run;
+  task.pack_transpose = kernel.pack_transpose;
 
   // Блоки округляются вверх до кратного плитке. Иначе последняя плитка блока
   // была бы неполной всегда, а не только на краю матрицы, и медленный путь

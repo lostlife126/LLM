@@ -56,32 +56,50 @@ int main(int argc, char** argv) {
 
   {
     llm::autograd::NoGradGuard no_grad;
+    double best = 0.0;
+    for (int trial = 0; trial < 4; ++trial) {
+      const Clock::time_point start = Clock::now();
+      int repetitions = 0;
+      double elapsed = 0.0;
+      do {
+        model.loss(ids, batch, seq);
+        ++repetitions;
+        elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+      } while (elapsed < 1.0);
+      const double seconds = elapsed / repetitions;
+      if (best == 0.0 || seconds < best) {
+        best = seconds;
+      }
+    }
+    std::printf("только прямой проход: %.3f с\n", best);
+  }
+
+  // Несколько серий, берётся лучшая. Машина общая, и одна серия ловит то, чем
+  // в этот момент занят сосед по железу; помехи при этом бывают только в одну
+  // сторону — чужая нагрузка может замедлить счёт, но не ускорить. Без этого
+  // разброс между запусками одной и той же сборки доходил до полутора раз, то
+  // есть перекрывал любой измеряемый здесь эффект.
+  double step_seconds = 0.0;
+  for (int trial = 0; trial < 4; ++trial) {
     const Clock::time_point start = Clock::now();
     int repetitions = 0;
     double elapsed = 0.0;
     do {
-      model.loss(ids, batch, seq);
+      llm::autograd::Var loss = model.loss(ids, batch, seq);
+      loss.backward();
+      const std::vector<llm::nn::NamedParameter> parameters =
+          model.parameters();
+      for (std::size_t i = 0; i < parameters.size(); ++i) {
+        parameters[i].value->zero_grad();
+      }
       ++repetitions;
       elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     } while (elapsed < 2.0);
-    std::printf("только прямой проход: %.3f с\n", elapsed / repetitions);
-  }
-
-  const Clock::time_point start = Clock::now();
-  int repetitions = 0;
-  double elapsed = 0.0;
-  do {
-    llm::autograd::Var loss = model.loss(ids, batch, seq);
-    loss.backward();
-    const std::vector<llm::nn::NamedParameter> parameters = model.parameters();
-    for (std::size_t i = 0; i < parameters.size(); ++i) {
-      parameters[i].value->zero_grad();
+    const double seconds = elapsed / repetitions;
+    if (step_seconds == 0.0 || seconds < step_seconds) {
+      step_seconds = seconds;
     }
-    ++repetitions;
-    elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-  } while (elapsed < 4.0);
-
-  const double step_seconds = elapsed / repetitions;
+  }
   std::printf("шаг обучения (вперёд + назад): %.3f с\n", step_seconds);
   std::printf("пропускная способность: %.0f токенов/с\n",
               static_cast<double>(batch * seq) / step_seconds);

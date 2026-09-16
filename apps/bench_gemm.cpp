@@ -28,27 +28,45 @@ struct Measurement {
 
 using Clock = std::chrono::steady_clock;
 
-// Прогоняет умножение столько раз, чтобы суммарное время превысило
-// target_seconds: у коротких задач разброс одного запуска сравним с самим
-// временем.
+// Сколько независимых серий делается на один замер и берётся лучшая.
+//
+// Это не перестраховка, а исправленная ошибка. Считается всё на общей машине, и
+// одна серия ловит то, чем в этот момент занят сосед по железу: одна и та же
+// сборка давала на квадрате 512 то 45, то 71 GFLOPS — разброс в полтора раза,
+// то есть больше любого эффекта, который здесь измеряется. Из-за этого
+// сравнение «до и после», сделанное двумя запусками подряд, однажды показало
+// улучшение втрое больше настоящего.
+//
+// Лучшая серия — правильная оценка именно потому, что помехи бывают только в
+// одну сторону: чужая нагрузка может замедлить счёт, но не ускорить.
+constexpr int kTrials = 5;
+
+// Прогоняет умножение столько раз, чтобы суммарное время серии превысило её
+// долю от target_seconds: у коротких задач разброс одного запуска сравним с
+// самим временем.
 template <typename Fn>
 Measurement measure(Fn fn, double flops, double target_seconds) {
   // Один прогон вне замера: он прогревает кэши и страницы памяти.
   fn();
 
-  int repetitions = 0;
-  const Clock::time_point start = Clock::now();
-  double elapsed = 0.0;
-  do {
-    fn();
-    ++repetitions;
-    elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-  } while (elapsed < target_seconds);
+  Measurement best;
+  for (int trial = 0; trial < kTrials; ++trial) {
+    int repetitions = 0;
+    const Clock::time_point start = Clock::now();
+    double elapsed = 0.0;
+    do {
+      fn();
+      ++repetitions;
+      elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+    } while (elapsed < target_seconds / kTrials);
 
-  Measurement result;
-  result.seconds = elapsed / repetitions;
-  result.gflops = flops / result.seconds / 1e9;
-  return result;
+    const double seconds = elapsed / repetitions;
+    if (best.seconds == 0.0 || seconds < best.seconds) {
+      best.seconds = seconds;
+      best.gflops = flops / seconds / 1e9;
+    }
+  }
+  return best;
 }
 
 // Пропускная способность блочного умножения на задаче m x n x k.

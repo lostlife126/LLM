@@ -16,6 +16,138 @@ namespace llm {
 namespace ops {
 namespace {
 
+// --- транспонирующая упаковка -----------------------------------------------
+
+// Простой вариант: читает подряд, пишет с шагом. Служит и запасным путём, и
+// эталоном — векторный обязан давать ровно то же самое, тут перестановка
+// значений, а не арифметика, поэтому «то же самое» здесь буквально.
+void plain_transpose_pack(const float* src, int64_t lda, int64_t lanes,
+                          int64_t rows, int64_t kc, float* dst) {
+  for (int64_t lane = 0; lane < rows; ++lane) {
+    const float* row = src + lane * lda;
+    float* out = dst + lane;
+    for (int64_t p = 0; p < kc; ++p) {
+      out[p * lanes] = row[p];
+    }
+  }
+  for (int64_t lane = rows; lane < lanes; ++lane) {
+    float* out = dst + lane;
+    for (int64_t p = 0; p < kc; ++p) {
+      out[p * lanes] = 0.0f;
+    }
+  }
+}
+
+#if LLM_HAS_X86_SIMD
+
+// Транспонирование блока 8 x 8 на месте.
+//
+// Три яруса перестановок: сначала соседние строки чередуются по парам
+// значений, потом получившиеся четвёрки собираются в нужном порядке, и
+// наконец меняются местами половины регистров. Двадцать четыре перестановки на
+// шестьдесят четыре значения — против ста двадцати восьми обращений к памяти у
+// поэлементного варианта.
+//
+// Перестановка половин отдельным ярусом нужна потому, что у AVX2 почти все
+// команды перемешивания работают внутри половины регистра и через её границу
+// не заглядывают. Это же и причина, по которой блок именно 8 x 8: меньше не
+// заполнит регистр, больше не переставить за один проход.
+__attribute__((target("avx2"))) void transpose8x8(__m256* r) {
+  const __m256 t0 = _mm256_unpacklo_ps(r[0], r[1]);
+  const __m256 t1 = _mm256_unpackhi_ps(r[0], r[1]);
+  const __m256 t2 = _mm256_unpacklo_ps(r[2], r[3]);
+  const __m256 t3 = _mm256_unpackhi_ps(r[2], r[3]);
+  const __m256 t4 = _mm256_unpacklo_ps(r[4], r[5]);
+  const __m256 t5 = _mm256_unpackhi_ps(r[4], r[5]);
+  const __m256 t6 = _mm256_unpacklo_ps(r[6], r[7]);
+  const __m256 t7 = _mm256_unpackhi_ps(r[6], r[7]);
+
+  const __m256 s0 = _mm256_shuffle_ps(t0, t2, 0x44);
+  const __m256 s1 = _mm256_shuffle_ps(t0, t2, 0xEE);
+  const __m256 s2 = _mm256_shuffle_ps(t1, t3, 0x44);
+  const __m256 s3 = _mm256_shuffle_ps(t1, t3, 0xEE);
+  const __m256 s4 = _mm256_shuffle_ps(t4, t6, 0x44);
+  const __m256 s5 = _mm256_shuffle_ps(t4, t6, 0xEE);
+  const __m256 s6 = _mm256_shuffle_ps(t5, t7, 0x44);
+  const __m256 s7 = _mm256_shuffle_ps(t5, t7, 0xEE);
+
+  r[0] = _mm256_permute2f128_ps(s0, s4, 0x20);
+  r[1] = _mm256_permute2f128_ps(s1, s5, 0x20);
+  r[2] = _mm256_permute2f128_ps(s2, s6, 0x20);
+  r[3] = _mm256_permute2f128_ps(s3, s7, 0x20);
+  r[4] = _mm256_permute2f128_ps(s0, s4, 0x31);
+  r[5] = _mm256_permute2f128_ps(s1, s5, 0x31);
+  r[6] = _mm256_permute2f128_ps(s2, s6, 0x31);
+  r[7] = _mm256_permute2f128_ps(s3, s7, 0x31);
+}
+
+__attribute__((target("avx2"))) void avx2_transpose_pack(
+    const float* src, int64_t lda, int64_t lanes, int64_t rows, int64_t kc,
+    float* dst) {
+  // Неполный блок бывает только на краю матрицы. Векторный путь там пришлось
+  // бы обкладывать проверками, а выигрыш достался бы одному блоку из
+  // нескольких десятков.
+  if (rows < lanes) {
+    plain_transpose_pack(src, lda, lanes, rows, kc, dst);
+    return;
+  }
+
+  int64_t lane0 = 0;
+  for (; lane0 + 8 <= lanes; lane0 += 8) {
+    int64_t p = 0;
+    for (; p + 8 <= kc; p += 8) {
+      __m256 r[8];
+      for (int64_t i = 0; i < 8; ++i) {
+        r[i] = _mm256_loadu_ps(src + (lane0 + i) * lda + p);
+      }
+      transpose8x8(r);
+      for (int64_t i = 0; i < 8; ++i) {
+        _mm256_storeu_ps(dst + (p + i) * lanes + lane0, r[i]);
+      }
+    }
+    for (; p < kc; ++p) {
+      for (int64_t i = 0; i < 8; ++i) {
+        dst[p * lanes + lane0 + i] = src[(lane0 + i) * lda + p];
+      }
+    }
+  }
+
+  // Остаток дорожек — это случай ядра AVX2, у которого плитка шириной шесть.
+  // Блок всё равно транспонируется целиком, а записываются только настоящие
+  // дорожки: запись под маской не трогает остальные вовсе, поэтому за границу
+  // панели ничего не выходит.
+  //
+  // Недостающие строки блока читаются с последней действительной, а не с
+  // нулей. Значения оттуда всё равно отбрасываются маской, зато чтение
+  // заведомо не выходит за пределы матрицы и не нужен буфер нулей.
+  const int64_t left = lanes - lane0;
+  if (left <= 0) {
+    return;
+  }
+  const __m256i mask =
+      _mm256_cmpgt_epi32(_mm256_set1_epi32(static_cast<int>(left)),
+                         _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+  int64_t p = 0;
+  for (; p + 8 <= kc; p += 8) {
+    __m256 r[8];
+    for (int64_t i = 0; i < 8; ++i) {
+      const int64_t lane = lane0 + (i < left ? i : left - 1);
+      r[i] = _mm256_loadu_ps(src + lane * lda + p);
+    }
+    transpose8x8(r);
+    for (int64_t i = 0; i < 8; ++i) {
+      _mm256_maskstore_ps(dst + (p + i) * lanes + lane0, mask, r[i]);
+    }
+  }
+  for (; p < kc; ++p) {
+    for (int64_t i = 0; i < left; ++i) {
+      dst[p * lanes + lane0 + i] = src[(lane0 + i) * lda + p];
+    }
+  }
+}
+
+#endif  // LLM_HAS_X86_SIMD
+
 // --- скалярное ядро ---------------------------------------------------------
 //
 // Остаётся навсегда: это и запасной вариант для процессора без AVX2, и эталон,
@@ -292,19 +424,21 @@ const MicroKernelChoice* build_table(int* count) {
   if (!ready) {
     const CpuFeatures& cpu = cpu_features();
 
-    table[size].kernel = MicroKernel{kScalarM, kScalarN, &scalar_kernel,
+    table[size].kernel = MicroKernel{kScalarM,         kScalarN,
+                                     &scalar_kernel,   &plain_transpose_pack,
                                      "скалярное 4x32", false};
     table[size].available = true;
     ++size;
 
 #if LLM_HAS_X86_SIMD
-    table[size].kernel =
-        MicroKernel{kAvx2M, kAvx2N, &avx2_kernel, "AVX2 6x16", true};
+    table[size].kernel = MicroKernel{
+        kAvx2M, kAvx2N, &avx2_kernel, &avx2_transpose_pack, "AVX2 6x16", true};
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
-    table[size].kernel =
-        MicroKernel{kAvx512M, kAvx512N, &avx512_kernel, "AVX-512 8x32", true};
+    table[size].kernel = MicroKernel{kAvx512M,       kAvx512N,
+                                     &avx512_kernel, &avx2_transpose_pack,
+                                     "AVX-512 8x32", true};
     table[size].available = cpu.has_avx512();
     ++size;
 #endif
