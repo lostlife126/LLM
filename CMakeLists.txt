@@ -131,6 +131,7 @@ add_executable(llm_tests
   tests/test_dropout.cpp
   tests/test_elementwise.cpp
   tests/test_fast_exp.cpp
+  tests/test_fp16.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
   tests/test_hf.cpp
@@ -166,6 +167,7 @@ set(LLM_TEST_SUITES
   Dropout
   Elementwise
   FastExp
+  Fp16
   Grad
   Hf
   HfTokenizer

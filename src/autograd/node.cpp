@@ -4,7 +4,10 @@
 #include <utility>
 #include <unordered_set>
 
+#include <cstdlib>
+
 #include "core/check.h"
+#include "core/fp16.h"
 #include "ops/elementwise.h"
 #include "ops/parallel.h"
 
@@ -14,7 +17,36 @@ namespace {
 
 bool g_grad_enabled = true;
 
+// Читается один раз при первом обращении: переменная окружения не меняется
+// по ходу прогона, а проверять её на каждой операции было бы заметно.
+bool probe_fp16_from_environment() {
+  const char* value = std::getenv("LLM_FP16");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+bool g_fp16_simulation = probe_fp16_from_environment();
+
 }  // namespace
+
+bool fp16_simulation() { return g_fp16_simulation; }
+
+void set_fp16_simulation(bool enabled) { g_fp16_simulation = enabled; }
+
+void apply_fp16_simulation(Tensor* tensor) {
+  if (!g_fp16_simulation || tensor == nullptr || !tensor->defined()) {
+    return;
+  }
+  // Только плотные: вид на чужой буфер округлять нельзя, это испортило бы
+  // данные владельца. Все результаты операций плотные, так что путь общий.
+  if (!tensor->is_contiguous()) {
+    return;
+  }
+  float* data = tensor->data();
+  const int64_t count = tensor->numel();
+  for (int64_t i = 0; i < count; ++i) {
+    data[i] = round_to_fp16(data[i]);
+  }
+}
 
 void Node::accumulate(Tensor&& contribution) {
   // Забрать буфер можно при двух условиях сразу. Временное значение — этого
@@ -24,6 +56,7 @@ void Node::accumulate(Tensor&& contribution) {
   if (!grad_.defined() && contribution.is_contiguous() &&
       contribution.owns_whole_storage()) {
     grad_ = std::move(contribution);
+    apply_fp16_simulation(&grad_);
     return;
   }
   accumulate(static_cast<const Tensor&>(contribution));
@@ -34,6 +67,7 @@ void Node::accumulate(const Tensor& contribution) {
     // Первый вклад: забираем копию. Именно копию, а не вид — вкладчик может
     // передать временный тензор или чужой буфер.
     grad_ = contribution.clone();
+    apply_fp16_simulation(&grad_);
     return;
   }
   LLM_CHECK_MSG(grad_.shape() == contribution.shape(),
@@ -43,6 +77,10 @@ void Node::accumulate(const Tensor& contribution) {
   // потокам, а накопление градиента — одно из самых частых действий обратного
   // прохода.
   ops::add_into(contribution, &grad_);
+  // Накопленный градиент — то, что в настоящем fp16 лежало бы в fp16, поэтому
+  // округляется после каждого вклада, а не однажды в конце. Именно здесь и
+  // проваливаются малые градиенты, ради проверки чего всё это написано.
+  apply_fp16_simulation(&grad_);
 }
 
 void Node::scale_grad(float factor) {
