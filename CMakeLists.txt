@@ -32,6 +32,7 @@ endif()
 add_library(llm_core
   src/core/check.cpp
   src/core/cpu.cpp
+  src/core/dims.cpp
   src/core/half.cpp
   src/core/quantize.cpp
   src/core/random.cpp

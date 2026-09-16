@@ -258,14 +258,18 @@ Tensor Tensor::select(int axis, int64_t index) const {
   LLM_CHECK_GE(index, static_cast<int64_t>(0));
   LLM_CHECK_LT(index, shape_.dim(a));
   // Удаление оси: в новый набор переписывается всё, кроме неё.
+  //
+  // Счётчик назван other, а не axis: параметр функции зовётся axis, и цикл с
+  // тем же именем его перекрывал. Работало это верно — a посчитан до цикла, —
+  // но читалось как ошибка.
   Dims dims;
   Dims strides;
-  for (int axis = 0; axis < rank(); ++axis) {
-    if (axis == a) {
+  for (int other = 0; other < rank(); ++other) {
+    if (other == a) {
       continue;
     }
-    dims.push_back(shape_.dim(axis));
-    strides.push_back(strides_[axis]);
+    dims.push_back(shape_.dim(other));
+    strides.push_back(strides_[other]);
   }
   float* data = data_ + index * strides_[a];
   return Tensor(storage_, data, Shape(dims), strides);
