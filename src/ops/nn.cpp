@@ -8,6 +8,7 @@
 #include "core/check.h"
 #include "ops/fast_exp.h"
 #include "ops/parallel.h"
+#include "ops/row_reduce.h"
 
 namespace llm {
 namespace ops {
@@ -57,10 +58,7 @@ Tensor rms_norm(const Tensor& input, const Tensor& weight, float eps) {
     const float* x_row = x + row * width;
     float* y_row = y + row * width;
 
-    double sum_squares = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      sum_squares += static_cast<double>(x_row[i]) * x_row[i];
-    }
+    const double sum_squares = row_sum_squares(x_row, width);
     const float scale = static_cast<float>(
         1.0 / std::sqrt(sum_squares / static_cast<double>(width) + eps));
 
@@ -105,10 +103,7 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
       const float* g_row = g + row * width;
       float* dx_row = dx + row * width;
 
-      double sum_squares = 0.0;
-      for (int64_t i = 0; i < width; ++i) {
-        sum_squares += static_cast<double>(x_row[i]) * x_row[i];
-      }
+      const double sum_squares = row_sum_squares(x_row, width);
       const double mean_square = sum_squares / static_cast<double>(width);
       const double scale = 1.0 / std::sqrt(mean_square + eps);
 
@@ -123,10 +118,7 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
       // строки,
       //   dx_k = scale * h_k - x_k * scale^3 * (sum_i h_i x_i) / width.
       // Первое слагаемое — «прямой» вклад, второе — через общий множитель.
-      double dot = 0.0;
-      for (int64_t i = 0; i < width; ++i) {
-        dot += static_cast<double>(g_row[i]) * w[i] * x_row[i];
-      }
+      const double dot = row_dot3(g_row, w, x_row, width);
       const double correction =
           dot * scale * scale * scale / static_cast<double>(width);
 
@@ -310,26 +302,17 @@ Tensor softmax(const Tensor& input) {
 
     // Вычитание максимума не меняет результат математически, но без него exp
     // переполняется: логит 90 уже даёт бесконечность в float.
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int64_t i = 0; i < width; ++i) {
-      if (x_row[i] > maximum) {
-        maximum = x_row[i];
-      }
-    }
+    const float maximum = row_max(x_row, width);
 
     // Экспонента считается массивом: поэлементный std::exp — вызов функции
     // из libm, через который автовекторизатор не переступает, и на нём одном
     // раньше уходила заметная часть шага обучения.
     exp_shifted(x_row, maximum, y_row, width);
 
-    // Сумма — обычным последовательным циклом, и это существенно. Внутри
-    // векторного ядра она сложилась бы по дорожкам, в другом порядке, и
-    // результат зависел бы от набора инструкций.
-    double total = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      total += y_row[i];
-    }
-    const float inverse = static_cast<float>(1.0 / total);
+    // Сумма — с фиксированным числом накопителей (см. ops/row_reduce.h).
+    // Порядок задан исходником, а не шириной вектора, поэтому результат
+    // одинаков на любом наборе инструкций.
+    const float inverse = static_cast<float>(1.0 / row_sum(y_row, width));
     for (int64_t i = 0; i < width; ++i) {
       y_row[i] *= inverse;
     }
@@ -357,10 +340,7 @@ Tensor softmax_backward(const Tensor& grad_output, const Tensor& output) {
 
     // Якобиан softmax плотный, но его действие на вектор сворачивается в одну
     // скалярную поправку: dx_i = y_i * (g_i - sum_j g_j y_j).
-    double dot = 0.0;
-    for (int64_t i = 0; i < width; ++i) {
-      dot += static_cast<double>(g_row[i]) * y_row[i];
-    }
+    const double dot = row_dot(g_row, y_row, width);
     for (int64_t i = 0; i < width; ++i) {
       dx_row[i] = y_row[i] * (g_row[i] - static_cast<float>(dot));
     }

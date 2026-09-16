@@ -6,15 +6,19 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "autograd/nn.h"
+#include "core/thread_pool.h"
 #include "autograd/ops.h"
 #include "gradcheck.h"
 #include "ops/embedding.h"
+#include "ops/fast_exp.h"
 #include "ops/loss.h"
 #include "ops/nn.h"
 #include "ops/rope.h"
+#include "ops/row_reduce.h"
 #include "testing.h"
 
 namespace {
@@ -431,4 +435,99 @@ LLM_TEST(Nn, GradThroughAttentionShapedChain) {
       fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({4, 4}), 77),
                                     random_tensor(llm::Shape({4, 4}), 78),
                                     random_tensor(llm::Shape({4, 3}), 79)}));
+}
+
+// Редукции по строке считаются с фиксированным числом накопителей именно
+// затем, чтобы порядок сложения задавался исходником, а не шириной вектора и
+// не числом потоков (см. ops/row_reduce.h). Свойство проверяется двумя
+// способами, и первый важнее.
+namespace {
+
+struct WidthGuard {
+  explicit WidthGuard(int width) { llm::set_parallel_width(width); }
+  ~WidthGuard() { llm::set_parallel_width(0); }
+};
+
+void expect_bitwise_equal(const char* what, const llm::Tensor& lhs,
+                         const llm::Tensor& rhs) {
+  LLM_CHECK_MSG(lhs.numel() == rhs.numel(),
+                what << ": размеры разошлись, " << lhs.numel() << " и "
+                     << rhs.numel());
+  for (int64_t i = 0; i < lhs.numel(); ++i) {
+    LLM_CHECK_MSG(lhs.data()[i] == rhs.data()[i],
+                  what << ": элемент " << i << " разошёлся, "
+                       << lhs.data()[i] << " и " << rhs.data()[i]);
+  }
+}
+
+}  // namespace
+
+LLM_TEST(Nn, RowSumFollowsTheDeclaredOrder) {
+  // Данные подобраны так, чтобы перегруппировка была видна. Это не
+  // придирка, а условие осмысленности проверки: первая версия этого теста
+  // брала обычную строку softmax и проходила даже когда число накопителей
+  // меняли с восьми на четыре — сумма двухсот положительных чисел в двойной
+  // точности к перегруппировке нечувствительна, и тест ничего не проверял.
+  //
+  // Здесь единица и дальше числа величиной 2^-53: каждое по отдельности при
+  // прибавлении к единице пропадает без следа, а сложенные между собой —
+  // нет. Поэтому последовательная сумма и сумма по восьми накопителям
+  // расходятся, и это расхождение здесь же и проверяется.
+  const int64_t width = 173;
+  std::vector<float> row(static_cast<std::size_t>(width));
+  row[0] = 1.0f;
+  const float tiny = std::ldexp(1.0f, -53);
+  for (int64_t i = 1; i < width; ++i) {
+    row[static_cast<std::size_t>(i)] = tiny;
+  }
+
+  double serial = 0.0;
+  for (int64_t i = 0; i < width; ++i) {
+    serial += static_cast<double>(row[static_cast<std::size_t>(i)]);
+  }
+
+  double part[8] = {};
+  int64_t i = 0;
+  for (; i + 8 <= width; i += 8) {
+    for (int j = 0; j < 8; ++j) {
+      part[j] += static_cast<double>(row[static_cast<std::size_t>(i + j)]);
+    }
+  }
+  for (int j = 0; i < width; ++i, ++j) {
+    part[j] += static_cast<double>(row[static_cast<std::size_t>(i)]);
+  }
+  double declared = 0.0;
+  for (int j = 0; j < 8; ++j) {
+    declared += part[j];
+  }
+
+  LLM_CHECK_MSG(declared != serial,
+                "данные не различают порядок суммирования, проверка пуста");
+  LLM_CHECK_MSG(llm::ops::row_sum(row.data(), width) == declared,
+                "row_sum разошёлся с заявленным порядком");
+}
+
+LLM_TEST(Nn, RowReductionsDoNotDependOnThreadCount) {
+  // Размер взят выше порога деления работы (иначе многопоточная ветка просто
+  // не включится и проверка окажется пустой).
+  const llm::Tensor x = random_tensor(llm::Shape({256, 173}), 901);
+  const llm::Tensor w = random_tensor(llm::Shape({173}), 902);
+  const llm::Tensor g = random_tensor(llm::Shape({256, 173}), 903);
+
+  llm::Tensor softmax_one;
+  llm::Tensor norm_one;
+  llm::Tensor softmax_back_one;
+  {
+    const WidthGuard guard(1);
+    softmax_one = llm::ops::softmax(x);
+    norm_one = llm::ops::rms_norm(x, w, kEps);
+    softmax_back_one = llm::ops::softmax_backward(g, softmax_one);
+  }
+  {
+    const WidthGuard guard(4);
+    expect_bitwise_equal("softmax", softmax_one, llm::ops::softmax(x));
+    expect_bitwise_equal("rms_norm", norm_one, llm::ops::rms_norm(x, w, kEps));
+    expect_bitwise_equal("softmax_backward", softmax_back_one,
+                         llm::ops::softmax_backward(g, softmax_one));
+  }
 }

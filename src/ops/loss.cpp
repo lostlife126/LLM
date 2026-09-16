@@ -6,6 +6,7 @@
 #include "core/check.h"
 #include "ops/fast_exp.h"
 #include "ops/parallel.h"
+#include "ops/row_reduce.h"
 
 namespace llm {
 namespace ops {
@@ -39,27 +40,18 @@ float* row_scratch(int64_t width) {
 
 // Сумма экспонент строки со сдвигом на максимум и её логарифм.
 //
-// Сумма считается обычным последовательным циклом, а не внутри векторного
-// ядра: по дорожкам она сложилась бы в другом порядке, и значение потерь
-// зависело бы от набора инструкций процессора.
+// Сумма считается с фиксированным числом накопителей, а не внутри векторного
+// ядра: по дорожкам она сложилась бы в порядке, который задаёт набор
+// инструкций, и значение потерь зависело бы от процессора. См.
+// ops/row_reduce.h.
 double log_sum_exp_into(const float* row, float maximum, float* scratch,
                         int64_t width) {
   exp_shifted(row, maximum, scratch, width);
-  double sum = 0.0;
-  for (int64_t i = 0; i < width; ++i) {
-    sum += scratch[i];
-  }
-  return static_cast<double>(maximum) + std::log(sum);
+  return static_cast<double>(maximum) + std::log(row_sum(scratch, width));
 }
 
 float row_maximum(const float* row, int64_t width) {
-  float maximum = -std::numeric_limits<float>::infinity();
-  for (int64_t i = 0; i < width; ++i) {
-    if (row[i] > maximum) {
-      maximum = row[i];
-    }
-  }
-  return maximum;
+  return row_max(row, width);
 }
 
 }  // namespace
@@ -125,11 +117,7 @@ Tensor cross_entropy_backward(const Tensor& logits,
     // Экспоненты пишутся прямо в градиент: место там уже есть, и лишнего
     // прохода по памяти не получается.
     exp_shifted(row_data, row_maximum(row_data, vocab), grad_row, vocab);
-    double sum_exp = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      sum_exp += grad_row[i];
-    }
-    const float inverse = static_cast<float>(1.0 / sum_exp);
+    const float inverse = static_cast<float>(1.0 / row_sum(grad_row, vocab));
     for (int64_t i = 0; i < vocab; ++i) {
       grad_row[i] *= inverse * scale;
     }
