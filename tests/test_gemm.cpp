@@ -420,6 +420,72 @@ LLM_TEST(Gemm, DirectPathDoesNotDependOnThreadCount) {
   }
 }
 
+// Тот же вопрос для деления по столбцам.
+//
+// Отдельный тест, потому что ветка другая, и добраться до неё формой задачи
+// можно только нарочно: строк должно быть мало, а столбцов много. Это ровно
+// форма генерации по одному токену — и ровно та, где деление по столбцам
+// появилось, когда выяснилось, что при m = 1 работа доставалась одному ядру.
+LLM_TEST(Gemm, DirectPathSplitByColumnsDoesNotDependOnThreadCount) {
+  llm::Rng rng(31337);
+  const std::int64_t m = 1;
+  const std::int64_t n = 4096;  // ниже этого объёма деление не включается
+  const std::int64_t k = 256;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+
+  llm::set_parallel_width(1);
+  std::vector<float> serial(static_cast<std::size_t>(m * n), 0.25f);
+  llm::ops::gemm(false, false, m, n, k, 1.5f, a.data(), k, b.data(), n, 0.5f,
+                 serial.data(), n);
+
+  llm::set_parallel_width(0);
+  std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.25f);
+  llm::ops::gemm(false, false, m, n, k, 1.5f, a.data(), k, b.data(), n, 0.5f,
+                 threaded.data(), n);
+
+  for (std::size_t index = 0; index < serial.size(); ++index) {
+    LLM_CHECK_MSG(serial[index] == threaded[index],
+                  "элемент " << index << ": " << threaded[index] << " вместо "
+                             << serial[index]);
+  }
+
+  // beta здесь не единица нарочно. Каждый поток применяет beta к своей полосе
+  // столбцов, и если бы полосы пересеклись или какая-то осталась без beta,
+  // видно было бы именно по этому.
+  llm::set_parallel_width(0);
+}
+
+// То же для весов половинной разрядности: деление по столбцам у них общее с
+// обычным путём, но ядро другое, и границы полос оно считает само.
+LLM_TEST(Gemm, HalfSplitByColumnsDoesNotDependOnThreadCount) {
+  llm::Rng rng(4711);
+  const std::int64_t m = 1;
+  const std::int64_t n = 4096;  // ниже этого объёма деление не включается
+  const std::int64_t k = 256;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  std::vector<float> b = random_matrix(&rng, k, n);
+  std::vector<llm::Half> packed(b.size());
+  llm::floats_to_half(b.data(), packed.data(),
+                      static_cast<std::int64_t>(b.size()));
+
+  llm::set_parallel_width(1);
+  std::vector<float> serial(static_cast<std::size_t>(m * n), 0.25f);
+  llm::ops::gemm_half_b(false, m, n, k, 1.5f, a.data(), k, packed.data(), n,
+                        0.5f, serial.data(), n);
+
+  llm::set_parallel_width(0);
+  std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.25f);
+  llm::ops::gemm_half_b(false, m, n, k, 1.5f, a.data(), k, packed.data(), n,
+                        0.5f, threaded.data(), n);
+
+  for (std::size_t index = 0; index < serial.size(); ++index) {
+    LLM_CHECK_MSG(serial[index] == threaded[index],
+                  "элемент " << index << ": " << threaded[index] << " вместо "
+                             << serial[index]);
+  }
+}
+
 LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
   // Прямой и блочный пути делят глубину по-разному, поэтому дают чуть разные
   // младшие разряды. Это допустимо — но только если выбор пути одинаков на

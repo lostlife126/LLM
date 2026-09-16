@@ -463,11 +463,13 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
     bstride = nr;
   }
 
-  const auto compute = [&](int64_t first, int64_t last) {
-    scale_c(last - first, n, task.beta, task.c + first * task.ldc, task.ldc);
+  const auto compute = [&](int64_t first, int64_t last, int64_t col0,
+                           int64_t cols) {
+    scale_c(last - first, cols, task.beta,
+            task.c + first * task.ldc + col0, task.ldc);
     for (int64_t i = first; i < last; i += mr) {
       const int64_t rows = std::min(mr, last - i);
-      for (int64_t j = 0; j < n; j += nr) {
+      for (int64_t j = col0; j < col0 + cols; j += nr) {
         if (bbase_half != nullptr) {
           task.run_rows_half(k, task.a + i * task.lda, task.lda, bbase_half + j,
                              bstride, task.alpha, task.c + i * task.ldc + j,
@@ -483,27 +485,51 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
     }
   };
 
-  // Деление то же, что у блочного пути, и по той же причине: границы кусков
-  // выравнены на плитку, каждый элемент C считает ровно один поток, порядок
-  // накопления по глубине у него тот же. Упаковка B, если она была нужна, уже
-  // сделана — потоки только читают её.
+  // Деление по потокам. Границы кусков выравнены на плитку, каждый элемент C
+  // считает ровно один поток, порядок накопления по глубине у него тот же —
+  // значит результат от числа потоков не зависит побитово.
+  //
+  // Делить приходится по той оси, где есть что делить, и это не мелочь. Пока
+  // прямой путь включался только при малом B, строк всегда было много, и
+  // деления по строкам хватало. С порогом по числу строк всё перевернулось:
+  // генерация по одному токену приходит сюда с m = 1, а единиц работы по
+  // строкам тогда ровно одна — и вся работа доставалась одному ядру. Замер
+  // показывал это в упор: при m <= 8 числа на одном и на четырёх потоках
+  // совпадали.
+  //
+  // При равенстве предпочтение строкам, по той же причине, что и в блочном
+  // пути: деление по столбцам разрезает строку C, и на стыке двух потоков
+  // строка кэша оказывается общей.
   const int width = parallel_width();
   const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) *
                        static_cast<double>(k);
-  const int64_t units = ceil_div(m, mr);
+  const int64_t row_units = ceil_div(m, mr);
+  // Прямой путь включается только при n, кратном общему числу, а оно кратно
+  // ширине плитки любого ядра — значит столбцы делятся нацело.
+  const int64_t column_units = n / nr;
+  const bool split_rows = row_units >= column_units;
+  const int64_t units = split_rows ? row_units : column_units;
+  const int64_t unit_size = split_rows ? mr : nr;
+
   const int tasks =
       (width > 1 && !inside_parallel_region() && flops >= kMinParallelFlops)
           ? static_cast<int>(std::min<int64_t>(width, units))
           : 1;
   if (tasks <= 1) {
-    compute(0, m);
+    compute(0, m, 0, n);
     return;
   }
   parallel_for(tasks, [&](int index) {
-    const int64_t begin = (units * index) / tasks * mr;
-    const int64_t end = std::min((units * (index + 1)) / tasks * mr, m);
-    if (begin < end) {
-      compute(begin, end);
+    const int64_t begin = (units * index) / tasks * unit_size;
+    const int64_t end = std::min((units * (index + 1)) / tasks * unit_size,
+                                 split_rows ? m : n);
+    if (begin >= end) {
+      return;
+    }
+    if (split_rows) {
+      compute(begin, end, 0, n);
+    } else {
+      compute(0, m, begin, end - begin);
     }
   });
 }
