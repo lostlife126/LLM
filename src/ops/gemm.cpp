@@ -536,13 +536,18 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
   // отсутствие команды переводило вычисление на блочный путь, тот поделил бы
   // глубину иначе, и результат на такой машине отличался бы от результата на
   // всех остальных.
-  std::vector<float> expanded;
   if (bbase_half != nullptr && task.run_rows_half == nullptr) {
-    expanded.resize(static_cast<std::size_t>(k * n));
+    // Буфер берётся тот же, что у упаковки панелей, а не свой. Он thread_local
+    // и переживает вызовы, тогда как своя std::vector выделяла бы здесь k * n
+    // чисел КАЖДЫЙ раз — при генерации это двенадцать мегабайт на токен.
+    // Случай с транспонированным B ниже пользуется этим же буфером, и это не
+    // столкновение: половинная разрядность транспонирования не поддерживает.
+    PackBuffers& buffers = pack_buffers();
+    buffers.b.resize(static_cast<std::size_t>(k * n));
     for (int64_t p = 0; p < k; ++p) {
-      half_to_floats(bbase_half + p * task.ldb, expanded.data() + p * n, n);
+      half_to_floats(bbase_half + p * task.ldb, buffers.b.data() + p * n, n);
     }
-    bbase = expanded.data();
+    bbase = buffers.b.data();
     bbase_half = nullptr;
     bstride = n;
   }

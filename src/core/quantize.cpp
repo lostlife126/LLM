@@ -92,6 +92,14 @@ int scale_exponent(const Tensor& tensor, Precision precision) {
   if (!uses_scale(precision) || !tensor.defined()) {
     return 0;
   }
+  // Та же проверка, что у quantize, и не для симметрии. Функция читает numel()
+  // значений подряд от data(), а у вида это неверно дважды: значения будут не
+  // те, а у вида с нулевым шагом — какой делает expand — их окажется больше,
+  // чем есть в хранилище, то есть чтение уйдёт за границу. Заявлено это было
+  // только у quantize, хотя обе функции открыты.
+  LLM_CHECK_MSG(tensor.is_contiguous(),
+                "масштаб считается только по плотному тензору: у вида "
+                "numel() не описывает того, что лежит подряд");
   const float* data = tensor.data();
   const int64_t count = tensor.numel();
   float largest = 0.0f;

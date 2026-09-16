@@ -60,6 +60,10 @@ int64_t AdamW::decayed_parameter_count() const {
 // Ни то, ни другое не зависит от числа потоков, поэтому норма получается
 // побитово одинаковой на любой машине.
 double AdamW::sum_squares(const Tensor& tensor) {
+  // Читается numel() значений подряд, то есть тензор обязан быть плотным.
+  // Оптимизатор получает только параметры и их градиенты, а те плотны всегда —
+  // проверка стоит здесь затем, чтобы это было сказано, а не подразумевалось.
+  LLM_DCHECK(tensor.is_contiguous());
   const float* data = tensor.data();
   double parts[ops::kSumParts] = {};
   ops::for_row_parts(tensor.numel(), 1,
