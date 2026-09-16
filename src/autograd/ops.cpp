@@ -62,6 +62,20 @@ Var make_unary(const Var& input, const char* name, Tensor value,
       [node, grad_fn](const Tensor& grad) { node->accumulate(grad_fn(grad)); });
 }
 
+// То же для операции, результат которой — вид на буфер входа. Отличие в том,
+// что имитация пониженной разрядности к виду не применяется: она записала бы
+// округление в чужие данные. Разбор — у Var::from_op_view.
+Var make_unary_view(const Var& input, const char* name, Tensor value,
+                    GradFn grad_fn) {
+  if (!tracking(input)) {
+    return Var::constant(std::move(value));
+  }
+  const NodePtr node = input.node();
+  return Var::from_op_view(
+      std::move(value), name, {node},
+      [node, grad_fn](const Tensor& grad) { node->accumulate(grad_fn(grad)); });
+}
+
 }  // namespace
 
 Var add(const Var& a, const Var& b) {
@@ -216,7 +230,7 @@ Var matmul(const Var& a, const Var& b) {
 
 Var reshape(const Var& input, const Shape& shape) {
   const Shape input_shape = input.shape();
-  return make_unary(input, "reshape", input.value().contiguous().reshape(shape),
+  return make_unary_view(input, "reshape", input.value().contiguous().reshape(shape),
                     [input_shape](const Tensor& grad) {
                       return grad.contiguous().reshape(input_shape);
                     });
@@ -224,14 +238,14 @@ Var reshape(const Var& input, const Shape& shape) {
 
 Var expand(const Var& input, const Shape& shape) {
   const Shape input_shape = input.shape();
-  return make_unary(input, "expand", input.value().expand(shape),
+  return make_unary_view(input, "expand", input.value().expand(shape),
                     [input_shape](const Tensor& grad) {
                       return ops::reduce_to_shape(grad, input_shape);
                     });
 }
 
 Var transpose(const Var& input, int axis_a, int axis_b) {
-  return make_unary(input, "transpose", input.value().transpose(axis_a, axis_b),
+  return make_unary_view(input, "transpose", input.value().transpose(axis_a, axis_b),
                     [axis_a, axis_b](const Tensor& grad) {
                       // Перестановка двух осей обратна сама себе.
                       return grad.transpose(axis_a, axis_b);
@@ -250,7 +264,7 @@ Var permute(const Var& input, const std::vector<int>& order) {
         input.shape().normalize_axis(order[static_cast<std::size_t>(i)]);
     inverse[static_cast<std::size_t>(axis)] = i;
   }
-  return make_unary(
+  return make_unary_view(
       input, "permute", input.value().permute(order),
       [inverse](const Tensor& grad) { return grad.permute(inverse); });
 }
@@ -258,7 +272,7 @@ Var permute(const Var& input, const std::vector<int>& order) {
 Var slice(const Var& input, int axis, int64_t start, int64_t count) {
   const Shape input_shape = input.shape();
   const int normalized = input_shape.normalize_axis(axis);
-  return make_unary(
+  return make_unary_view(
       input, "slice", input.value().slice(axis, start, count),
       [input_shape, normalized, start, count](const Tensor& grad) {
         // Вне среза вход на результат не влиял, там градиент нуль.

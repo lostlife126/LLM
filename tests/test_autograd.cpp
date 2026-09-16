@@ -4,6 +4,7 @@
 
 #include "autograd/node.h"
 #include "core/fp16.h"
+#include "autograd/nn.h"
 #include "autograd/ops.h"
 #include "testing.h"
 
@@ -362,5 +363,50 @@ LLM_TEST(Autograd, Fp16SimulationLeavesParameterViewsAlone) {
                                                    << weight.value().data()[i]
                                                    << " вместо "
                                                    << before[static_cast<std::size_t>(i)]);
+  }
+}
+
+// Операции, сохраняющие СВОЙ ВЫХОД для обратного прохода, обязаны округляться
+// наравне с остальными.
+//
+// Проверка появилась после того, как её отсутствие пропустило настоящую
+// ошибку. Имитация пропускала тензор, на буфер которого смотрел кто-то ещё, —
+// условие выглядело как «это вид на чужие данные», а на деле под него
+// попадало и «операция сохранила собственный выход». Так из-под округления
+// молча вышли softmax и masked_softmax, то есть самые горячие активации
+// модели, и следующий замер сходимости в половинной разрядности оказался бы
+// завышенным.
+//
+// Проверка на mul такого не ловит: он сохраняет ВХОДЫ, а не выход.
+LLM_TEST(Autograd, Fp16SimulationRoundsOperationsThatSaveTheirOutput) {
+  const Var input = Var::leaf(awkward_values(16), true);
+
+  struct Case {
+    const char* name;
+    Var (*apply)(const Var&);
+  };
+  const Case cases[] = {
+      {"exp", &llm::autograd::exp},
+      {"sqrt", &llm::autograd::sqrt},
+      {"softmax", &llm::autograd::softmax},
+  };
+
+  for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    int64_t rough_without = 0;
+    {
+      SimulationGuard off(false);
+      rough_without = not_representable(cases[i].apply(input).value());
+    }
+    LLM_CHECK_MSG(rough_without > 0,
+                  cases[i].name
+                      << ": без имитации значения уже представимы — проверка "
+                         "ничего не проверяет");
+
+    SimulationGuard on(true);
+    const Var result = cases[i].apply(input);
+    LLM_CHECK_MSG(not_representable(result.value()) == 0,
+                  cases[i].name << ": с имитацией осталось "
+                                << not_representable(result.value())
+                                << " непредставимых значений");
   }
 }
