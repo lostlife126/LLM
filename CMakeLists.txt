@@ -95,6 +95,9 @@ target_link_libraries(bench_qk PRIVATE llm_core)
 add_executable(lora_scope apps/lora_scope.cpp)
 target_link_libraries(lora_scope PRIVATE llm_core)
 
+add_executable(fingerprint apps/fingerprint.cpp)
+target_link_libraries(fingerprint PRIVATE llm_core)
+
 add_executable(bpe_train apps/bpe_train.cpp)
 target_link_libraries(bpe_train PRIVATE llm_core)
 

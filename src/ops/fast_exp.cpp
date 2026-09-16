@@ -14,6 +14,13 @@
 #define LLM_HAS_X86_SIMD 0
 #endif
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define LLM_HAS_NEON 1
+#else
+#define LLM_HAS_NEON 0
+#endif
+
 namespace llm {
 namespace ops {
 namespace {
@@ -160,6 +167,114 @@ void libm_sigmoid(const float* input, float* output, int64_t count) {
     output[i] = 1.0f / (1.0f + std::exp(-input[i]));
   }
 }
+
+#if LLM_HAS_NEON
+
+// --- NEON -------------------------------------------------------------------
+//
+// Повторяет ветвь AVX2 шаг в шаг: те же коэффициенты, тот же порядок действий,
+// то же слитное умножение с накоплением. Это не аккуратность ради аккуратности
+// — от этого зависит побитовое совпадение результата между машинами, а на нём
+// стоит вся воспроизводимость обучения.
+//
+// Соответствие команд, если сравнивать с ветвью AVX2:
+//   _mm256_round_ps(..., NEAREST) -> vrndnq_f32   (к ближайшему чётному)
+//   _mm256_fnmadd_ps(n, c, x)     -> vfmsq_f32(x, n, c)   = x - n * c
+//   _mm256_fmadd_ps(p, r, c)      -> vfmaq_f32(c, p, r)   = c + p * r
+//   _mm256_cvttps_epi32           -> vcvtq_s32_f32        (усечение к нулю)
+//   _mm256_blendv_ps(a, b, m)     -> vbslq_f32(m, b, a)
+//
+// Проверки на NaN нет отдельной ветви: значение сравнивается само с собой.
+
+inline float32x4_t exp4(float32x4_t x) {
+  const uint32x4_t too_big = vcgtq_f32(x, vdupq_n_f32(kExpMax));
+  const uint32x4_t too_small = vcltq_f32(x, vdupq_n_f32(kExpMin));
+  const uint32x4_t is_nan = vmvnq_u32(vceqq_f32(x, x));
+
+  // Значения за границами всё равно считаются, а подменяются в конце: ветвление
+  // по дорожкам стоило бы дороже лишнего многочлена. Исходное x сохраняется —
+  // NaN после ограничения превратился бы в границу, а вернуть надо именно NaN.
+  const float32x4_t clamped =
+      vminq_f32(vmaxq_f32(x, vdupq_n_f32(kExpMin)), vdupq_n_f32(kExpMax));
+
+  const float32x4_t n = vrndnq_f32(vmulq_f32(clamped, vdupq_n_f32(kLog2e)));
+  float32x4_t r = vfmsq_f32(clamped, n, vdupq_n_f32(kLn2Hi));
+  r = vfmsq_f32(r, n, vdupq_n_f32(kLn2Lo));
+
+  const float32x4_t z = vmulq_f32(r, r);
+  float32x4_t p = vdupq_n_f32(kP0);
+  p = vfmaq_f32(vdupq_n_f32(kP1), p, r);
+  p = vfmaq_f32(vdupq_n_f32(kP2), p, r);
+  p = vfmaq_f32(vdupq_n_f32(kP3), p, r);
+  p = vfmaq_f32(vdupq_n_f32(kP4), p, r);
+  p = vfmaq_f32(vdupq_n_f32(kP5), p, r);
+  p = vfmaq_f32(r, p, z);
+  p = vaddq_f32(p, vdupq_n_f32(1.0f));
+
+  // Степень двойки в два приёма — по той же причине, что и в скалярной
+  // реализации: показатель доходит до -150, а такого числа как одно значение
+  // нет. Половинки считаются усечением к нулю, а не сдвигом: сдвиг округлял бы
+  // отрицательные к минус бесконечности, и результат разошёлся бы со скалярным.
+  const int32x4_t k = vcvtq_s32_f32(n);
+  const int32x4_t half = vcvtq_s32_f32(vmulq_f32(n, vdupq_n_f32(0.5f)));
+  const int32x4_t rest = vsubq_s32(k, half);
+  const int32x4_t bias = vdupq_n_s32(127);
+  const float32x4_t scale_low =
+      vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(half, bias), 23));
+  const float32x4_t scale_rest =
+      vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(rest, bias), 23));
+  float32x4_t result = vmulq_f32(vmulq_f32(p, scale_low), scale_rest);
+
+  result = vbslq_f32(
+      too_big, vdupq_n_f32(std::numeric_limits<float>::infinity()), result);
+  result = vbslq_f32(too_small, vdupq_n_f32(0.0f), result);
+  return vbslq_f32(is_nan, x, result);
+}
+
+void neon_exp_shifted(const float* input, float shift, float* output,
+                      int64_t count) {
+  const float32x4_t offset = vdupq_n_f32(shift);
+  int64_t i = 0;
+  for (; i + 4 <= count; i += 4) {
+    vst1q_f32(output + i, exp4(vsubq_f32(vld1q_f32(input + i), offset)));
+  }
+  // Хвост доводится тем же ядром через временный буфер: скалярная реализация
+  // округляет иначе, и последние элементы массива отличались бы от остальных.
+  if (i < count) {
+    float tail[4];
+    for (int64_t j = 0; j < 4; ++j) {
+      tail[j] = i + j < count ? input[i + j] : 0.0f;
+    }
+    vst1q_f32(tail, exp4(vsubq_f32(vld1q_f32(tail), offset)));
+    for (int64_t j = 0; i + j < count; ++j) {
+      output[i + j] = tail[j];
+    }
+  }
+}
+
+void neon_sigmoid(const float* input, float* output, int64_t count) {
+  const float32x4_t one = vdupq_n_f32(1.0f);
+  int64_t i = 0;
+  for (; i + 4 <= count; i += 4) {
+    const float32x4_t x = vld1q_f32(input + i);
+    const float32x4_t e = exp4(vnegq_f32(x));
+    vst1q_f32(output + i, vdivq_f32(one, vaddq_f32(one, e)));
+  }
+  if (i < count) {
+    float tail[4];
+    for (int64_t j = 0; j < 4; ++j) {
+      tail[j] = i + j < count ? input[i + j] : 0.0f;
+    }
+    const float32x4_t x = vld1q_f32(tail);
+    const float32x4_t e = exp4(vnegq_f32(x));
+    vst1q_f32(tail, vdivq_f32(one, vaddq_f32(one, e)));
+    for (int64_t j = 0; i + j < count; ++j) {
+      output[i + j] = tail[j];
+    }
+  }
+}
+
+#endif  // LLM_HAS_NEON
 
 #if LLM_HAS_X86_SIMD
 
@@ -381,8 +496,14 @@ const ExpKernelChoice* build_table(int* count) {
 
     // Порядок важен: выбирается последняя доступная, поэтому эталонный
     // многочлен стоит перед libm и автоматически не выбирается никогда.
-    table[size].kernel =
-        ExpKernel{&scalar_exp_shifted, &scalar_sigmoid, "эталонная", false};
+    // Слитное ли умножение с накоплением у эталонной реализации — зависит от
+    // архитектуры, ровно как у скалярного микроядра. Многочлен записан как
+    // p * r + c, раздельно; на базовом x86-64 слитной команды нет и остаются
+    // два округления, на aarch64 она в базовом наборе и компилятор её
+    // подставляет. Отпечаток эталонной на ARM совпадает с отпечатком NEON —
+    // проверено программой fingerprint.
+    table[size].kernel = ExpKernel{&scalar_exp_shifted, &scalar_sigmoid,
+                                   "эталонная", LLM_HAS_NEON != 0};
     table[size].available = true;
     ++size;
 
@@ -390,6 +511,14 @@ const ExpKernelChoice* build_table(int* count) {
         ExpKernel{&libm_exp_shifted, &libm_sigmoid, "libm", false};
     table[size].available = true;
     ++size;
+
+#if LLM_HAS_NEON
+    // Доступно всегда: NEON обязателен в ARMv8-A.
+    table[size].kernel =
+        ExpKernel{&neon_exp_shifted, &neon_sigmoid, "NEON x4", true};
+    table[size].available = cpu.has_neon();
+    ++size;
+#endif
 
 #if LLM_HAS_X86_SIMD
     // Ядро экспоненты умножения с накоплением не использует, поэтому от AVX2
