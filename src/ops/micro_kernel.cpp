@@ -677,11 +677,30 @@ constexpr int64_t kNeonN = 8;
 void neon_kernel(int64_t kc, const float* __restrict apanel,
                  const float* __restrict bpanel, float alpha,
                  float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
-  float32x4_t acc[kNeonM][2];
-  for (int i = 0; i < kNeonM; ++i) {
-    acc[i][0] = vdupq_n_f32(0.0f);
-    acc[i][1] = vdupq_n_f32(0.0f);
-  }
+  float32x4_t acc00 = vdupq_n_f32(0.0f);
+  float32x4_t acc01 = vdupq_n_f32(0.0f);
+  float32x4_t acc10 = vdupq_n_f32(0.0f);
+  float32x4_t acc11 = vdupq_n_f32(0.0f);
+  float32x4_t acc20 = vdupq_n_f32(0.0f);
+  float32x4_t acc21 = vdupq_n_f32(0.0f);
+  float32x4_t acc30 = vdupq_n_f32(0.0f);
+  float32x4_t acc31 = vdupq_n_f32(0.0f);
+  float32x4_t acc40 = vdupq_n_f32(0.0f);
+  float32x4_t acc41 = vdupq_n_f32(0.0f);
+  float32x4_t acc50 = vdupq_n_f32(0.0f);
+  float32x4_t acc51 = vdupq_n_f32(0.0f);
+  float32x4_t acc60 = vdupq_n_f32(0.0f);
+  float32x4_t acc61 = vdupq_n_f32(0.0f);
+  float32x4_t acc70 = vdupq_n_f32(0.0f);
+  float32x4_t acc71 = vdupq_n_f32(0.0f);
+  float32x4_t acc80 = vdupq_n_f32(0.0f);
+  float32x4_t acc81 = vdupq_n_f32(0.0f);
+  float32x4_t acc90 = vdupq_n_f32(0.0f);
+  float32x4_t acc91 = vdupq_n_f32(0.0f);
+  float32x4_t acc100 = vdupq_n_f32(0.0f);
+  float32x4_t acc101 = vdupq_n_f32(0.0f);
+  float32x4_t acc110 = vdupq_n_f32(0.0f);
+  float32x4_t acc111 = vdupq_n_f32(0.0f);
 
   for (int64_t p = 0; p < kc; ++p) {
     const float* b_values = bpanel + p * kNeonN;
@@ -692,50 +711,108 @@ void neon_kernel(int64_t kc, const float* __restrict apanel,
     const float32x4_t a1 = vld1q_f32(a_values + 4);
     const float32x4_t a2 = vld1q_f32(a_values + 8);
 
-    acc[0][0] = vfmaq_laneq_f32(acc[0][0], b0, a0, 0);
-    acc[0][1] = vfmaq_laneq_f32(acc[0][1], b1, a0, 0);
-    acc[1][0] = vfmaq_laneq_f32(acc[1][0], b0, a0, 1);
-    acc[1][1] = vfmaq_laneq_f32(acc[1][1], b1, a0, 1);
-    acc[2][0] = vfmaq_laneq_f32(acc[2][0], b0, a0, 2);
-    acc[2][1] = vfmaq_laneq_f32(acc[2][1], b1, a0, 2);
-    acc[3][0] = vfmaq_laneq_f32(acc[3][0], b0, a0, 3);
-    acc[3][1] = vfmaq_laneq_f32(acc[3][1], b1, a0, 3);
+    acc00 = vfmaq_laneq_f32(acc00, b0, a0, 0);
+    acc01 = vfmaq_laneq_f32(acc01, b1, a0, 0);
+    acc10 = vfmaq_laneq_f32(acc10, b0, a0, 1);
+    acc11 = vfmaq_laneq_f32(acc11, b1, a0, 1);
+    acc20 = vfmaq_laneq_f32(acc20, b0, a0, 2);
+    acc21 = vfmaq_laneq_f32(acc21, b1, a0, 2);
+    acc30 = vfmaq_laneq_f32(acc30, b0, a0, 3);
+    acc31 = vfmaq_laneq_f32(acc31, b1, a0, 3);
 
-    acc[4][0] = vfmaq_laneq_f32(acc[4][0], b0, a1, 0);
-    acc[4][1] = vfmaq_laneq_f32(acc[4][1], b1, a1, 0);
-    acc[5][0] = vfmaq_laneq_f32(acc[5][0], b0, a1, 1);
-    acc[5][1] = vfmaq_laneq_f32(acc[5][1], b1, a1, 1);
-    acc[6][0] = vfmaq_laneq_f32(acc[6][0], b0, a1, 2);
-    acc[6][1] = vfmaq_laneq_f32(acc[6][1], b1, a1, 2);
-    acc[7][0] = vfmaq_laneq_f32(acc[7][0], b0, a1, 3);
-    acc[7][1] = vfmaq_laneq_f32(acc[7][1], b1, a1, 3);
+    acc40 = vfmaq_laneq_f32(acc40, b0, a1, 0);
+    acc41 = vfmaq_laneq_f32(acc41, b1, a1, 0);
+    acc50 = vfmaq_laneq_f32(acc50, b0, a1, 1);
+    acc51 = vfmaq_laneq_f32(acc51, b1, a1, 1);
+    acc60 = vfmaq_laneq_f32(acc60, b0, a1, 2);
+    acc61 = vfmaq_laneq_f32(acc61, b1, a1, 2);
+    acc70 = vfmaq_laneq_f32(acc70, b0, a1, 3);
+    acc71 = vfmaq_laneq_f32(acc71, b1, a1, 3);
 
-    acc[8][0] = vfmaq_laneq_f32(acc[8][0], b0, a2, 0);
-    acc[8][1] = vfmaq_laneq_f32(acc[8][1], b1, a2, 0);
-    acc[9][0] = vfmaq_laneq_f32(acc[9][0], b0, a2, 1);
-    acc[9][1] = vfmaq_laneq_f32(acc[9][1], b1, a2, 1);
-    acc[10][0] = vfmaq_laneq_f32(acc[10][0], b0, a2, 2);
-    acc[10][1] = vfmaq_laneq_f32(acc[10][1], b1, a2, 2);
-    acc[11][0] = vfmaq_laneq_f32(acc[11][0], b0, a2, 3);
-    acc[11][1] = vfmaq_laneq_f32(acc[11][1], b1, a2, 3);
+    acc80 = vfmaq_laneq_f32(acc80, b0, a2, 0);
+    acc81 = vfmaq_laneq_f32(acc81, b1, a2, 0);
+    acc90 = vfmaq_laneq_f32(acc90, b0, a2, 1);
+    acc91 = vfmaq_laneq_f32(acc91, b1, a2, 1);
+    acc100 = vfmaq_laneq_f32(acc100, b0, a2, 2);
+    acc101 = vfmaq_laneq_f32(acc101, b1, a2, 2);
+    acc110 = vfmaq_laneq_f32(acc110, b0, a2, 3);
+    acc111 = vfmaq_laneq_f32(acc111, b1, a2, 3);
   }
 
+  if (rows == kNeonM && cols == kNeonN) {
+    // Быстрый путь — полная плитка, и она же подавляющее большинство вызовов:
+    // неполные бывают только по краям матрицы. Развёрнут целиком, чтобы
+    // аккумуляторы не пришлось адресовать по вычисляемому индексу.
+    float* row0 = c + 0 * ldc;
+    vst1q_f32(row0, vfmaq_n_f32(vld1q_f32(row0), acc00, alpha));
+    vst1q_f32(row0 + 4, vfmaq_n_f32(vld1q_f32(row0 + 4), acc01, alpha));
+    float* row1 = c + 1 * ldc;
+    vst1q_f32(row1, vfmaq_n_f32(vld1q_f32(row1), acc10, alpha));
+    vst1q_f32(row1 + 4, vfmaq_n_f32(vld1q_f32(row1 + 4), acc11, alpha));
+    float* row2 = c + 2 * ldc;
+    vst1q_f32(row2, vfmaq_n_f32(vld1q_f32(row2), acc20, alpha));
+    vst1q_f32(row2 + 4, vfmaq_n_f32(vld1q_f32(row2 + 4), acc21, alpha));
+    float* row3 = c + 3 * ldc;
+    vst1q_f32(row3, vfmaq_n_f32(vld1q_f32(row3), acc30, alpha));
+    vst1q_f32(row3 + 4, vfmaq_n_f32(vld1q_f32(row3 + 4), acc31, alpha));
+    float* row4 = c + 4 * ldc;
+    vst1q_f32(row4, vfmaq_n_f32(vld1q_f32(row4), acc40, alpha));
+    vst1q_f32(row4 + 4, vfmaq_n_f32(vld1q_f32(row4 + 4), acc41, alpha));
+    float* row5 = c + 5 * ldc;
+    vst1q_f32(row5, vfmaq_n_f32(vld1q_f32(row5), acc50, alpha));
+    vst1q_f32(row5 + 4, vfmaq_n_f32(vld1q_f32(row5 + 4), acc51, alpha));
+    float* row6 = c + 6 * ldc;
+    vst1q_f32(row6, vfmaq_n_f32(vld1q_f32(row6), acc60, alpha));
+    vst1q_f32(row6 + 4, vfmaq_n_f32(vld1q_f32(row6 + 4), acc61, alpha));
+    float* row7 = c + 7 * ldc;
+    vst1q_f32(row7, vfmaq_n_f32(vld1q_f32(row7), acc70, alpha));
+    vst1q_f32(row7 + 4, vfmaq_n_f32(vld1q_f32(row7 + 4), acc71, alpha));
+    float* row8 = c + 8 * ldc;
+    vst1q_f32(row8, vfmaq_n_f32(vld1q_f32(row8), acc80, alpha));
+    vst1q_f32(row8 + 4, vfmaq_n_f32(vld1q_f32(row8 + 4), acc81, alpha));
+    float* row9 = c + 9 * ldc;
+    vst1q_f32(row9, vfmaq_n_f32(vld1q_f32(row9), acc90, alpha));
+    vst1q_f32(row9 + 4, vfmaq_n_f32(vld1q_f32(row9 + 4), acc91, alpha));
+    float* row10 = c + 10 * ldc;
+    vst1q_f32(row10, vfmaq_n_f32(vld1q_f32(row10), acc100, alpha));
+    vst1q_f32(row10 + 4, vfmaq_n_f32(vld1q_f32(row10 + 4), acc101, alpha));
+    float* row11 = c + 11 * ldc;
+    vst1q_f32(row11, vfmaq_n_f32(vld1q_f32(row11), acc110, alpha));
+    vst1q_f32(row11 + 4, vfmaq_n_f32(vld1q_f32(row11 + 4), acc111, alpha));
+    return;
+  }
+
+  // Край матрицы. Здесь аккумуляторы всё равно уезжают в память, но путь
+  // редкий, и важна на нём правильность границы, а не скорость.
+  float values[kNeonM][kNeonN];
+  vst1q_f32(values[0], acc00);
+  vst1q_f32(values[0] + 4, acc01);
+  vst1q_f32(values[1], acc10);
+  vst1q_f32(values[1] + 4, acc11);
+  vst1q_f32(values[2], acc20);
+  vst1q_f32(values[2] + 4, acc21);
+  vst1q_f32(values[3], acc30);
+  vst1q_f32(values[3] + 4, acc31);
+  vst1q_f32(values[4], acc40);
+  vst1q_f32(values[4] + 4, acc41);
+  vst1q_f32(values[5], acc50);
+  vst1q_f32(values[5] + 4, acc51);
+  vst1q_f32(values[6], acc60);
+  vst1q_f32(values[6] + 4, acc61);
+  vst1q_f32(values[7], acc70);
+  vst1q_f32(values[7] + 4, acc71);
+  vst1q_f32(values[8], acc80);
+  vst1q_f32(values[8] + 4, acc81);
+  vst1q_f32(values[9], acc90);
+  vst1q_f32(values[9] + 4, acc91);
+  vst1q_f32(values[10], acc100);
+  vst1q_f32(values[10] + 4, acc101);
+  vst1q_f32(values[11], acc110);
+  vst1q_f32(values[11] + 4, acc111);
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
-    const int i = static_cast<int>(ii);
-    if (cols == kNeonN) {
-      vst1q_f32(c_row, vfmaq_n_f32(vld1q_f32(c_row), acc[i][0], alpha));
-      vst1q_f32(c_row + 4, vfmaq_n_f32(vld1q_f32(c_row + 4), acc[i][1], alpha));
-      continue;
-    }
-    // Неполная плитка бывает только у края матрицы. Выгружаем аккумуляторы в
-    // память и дописываем сколько нужно — редкий путь, скорость здесь не
-    // важна, важна правильность на границе.
-    float values[kNeonN];
-    vst1q_f32(values, acc[i][0]);
-    vst1q_f32(values + 4, acc[i][1]);
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * values[jj];
+      c_row[jj] += alpha * values[ii][jj];
     }
   }
 }
@@ -745,72 +822,158 @@ void neon_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
                       const float* __restrict b, int64_t bstride, float alpha,
                       float* __restrict c, int64_t ldc, int64_t rows,
                       int64_t cols) {
-  float32x4_t acc[kNeonM][2];
-  for (int i = 0; i < kNeonM; ++i) {
-    acc[i][0] = vdupq_n_f32(0.0f);
-    acc[i][1] = vdupq_n_f32(0.0f);
-  }
+  float32x4_t acc00 = vdupq_n_f32(0.0f);
+  float32x4_t acc01 = vdupq_n_f32(0.0f);
+  float32x4_t acc10 = vdupq_n_f32(0.0f);
+  float32x4_t acc11 = vdupq_n_f32(0.0f);
+  float32x4_t acc20 = vdupq_n_f32(0.0f);
+  float32x4_t acc21 = vdupq_n_f32(0.0f);
+  float32x4_t acc30 = vdupq_n_f32(0.0f);
+  float32x4_t acc31 = vdupq_n_f32(0.0f);
+  float32x4_t acc40 = vdupq_n_f32(0.0f);
+  float32x4_t acc41 = vdupq_n_f32(0.0f);
+  float32x4_t acc50 = vdupq_n_f32(0.0f);
+  float32x4_t acc51 = vdupq_n_f32(0.0f);
+  float32x4_t acc60 = vdupq_n_f32(0.0f);
+  float32x4_t acc61 = vdupq_n_f32(0.0f);
+  float32x4_t acc70 = vdupq_n_f32(0.0f);
+  float32x4_t acc71 = vdupq_n_f32(0.0f);
+  float32x4_t acc80 = vdupq_n_f32(0.0f);
+  float32x4_t acc81 = vdupq_n_f32(0.0f);
+  float32x4_t acc90 = vdupq_n_f32(0.0f);
+  float32x4_t acc91 = vdupq_n_f32(0.0f);
+  float32x4_t acc100 = vdupq_n_f32(0.0f);
+  float32x4_t acc101 = vdupq_n_f32(0.0f);
+  float32x4_t acc110 = vdupq_n_f32(0.0f);
+  float32x4_t acc111 = vdupq_n_f32(0.0f);
 
   // Указатели на строки берутся заранее: недостающие показывают на последнюю
   // действительную, и их вклад в C всё равно не записывается.
-  const float* arow[kNeonM];
-  for (int i = 0; i < kNeonM; ++i) {
-    const int64_t index = i < rows ? i : rows - 1;
-    arow[i] = a + index * lda;
-  }
+  const float* r0 = a + (rows > 0 ? 0 : rows - 1) * lda;
+  const float* r1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* r2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* r3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* r4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* r5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+  const float* r6 = a + (rows > 6 ? 6 : rows - 1) * lda;
+  const float* r7 = a + (rows > 7 ? 7 : rows - 1) * lda;
+  const float* r8 = a + (rows > 8 ? 8 : rows - 1) * lda;
+  const float* r9 = a + (rows > 9 ? 9 : rows - 1) * lda;
+  const float* r10 = a + (rows > 10 ? 10 : rows - 1) * lda;
+  const float* r11 = a + (rows > 11 ? 11 : rows - 1) * lda;
 
   for (int64_t p = 0; p < kc; ++p) {
     const float* b_values = b + p * bstride;
     const float32x4_t b0 = vld1q_f32(b_values);
     const float32x4_t b1 = vld1q_f32(b_values + 4);
-    // Значения A собираются по строкам в вектор — только ради того, чтобы
-    // множитель брался из дорожки. Загрузка каждого по отдельности стоила бы
-    // ровно столько же.
-    const float32x4_t a0 = {arow[0][p], arow[1][p], arow[2][p], arow[3][p]};
-    const float32x4_t a1 = {arow[4][p], arow[5][p], arow[6][p], arow[7][p]};
-    const float32x4_t a2 = {arow[8][p], arow[9][p], arow[10][p], arow[11][p]};
+    // Значения A собираются в вектор только затем, чтобы множитель брался из
+    // дорожки: загрузка каждого по отдельности стоила бы столько же.
+    const float32x4_t a0 = {r0[p], r1[p], r2[p], r3[p]};
+    const float32x4_t a1 = {r4[p], r5[p], r6[p], r7[p]};
+    const float32x4_t a2 = {r8[p], r9[p], r10[p], r11[p]};
 
-    acc[0][0] = vfmaq_laneq_f32(acc[0][0], b0, a0, 0);
-    acc[0][1] = vfmaq_laneq_f32(acc[0][1], b1, a0, 0);
-    acc[1][0] = vfmaq_laneq_f32(acc[1][0], b0, a0, 1);
-    acc[1][1] = vfmaq_laneq_f32(acc[1][1], b1, a0, 1);
-    acc[2][0] = vfmaq_laneq_f32(acc[2][0], b0, a0, 2);
-    acc[2][1] = vfmaq_laneq_f32(acc[2][1], b1, a0, 2);
-    acc[3][0] = vfmaq_laneq_f32(acc[3][0], b0, a0, 3);
-    acc[3][1] = vfmaq_laneq_f32(acc[3][1], b1, a0, 3);
+    acc00 = vfmaq_laneq_f32(acc00, b0, a0, 0);
+    acc01 = vfmaq_laneq_f32(acc01, b1, a0, 0);
+    acc10 = vfmaq_laneq_f32(acc10, b0, a0, 1);
+    acc11 = vfmaq_laneq_f32(acc11, b1, a0, 1);
+    acc20 = vfmaq_laneq_f32(acc20, b0, a0, 2);
+    acc21 = vfmaq_laneq_f32(acc21, b1, a0, 2);
+    acc30 = vfmaq_laneq_f32(acc30, b0, a0, 3);
+    acc31 = vfmaq_laneq_f32(acc31, b1, a0, 3);
 
-    acc[4][0] = vfmaq_laneq_f32(acc[4][0], b0, a1, 0);
-    acc[4][1] = vfmaq_laneq_f32(acc[4][1], b1, a1, 0);
-    acc[5][0] = vfmaq_laneq_f32(acc[5][0], b0, a1, 1);
-    acc[5][1] = vfmaq_laneq_f32(acc[5][1], b1, a1, 1);
-    acc[6][0] = vfmaq_laneq_f32(acc[6][0], b0, a1, 2);
-    acc[6][1] = vfmaq_laneq_f32(acc[6][1], b1, a1, 2);
-    acc[7][0] = vfmaq_laneq_f32(acc[7][0], b0, a1, 3);
-    acc[7][1] = vfmaq_laneq_f32(acc[7][1], b1, a1, 3);
+    acc40 = vfmaq_laneq_f32(acc40, b0, a1, 0);
+    acc41 = vfmaq_laneq_f32(acc41, b1, a1, 0);
+    acc50 = vfmaq_laneq_f32(acc50, b0, a1, 1);
+    acc51 = vfmaq_laneq_f32(acc51, b1, a1, 1);
+    acc60 = vfmaq_laneq_f32(acc60, b0, a1, 2);
+    acc61 = vfmaq_laneq_f32(acc61, b1, a1, 2);
+    acc70 = vfmaq_laneq_f32(acc70, b0, a1, 3);
+    acc71 = vfmaq_laneq_f32(acc71, b1, a1, 3);
 
-    acc[8][0] = vfmaq_laneq_f32(acc[8][0], b0, a2, 0);
-    acc[8][1] = vfmaq_laneq_f32(acc[8][1], b1, a2, 0);
-    acc[9][0] = vfmaq_laneq_f32(acc[9][0], b0, a2, 1);
-    acc[9][1] = vfmaq_laneq_f32(acc[9][1], b1, a2, 1);
-    acc[10][0] = vfmaq_laneq_f32(acc[10][0], b0, a2, 2);
-    acc[10][1] = vfmaq_laneq_f32(acc[10][1], b1, a2, 2);
-    acc[11][0] = vfmaq_laneq_f32(acc[11][0], b0, a2, 3);
-    acc[11][1] = vfmaq_laneq_f32(acc[11][1], b1, a2, 3);
+    acc80 = vfmaq_laneq_f32(acc80, b0, a2, 0);
+    acc81 = vfmaq_laneq_f32(acc81, b1, a2, 0);
+    acc90 = vfmaq_laneq_f32(acc90, b0, a2, 1);
+    acc91 = vfmaq_laneq_f32(acc91, b1, a2, 1);
+    acc100 = vfmaq_laneq_f32(acc100, b0, a2, 2);
+    acc101 = vfmaq_laneq_f32(acc101, b1, a2, 2);
+    acc110 = vfmaq_laneq_f32(acc110, b0, a2, 3);
+    acc111 = vfmaq_laneq_f32(acc111, b1, a2, 3);
   }
 
+  if (rows == kNeonM && cols == kNeonN) {
+    // Быстрый путь — полная плитка, и она же подавляющее большинство вызовов:
+    // неполные бывают только по краям матрицы. Развёрнут целиком, чтобы
+    // аккумуляторы не пришлось адресовать по вычисляемому индексу.
+    float* row0 = c + 0 * ldc;
+    vst1q_f32(row0, vfmaq_n_f32(vld1q_f32(row0), acc00, alpha));
+    vst1q_f32(row0 + 4, vfmaq_n_f32(vld1q_f32(row0 + 4), acc01, alpha));
+    float* row1 = c + 1 * ldc;
+    vst1q_f32(row1, vfmaq_n_f32(vld1q_f32(row1), acc10, alpha));
+    vst1q_f32(row1 + 4, vfmaq_n_f32(vld1q_f32(row1 + 4), acc11, alpha));
+    float* row2 = c + 2 * ldc;
+    vst1q_f32(row2, vfmaq_n_f32(vld1q_f32(row2), acc20, alpha));
+    vst1q_f32(row2 + 4, vfmaq_n_f32(vld1q_f32(row2 + 4), acc21, alpha));
+    float* row3 = c + 3 * ldc;
+    vst1q_f32(row3, vfmaq_n_f32(vld1q_f32(row3), acc30, alpha));
+    vst1q_f32(row3 + 4, vfmaq_n_f32(vld1q_f32(row3 + 4), acc31, alpha));
+    float* row4 = c + 4 * ldc;
+    vst1q_f32(row4, vfmaq_n_f32(vld1q_f32(row4), acc40, alpha));
+    vst1q_f32(row4 + 4, vfmaq_n_f32(vld1q_f32(row4 + 4), acc41, alpha));
+    float* row5 = c + 5 * ldc;
+    vst1q_f32(row5, vfmaq_n_f32(vld1q_f32(row5), acc50, alpha));
+    vst1q_f32(row5 + 4, vfmaq_n_f32(vld1q_f32(row5 + 4), acc51, alpha));
+    float* row6 = c + 6 * ldc;
+    vst1q_f32(row6, vfmaq_n_f32(vld1q_f32(row6), acc60, alpha));
+    vst1q_f32(row6 + 4, vfmaq_n_f32(vld1q_f32(row6 + 4), acc61, alpha));
+    float* row7 = c + 7 * ldc;
+    vst1q_f32(row7, vfmaq_n_f32(vld1q_f32(row7), acc70, alpha));
+    vst1q_f32(row7 + 4, vfmaq_n_f32(vld1q_f32(row7 + 4), acc71, alpha));
+    float* row8 = c + 8 * ldc;
+    vst1q_f32(row8, vfmaq_n_f32(vld1q_f32(row8), acc80, alpha));
+    vst1q_f32(row8 + 4, vfmaq_n_f32(vld1q_f32(row8 + 4), acc81, alpha));
+    float* row9 = c + 9 * ldc;
+    vst1q_f32(row9, vfmaq_n_f32(vld1q_f32(row9), acc90, alpha));
+    vst1q_f32(row9 + 4, vfmaq_n_f32(vld1q_f32(row9 + 4), acc91, alpha));
+    float* row10 = c + 10 * ldc;
+    vst1q_f32(row10, vfmaq_n_f32(vld1q_f32(row10), acc100, alpha));
+    vst1q_f32(row10 + 4, vfmaq_n_f32(vld1q_f32(row10 + 4), acc101, alpha));
+    float* row11 = c + 11 * ldc;
+    vst1q_f32(row11, vfmaq_n_f32(vld1q_f32(row11), acc110, alpha));
+    vst1q_f32(row11 + 4, vfmaq_n_f32(vld1q_f32(row11 + 4), acc111, alpha));
+    return;
+  }
+
+  // Край матрицы. Здесь аккумуляторы всё равно уезжают в память, но путь
+  // редкий, и важна на нём правильность границы, а не скорость.
+  float values[kNeonM][kNeonN];
+  vst1q_f32(values[0], acc00);
+  vst1q_f32(values[0] + 4, acc01);
+  vst1q_f32(values[1], acc10);
+  vst1q_f32(values[1] + 4, acc11);
+  vst1q_f32(values[2], acc20);
+  vst1q_f32(values[2] + 4, acc21);
+  vst1q_f32(values[3], acc30);
+  vst1q_f32(values[3] + 4, acc31);
+  vst1q_f32(values[4], acc40);
+  vst1q_f32(values[4] + 4, acc41);
+  vst1q_f32(values[5], acc50);
+  vst1q_f32(values[5] + 4, acc51);
+  vst1q_f32(values[6], acc60);
+  vst1q_f32(values[6] + 4, acc61);
+  vst1q_f32(values[7], acc70);
+  vst1q_f32(values[7] + 4, acc71);
+  vst1q_f32(values[8], acc80);
+  vst1q_f32(values[8] + 4, acc81);
+  vst1q_f32(values[9], acc90);
+  vst1q_f32(values[9] + 4, acc91);
+  vst1q_f32(values[10], acc100);
+  vst1q_f32(values[10] + 4, acc101);
+  vst1q_f32(values[11], acc110);
+  vst1q_f32(values[11] + 4, acc111);
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
-    const int i = static_cast<int>(ii);
-    if (cols == kNeonN) {
-      vst1q_f32(c_row, vfmaq_n_f32(vld1q_f32(c_row), acc[i][0], alpha));
-      vst1q_f32(c_row + 4, vfmaq_n_f32(vld1q_f32(c_row + 4), acc[i][1], alpha));
-      continue;
-    }
-    float values[kNeonN];
-    vst1q_f32(values, acc[i][0]);
-    vst1q_f32(values + 4, acc[i][1]);
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * values[jj];
+      c_row[jj] += alpha * values[ii][jj];
     }
   }
 }
