@@ -13,6 +13,7 @@
 #include <string>
 
 #include "core/check.h"
+#include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
@@ -22,16 +23,6 @@
 
 namespace {
 
-std::string read_file(const std::string& path) {
-  std::ifstream file(path.c_str(), std::ios::binary);
-  if (!file.good()) {
-    std::fprintf(stderr, "не удалось открыть %s\n", path.c_str());
-    std::exit(1);
-  }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  return buffer.str();
-}
 
 }  // namespace
 
@@ -66,7 +57,7 @@ int main(int argc, char** argv) {
 
   std::printf("модель: %s\n", config.to_string().c_str());
 
-  const std::string text = read_file(corpus_path);
+  const std::string text = bench::read_file(corpus_path);
   const llm::data::TokenDataset dataset =
       llm::data::TokenDataset::from_text(text, tokenizer, 0.1);
 

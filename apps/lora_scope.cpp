@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
@@ -27,16 +28,6 @@
 
 namespace {
 
-std::string read_file(const std::string& path) {
-  std::ifstream file(path.c_str(), std::ios::binary);
-  if (!file.good()) {
-    std::fprintf(stderr, "не удалось открыть %s\n", path.c_str());
-    std::exit(1);
-  }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  return buffer.str();
-}
 
 struct Scope {
   const char* label;
@@ -65,7 +56,7 @@ int main(int argc, char** argv) {
   const llm::nn::ModelConfig config =
       llm::serialize::read_config(checkpoint_path);
   const llm::data::TokenDataset target = llm::data::TokenDataset::from_text(
-      read_file(target_path), tokenizer, 0.1);
+      bench::read_file(target_path), tokenizer, 0.1);
 
   std::printf("модель: %s\n", config.to_string().c_str());
   std::printf("новый корпус: %lld обучающих токенов, %lld проверочных\n\n",

@@ -14,20 +14,11 @@
 #include <string>
 #include <vector>
 
+#include "read_file.h"
 #include "tokenizer/bpe.h"
 
 namespace {
 
-std::string read_file(const std::string& path) {
-  std::ifstream file(path.c_str(), std::ios::binary);
-  if (!file.good()) {
-    std::fprintf(stderr, "не удалось открыть %s\n", path.c_str());
-    std::exit(1);
-  }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  return buffer.str();
-}
 
 }  // namespace
 
@@ -43,7 +34,7 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const int vocab_size = argc > 3 ? std::atoi(argv[3]) : 1024;
 
-  const std::string text = read_file(corpus_path);
+  const std::string text = bench::read_file(corpus_path);
   std::printf("обучение словаря на %zu байтах, цель %d токенов\n", text.size(),
               vocab_size);
 

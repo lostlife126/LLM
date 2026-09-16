@@ -22,6 +22,7 @@
 
 #include "core/check.h"
 #include "core/util.h"
+#include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
 #include "tokenizer/bpe.h"
@@ -240,16 +241,6 @@ bool sign_agrees(const std::vector<float>& delta) {
   return true;
 }
 
-std::string read_file(const std::string& path) {
-  std::ifstream file(path.c_str(), std::ios::binary);
-  if (!file.good()) {
-    std::fprintf(stderr, "не удалось открыть %s\n", path.c_str());
-    std::exit(1);
-  }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  return buffer.str();
-}
 
 }  // namespace
 
@@ -285,7 +276,7 @@ int main(int argc, char** argv) {
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const llm::data::TokenDataset dataset = llm::data::TokenDataset::from_text(
-      read_file(corpus_path), tokenizer, 0.1);
+      bench::read_file(corpus_path), tokenizer, 0.1);
 
   const std::vector<Variant> variants = build_variants(tokenizer.vocab_size());
   std::printf("абляции: %zu вариантов по %d зёрен, %lld шагов каждый\n",

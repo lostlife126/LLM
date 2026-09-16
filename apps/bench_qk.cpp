@@ -14,19 +14,18 @@
 // Запуск: ./bench_qk
 #include <immintrin.h>
 
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+
+#include "measure.h"
 
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "ops/gemm.h"
 
 namespace {
-using Clock = std::chrono::steady_clock;
-
 // Свёртка шестнадцати аккумуляторов в один вектор из шестнадцати сумм.
 // Дерево из четырёх уровней: пары, четвёрки по 64 бита, потом 128-битные
 // дорожки. Сорок пять операций на шестнадцать результатов.
@@ -115,24 +114,12 @@ struct Case {
   int64_t k;
 };
 
+// Замер — общий, см. apps/measure.h.
 template <typename Fn>
-double best_gflops(const Case& c, double flops, Fn fn) {
-  double best = 0.0;
-  for (int trial = 0; trial < 5; ++trial) {
-    const Clock::time_point start = Clock::now();
-    int reps = 0;
-    double elapsed = 0.0;
-    do {
-      fn();
-      ++reps;
-      elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-    } while (elapsed < 0.15);
-    const double g = flops * reps / elapsed / 1e9;
-    if (g > best) best = g;
-  }
-  (void)c;
-  return best;
+double best_gflops(double flops, Fn fn) {
+  return flops / bench::best_seconds(fn) / 1e9;
 }
+
 }  // namespace
 
 int main() {
@@ -190,14 +177,14 @@ int main() {
     std::vector<float> b(c.heads * c.n * c.k, 0.25f);
     std::vector<float> out(c.heads * c.m * c.n, 0.0f);
     const double flops = 2.0 * c.heads * c.m * c.n * c.k;
-    const double packed = best_gflops(c, flops, [&]() {
+    const double packed = best_gflops(flops, [&]() {
       for (int64_t h = 0; h < c.heads; ++h) {
         llm::ops::gemm(false, true, c.m, c.n, c.k, 1.0f,
                        a.data() + h * c.m * c.k, c.k, b.data() + h * c.n * c.k,
                        c.k, 0.0f, out.data() + h * c.m * c.n, c.n);
       }
     });
-    const double dot = best_gflops(c, flops, [&]() {
+    const double dot = best_gflops(flops, [&]() {
       for (int64_t h = 0; h < c.heads; ++h) {
         gemm_dot(c.m, c.n, c.k, 1.0f, a.data() + h * c.m * c.k, c.k,
                  b.data() + h * c.n * c.k, c.k, out.data() + h * c.m * c.n,

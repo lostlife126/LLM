@@ -14,11 +14,12 @@
 //
 // Запуск: ./bench_exp
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#include "measure.h"
 
 #include "core/cpu.h"
 #include "core/random.h"
@@ -26,36 +27,12 @@
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
-
-// Сколько независимых серий делается на один замер и берётся лучшая. Причина
-// та же, что в bench_gemm: машина общая, и одна серия ловит чужую нагрузку.
-constexpr int kTrials = 5;
-
-// Миллионов значений в секунду. Прогоняет столько раз, чтобы суммарное время
-// серии превысило её долю от target_seconds: у короткой задачи разброс одного
-// запуска сравним с самим временем.
+// Миллионов значений в секунду. Замер — общий, см. apps/measure.h.
 template <typename Fn>
 double measure(Fn fn, std::int64_t count, double target_seconds) {
-  fn();  // Прогрев кэшей и страниц памяти.
-
-  double best_seconds = 0.0;
-  for (int trial = 0; trial < kTrials; ++trial) {
-    int repetitions = 0;
-    const Clock::time_point start = Clock::now();
-    double elapsed = 0.0;
-    do {
-      fn();
-      ++repetitions;
-      elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-    } while (elapsed < target_seconds / kTrials);
-
-    const double seconds = elapsed / repetitions;
-    if (best_seconds == 0.0 || seconds < best_seconds) {
-      best_seconds = seconds;
-    }
-  }
-  return static_cast<double>(count) / best_seconds / 1e6;
+  const double seconds =
+      bench::best_seconds(fn, target_seconds / bench::kTrials);
+  return static_cast<double>(count) / seconds / 1e6;
 }
 
 void run_case(std::int64_t count) {

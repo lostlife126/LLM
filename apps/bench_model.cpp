@@ -12,12 +12,13 @@
 //
 // Запуск: ./bench_model [пресет] [батч]
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+#include "measure.h"
 
 #include "core/cpu.h"
 #include "core/random.h"
@@ -26,8 +27,6 @@
 #include "train/optimizer.h"
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
 
 std::vector<int32_t> random_ids(int64_t count, int64_t vocab) {
   llm::Rng rng(1);
@@ -64,49 +63,21 @@ int main(int argc, char** argv) {
   {
     llm::autograd::NoGradGuard no_grad;
     double best = 0.0;
-    for (int trial = 0; trial < 4; ++trial) {
-      const Clock::time_point start = Clock::now();
-      int repetitions = 0;
-      double elapsed = 0.0;
-      do {
-        model.loss(ids, batch, seq);
-        ++repetitions;
-        elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-      } while (elapsed < 1.0);
-      const double seconds = elapsed / repetitions;
-      if (best == 0.0 || seconds < best) {
-        best = seconds;
-      }
-    }
+    best = bench::best_seconds([&]() { model.loss(ids, batch, seq); }, 1.0);
     std::printf("только прямой проход: %.3f с\n", best);
   }
 
-  // Несколько серий, берётся лучшая. Машина общая, и одна серия ловит то, чем
-  // в этот момент занят сосед по железу; помехи при этом бывают только в одну
-  // сторону — чужая нагрузка может замедлить счёт, но не ускорить. Без этого
-  // разброс между запусками одной и той же сборки доходил до полутора раз, то
-  // есть перекрывал любой измеряемый здесь эффект.
-  double step_seconds = 0.0;
-  for (int trial = 0; trial < 4; ++trial) {
-    const Clock::time_point start = Clock::now();
-    int repetitions = 0;
-    double elapsed = 0.0;
-    do {
-      llm::autograd::Var loss = model.loss(ids, batch, seq);
-      loss.backward();
-      const std::vector<llm::nn::NamedParameter> parameters =
-          model.parameters();
-      for (std::size_t i = 0; i < parameters.size(); ++i) {
-        parameters[i].value->zero_grad();
-      }
-      ++repetitions;
-      elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-    } while (elapsed < 2.0);
-    const double seconds = elapsed / repetitions;
-    if (step_seconds == 0.0 || seconds < step_seconds) {
-      step_seconds = seconds;
-    }
-  }
+  double step_seconds = bench::best_seconds(
+      [&]() {
+        llm::autograd::Var loss = model.loss(ids, batch, seq);
+        loss.backward();
+        const std::vector<llm::nn::NamedParameter> parameters =
+            model.parameters();
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+          parameters[i].value->zero_grad();
+        }
+      },
+      2.0);
   std::printf("вперёд + назад: %.3f с\n", step_seconds);
 
   // Шаг оптимизатора: обрезка нормы и сам AdamW. Градиенты для него нужны
@@ -118,21 +89,12 @@ int main(int argc, char** argv) {
     llm::train::AdamW optimizer(model.parameters(), adam_config);
     llm::autograd::Var loss = model.loss(ids, batch, seq);
     loss.backward();
-    for (int trial = 0; trial < 4; ++trial) {
-      const Clock::time_point start = Clock::now();
-      int repetitions = 0;
-      double elapsed = 0.0;
-      do {
-        optimizer.clip_grad_norm(1.0f);
-        optimizer.step(1e-4f);
-        ++repetitions;
-        elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-      } while (elapsed < 1.0);
-      const double seconds = elapsed / repetitions;
-      if (optimizer_seconds == 0.0 || seconds < optimizer_seconds) {
-        optimizer_seconds = seconds;
-      }
-    }
+    optimizer_seconds = bench::best_seconds(
+        [&]() {
+          optimizer.clip_grad_norm(1.0f);
+          optimizer.step(1e-4f);
+        },
+        1.0);
   }
   std::printf("шаг оптимизатора: %.3f с (%.0f%% сверх прохода)\n",
               optimizer_seconds, 100.0 * optimizer_seconds / step_seconds);
