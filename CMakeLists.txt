@@ -89,6 +89,9 @@ target_link_libraries(bench_gemm PRIVATE llm_core)
 add_executable(bench_exp apps/bench_exp.cpp)
 target_link_libraries(bench_exp PRIVATE llm_core)
 
+add_executable(bench_qk apps/bench_qk.cpp)
+target_link_libraries(bench_qk PRIVATE llm_core)
+
 add_executable(bpe_train apps/bpe_train.cpp)
 target_link_libraries(bpe_train PRIVATE llm_core)
 
