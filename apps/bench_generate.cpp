@@ -21,6 +21,7 @@
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "infer/generate.h"
+#include "ops/gemm.h"
 #include "nn/config.h"
 #include "nn/model.h"
 
@@ -81,14 +82,48 @@ int main(int argc, char** argv) {
   // выигрывала бы не тем, чем заявлено.
   model.prepare_inference();
   const double plain = measure(&model, prompt, tokens);
+  const llm::ops::GemmTraffic plain_traffic = llm::ops::traffic();
 
   // Упаковка не заменяет веса, а добавляет копию, поэтому на время замера
   // модель занимает в полтора раза больше памяти.
   model.pack_half();
+  llm::ops::reset_traffic();
   const double half = measure(&model, prompt, tokens);
+  const llm::ops::GemmTraffic half_traffic = llm::ops::traffic();
 
   std::printf("\nобычная разрядность:   %7.1f токенов/с\n", plain);
   std::printf("половинная разрядность: %7.1f токенов/с\n", half);
   std::printf("отношение: %.2fx\n", half / plain);
+
+  if (plain_traffic.enabled) {
+    // Доля весов в чтении — это потолок для любого дальнейшего сжатия. Если
+    // после перехода на половинную разрядность веса дают долю p, то сжатие их
+    // ещё вдвое сокращает чтение в 1 / (1 - p / 2) раза, и это ВЕРХНЯЯ оценка:
+    // преобразование более узкого формата стоит дороже, а всё остальное —
+    // активации, накопитель, кэш ключей — не сокращается вовсе.
+    const auto report = [](const char* name, const llm::ops::GemmTraffic& t) {
+      const double a = static_cast<double>(t.a_bytes);
+      const double b = static_cast<double>(t.b_bytes);
+      const double c = static_cast<double>(t.c_bytes);
+      const double total = a + b + c;
+      if (total <= 0.0) {
+        return 0.0;
+      }
+      std::printf("%s: A %.1f МБ (%.0f%%)  B %.1f МБ (%.0f%%)  C %.1f МБ (%.0f%%)\n",
+                  name, a / 1048576.0, 100 * a / total, b / 1048576.0,
+                  100 * b / total, c / 1048576.0, 100 * c / total);
+      return b / total;
+    };
+    std::printf("\nтрафик умножений за прогон\n");
+    report("обычная   ", plain_traffic);
+    const double share = report("половинная", half_traffic);
+    if (share > 0.0) {
+      std::printf(
+          "\nпотолок дальнейшего сжатия весов, от половинной разрядности:\n"
+          "  до 8 разрядов  не больше %.2fx\n"
+          "  до 4 разрядов  не больше %.2fx\n",
+          1.0 / (1.0 - share / 2.0), 1.0 / (1.0 - share * 0.75));
+    }
+  }
   return 0;
 }

@@ -22,6 +22,25 @@
 namespace llm {
 namespace ops {
 
+// Учёт прочитанных умножением байт.
+//
+// Включается переменной окружения LLM_TRAFFIC. Выключенный не стоит ничего:
+// признак читается один раз, а считается поблочно, не поэлементно.
+//
+// Зачем нужен. Вопрос «где лежат байты» решает, куда имеет смысл ставить
+// сжатие весов, и решать его надо числом. Именно этот счётчик показал, что при
+// генерации по одному токену веса дают две трети всего чтения, а при обучении
+// батчами — четверть, и что накопитель C в обучении доминирует над обоими.
+struct GemmTraffic {
+  bool enabled = false;
+  long long a_bytes = 0;  // левая матрица, то есть активации
+  long long b_bytes = 0;  // правая, то есть веса
+  long long c_bytes = 0;  // накопитель, чтение и запись
+};
+
+void reset_traffic();
+GemmTraffic traffic();
+
 void gemm_naive(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
                 int64_t k, float alpha, const float* a, int64_t lda,
                 const float* b, int64_t ldb, float beta, float* c, int64_t ldc);

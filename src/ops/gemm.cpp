@@ -1,6 +1,8 @@
 #include "ops/gemm.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <vector>
 
 #include "core/check.h"
@@ -10,6 +12,49 @@
 namespace llm {
 namespace ops {
 namespace {
+
+// Учёт прочитанных байт.
+//
+// Нужен затем, чтобы вопрос «где лежат байты» решался числом, а не
+// рассуждением. Именно он определил, что веса в половинной разрядности имеет
+// смысл ставить в генерацию, а не в обучение: при генерации по токену они дают
+// две трети всего чтения, при обучении батчами — четверть.
+//
+// Считается не поэлементно, а поблочно: одно атомарное сложение на упаковку
+// панели, то есть раз в тысячи значений. Признак читается один раз при первом
+// обращении — на горячем пути остаётся одно сравнение, и при выключенном учёте
+// не происходит вообще ничего.
+std::atomic<long long> g_bytes_a(0);
+std::atomic<long long> g_bytes_b(0);
+std::atomic<long long> g_bytes_c(0);
+
+bool probe_traffic_from_environment() {
+  const char* value = std::getenv("LLM_TRAFFIC");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+bool traffic_enabled() {
+  static const bool enabled = probe_traffic_from_environment();
+  return enabled;
+}
+
+void count_a(int64_t bytes) {
+  if (traffic_enabled()) {
+    g_bytes_a.fetch_add(bytes, std::memory_order_relaxed);
+  }
+}
+
+void count_b(int64_t bytes) {
+  if (traffic_enabled()) {
+    g_bytes_b.fetch_add(bytes, std::memory_order_relaxed);
+  }
+}
+
+void count_c(int64_t bytes) {
+  if (traffic_enabled()) {
+    g_bytes_c.fetch_add(bytes, std::memory_order_relaxed);
+  }
+}
 
 // Форма плитки больше не константа: её задаёт выбранное микроядро, и от неё
 // зависит раскладка упакованных панелей. Параметризация обязательна — иначе
@@ -63,6 +108,7 @@ int64_t ceil_div(int64_t value, int64_t divisor) {
 void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
             int64_t col0, int64_t mc, int64_t kc, int64_t mr,
             PackTransposeFn pack_transpose, float* apack) {
+  count_a(mc * kc * 4);
   const int64_t panels = ceil_div(mc, mr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = apack + panel * kc * mr;
@@ -100,6 +146,7 @@ void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
 // разрядность — потому блочный путь и не потребовал второго набора ядер.
 void pack_b_half(const Half* b, int64_t ldb, int64_t row0, int64_t col0,
                  int64_t kc, int64_t nc, int64_t nr, float* bpack) {
+  count_b(nc * kc * 2);
   const int64_t panels = ceil_div(nc, nr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = bpack + panel * kc * nr;
@@ -119,6 +166,7 @@ void pack_b_half(const Half* b, int64_t ldb, int64_t row0, int64_t col0,
 void pack_b(bool transpose_b, const float* b, int64_t ldb, int64_t row0,
             int64_t col0, int64_t kc, int64_t nc, int64_t nr,
             PackTransposeFn pack_transpose, float* bpack) {
+  count_b(nc * kc * 4);
   const int64_t panels = ceil_div(nc, nr);
   for (int64_t panel = 0; panel < panels; ++panel) {
     float* dst = bpack + panel * kc * nr;
@@ -465,6 +513,18 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
 
   const auto compute = [&](int64_t first, int64_t last, int64_t col0,
                            int64_t cols) {
+    // Прямой путь ничего не упаковывает, поэтому учёт здесь свой. Обе матрицы
+    // перечитываются: A — по разу на каждую полосу столбцов, B — по разу на
+    // каждый блок строк. Это не приблизительная оценка, а ровно то, что делают
+    // циклы ниже.
+    if (traffic_enabled()) {
+      const int64_t row_blocks = ceil_div(last - first, mr);
+      const int64_t column_blocks = cols / nr;
+      const int64_t b_element = bbase_half != nullptr ? 2 : 4;
+      count_a((last - first) * k * 4 * column_blocks);
+      count_b(k * cols * b_element * row_blocks);
+      count_c((last - first) * cols * 4 * 2);
+    }
     scale_c(last - first, cols, task.beta,
             task.c + first * task.ldc + col0, task.ldc);
     for (int64_t i = first; i < last; i += mr) {
@@ -547,6 +607,21 @@ void check_arguments(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
 }
 
 }  // namespace
+
+void reset_traffic() {
+  g_bytes_a.store(0);
+  g_bytes_b.store(0);
+  g_bytes_c.store(0);
+}
+
+GemmTraffic traffic() {
+  GemmTraffic out;
+  out.enabled = traffic_enabled();
+  out.a_bytes = g_bytes_a.load();
+  out.b_bytes = g_bytes_b.load();
+  out.c_bytes = g_bytes_c.load();
+  return out;
+}
 
 void gemm_naive(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
                 int64_t k, float alpha, const float* a, int64_t lda,
