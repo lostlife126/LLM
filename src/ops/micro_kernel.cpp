@@ -249,6 +249,51 @@ void scalar_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
   }
 }
 
+// То же ядро с весами в половинной разрядности.
+//
+// Развёртывание стоит здесь дороже всего остального: from_fp16 ветвится на
+// субнормальных числах, и компилятор эту ветку не векторизует. Скалярное ядро
+// и без того эталон, а не рабочая лошадь — оно существует, чтобы векторным
+// было с чем сверяться на машине, где векторных нет. Поэтому написано прямо.
+void scalar_kernel_rows_half(int64_t kc, const float* __restrict a,
+                             int64_t lda, const Half* __restrict b,
+                             int64_t bstride, float alpha, float* __restrict c,
+                             int64_t ldc, int64_t rows, int64_t cols) {
+  float acc0[kScalarN] = {};
+  float acc1[kScalarN] = {};
+  float acc2[kScalarN] = {};
+  float acc3[kScalarN] = {};
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const float va0 = a0[p];
+    const float va1 = a1[p];
+    const float va2 = a2[p];
+    const float va3 = a3[p];
+    const Half* b_values = b + p * bstride;
+    for (int64_t jj = 0; jj < kScalarN; ++jj) {
+      const float value = float_from_half(b_values[jj]);
+      acc0[jj] += va0 * value;
+      acc1[jj] += va1 * value;
+      acc2[jj] += va2 * value;
+      acc3[jj] += va3 * value;
+    }
+  }
+
+  const float* accumulators[kScalarM] = {acc0, acc1, acc2, acc3};
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = accumulators[ii];
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
 #if LLM_HAS_X86_SIMD
 
 // --- AVX2 -------------------------------------------------------------------
@@ -445,6 +490,99 @@ __attribute__((target("avx2,fma"))) void avx2_kernel_rows(
   }
 }
 
+// То же ядро с весами в половинной разрядности.
+//
+// Отличие от соседа сверху ровно одно: вместо двух загрузок по восемь float
+// идёт одна загрузка тридцати двух байт и два развёртывания командой
+// vcvtph2ps. Байт читается вдвое меньше, умножений с накоплением столько же,
+// и порядок их тот же — отсюда побитовое совпадение с обычным ядром на уже
+// округлённых весах.
+//
+// Атрибут target получает f16c отдельным словом: по набору инструкций наличие
+// vcvtph2ps из AVX2 не следует, хотя на всех выпущенных процессорах они ходят
+// парой. Проверка признака стоит одно обращение к CPUID при запуске.
+__attribute__((target("avx2,fma,f16c"))) void avx2_kernel_rows_half(
+    int64_t kc, const float* __restrict a, int64_t lda,
+    const Half* __restrict b, int64_t bstride, float alpha,
+    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+  __m256 acc00 = _mm256_setzero_ps();
+  __m256 acc01 = _mm256_setzero_ps();
+  __m256 acc10 = _mm256_setzero_ps();
+  __m256 acc11 = _mm256_setzero_ps();
+  __m256 acc20 = _mm256_setzero_ps();
+  __m256 acc21 = _mm256_setzero_ps();
+  __m256 acc30 = _mm256_setzero_ps();
+  __m256 acc31 = _mm256_setzero_ps();
+  __m256 acc40 = _mm256_setzero_ps();
+  __m256 acc41 = _mm256_setzero_ps();
+  __m256 acc50 = _mm256_setzero_ps();
+  __m256 acc51 = _mm256_setzero_ps();
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* a4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* a5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const __m128i* packed =
+        reinterpret_cast<const __m128i*>(b + p * bstride);
+    const __m256 b0 = _mm256_cvtph_ps(_mm_loadu_si128(packed));
+    const __m256 b1 = _mm256_cvtph_ps(_mm_loadu_si128(packed + 1));
+
+    __m256 av = _mm256_broadcast_ss(a0 + p);
+    acc00 = _mm256_fmadd_ps(av, b0, acc00);
+    acc01 = _mm256_fmadd_ps(av, b1, acc01);
+    av = _mm256_broadcast_ss(a1 + p);
+    acc10 = _mm256_fmadd_ps(av, b0, acc10);
+    acc11 = _mm256_fmadd_ps(av, b1, acc11);
+    av = _mm256_broadcast_ss(a2 + p);
+    acc20 = _mm256_fmadd_ps(av, b0, acc20);
+    acc21 = _mm256_fmadd_ps(av, b1, acc21);
+    av = _mm256_broadcast_ss(a3 + p);
+    acc30 = _mm256_fmadd_ps(av, b0, acc30);
+    acc31 = _mm256_fmadd_ps(av, b1, acc31);
+    av = _mm256_broadcast_ss(a4 + p);
+    acc40 = _mm256_fmadd_ps(av, b0, acc40);
+    acc41 = _mm256_fmadd_ps(av, b1, acc41);
+    av = _mm256_broadcast_ss(a5 + p);
+    acc50 = _mm256_fmadd_ps(av, b0, acc50);
+    acc51 = _mm256_fmadd_ps(av, b1, acc51);
+  }
+
+  float tile[kAvx2M * kAvx2N];
+  _mm256_storeu_ps(tile + 0 * kAvx2N, acc00);
+  _mm256_storeu_ps(tile + 0 * kAvx2N + 8, acc01);
+  _mm256_storeu_ps(tile + 1 * kAvx2N, acc10);
+  _mm256_storeu_ps(tile + 1 * kAvx2N + 8, acc11);
+  _mm256_storeu_ps(tile + 2 * kAvx2N, acc20);
+  _mm256_storeu_ps(tile + 2 * kAvx2N + 8, acc21);
+  _mm256_storeu_ps(tile + 3 * kAvx2N, acc30);
+  _mm256_storeu_ps(tile + 3 * kAvx2N + 8, acc31);
+  _mm256_storeu_ps(tile + 4 * kAvx2N, acc40);
+  _mm256_storeu_ps(tile + 4 * kAvx2N + 8, acc41);
+  _mm256_storeu_ps(tile + 5 * kAvx2N, acc50);
+  _mm256_storeu_ps(tile + 5 * kAvx2N + 8, acc51);
+
+  const __m256 scale = _mm256_set1_ps(alpha);
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = tile + ii * kAvx2N;
+    if (cols == kAvx2N) {
+      _mm256_storeu_ps(c_row, _mm256_fmadd_ps(scale, _mm256_loadu_ps(acc),
+                                              _mm256_loadu_ps(c_row)));
+      _mm256_storeu_ps(c_row + 8,
+                       _mm256_fmadd_ps(scale, _mm256_loadu_ps(acc + 8),
+                                       _mm256_loadu_ps(c_row + 8)));
+      continue;
+    }
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
 // --- AVX-512 ----------------------------------------------------------------
 //
 // Плитка 8 x 32: восемь строк по два вектора из шестнадцати чисел. Регистров у
@@ -583,6 +721,110 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
     const float* b_values = b + p * bstride;
     const __m512 b0 = _mm512_loadu_ps(b_values);
     const __m512 b1 = _mm512_loadu_ps(b_values + 16);
+
+    __m512 av = _mm512_set1_ps(a0[p]);
+    acc00 = _mm512_fmadd_ps(av, b0, acc00);
+    acc01 = _mm512_fmadd_ps(av, b1, acc01);
+    av = _mm512_set1_ps(a1[p]);
+    acc10 = _mm512_fmadd_ps(av, b0, acc10);
+    acc11 = _mm512_fmadd_ps(av, b1, acc11);
+    av = _mm512_set1_ps(a2[p]);
+    acc20 = _mm512_fmadd_ps(av, b0, acc20);
+    acc21 = _mm512_fmadd_ps(av, b1, acc21);
+    av = _mm512_set1_ps(a3[p]);
+    acc30 = _mm512_fmadd_ps(av, b0, acc30);
+    acc31 = _mm512_fmadd_ps(av, b1, acc31);
+    av = _mm512_set1_ps(a4[p]);
+    acc40 = _mm512_fmadd_ps(av, b0, acc40);
+    acc41 = _mm512_fmadd_ps(av, b1, acc41);
+    av = _mm512_set1_ps(a5[p]);
+    acc50 = _mm512_fmadd_ps(av, b0, acc50);
+    acc51 = _mm512_fmadd_ps(av, b1, acc51);
+    av = _mm512_set1_ps(a6[p]);
+    acc60 = _mm512_fmadd_ps(av, b0, acc60);
+    acc61 = _mm512_fmadd_ps(av, b1, acc61);
+    av = _mm512_set1_ps(a7[p]);
+    acc70 = _mm512_fmadd_ps(av, b0, acc70);
+    acc71 = _mm512_fmadd_ps(av, b1, acc71);
+  }
+
+  float tile[kAvx512M * kAvx512N];
+  _mm512_storeu_ps(tile + 0 * kAvx512N, acc00);
+  _mm512_storeu_ps(tile + 0 * kAvx512N + 16, acc01);
+  _mm512_storeu_ps(tile + 1 * kAvx512N, acc10);
+  _mm512_storeu_ps(tile + 1 * kAvx512N + 16, acc11);
+  _mm512_storeu_ps(tile + 2 * kAvx512N, acc20);
+  _mm512_storeu_ps(tile + 2 * kAvx512N + 16, acc21);
+  _mm512_storeu_ps(tile + 3 * kAvx512N, acc30);
+  _mm512_storeu_ps(tile + 3 * kAvx512N + 16, acc31);
+  _mm512_storeu_ps(tile + 4 * kAvx512N, acc40);
+  _mm512_storeu_ps(tile + 4 * kAvx512N + 16, acc41);
+  _mm512_storeu_ps(tile + 5 * kAvx512N, acc50);
+  _mm512_storeu_ps(tile + 5 * kAvx512N + 16, acc51);
+  _mm512_storeu_ps(tile + 6 * kAvx512N, acc60);
+  _mm512_storeu_ps(tile + 6 * kAvx512N + 16, acc61);
+  _mm512_storeu_ps(tile + 7 * kAvx512N, acc70);
+  _mm512_storeu_ps(tile + 7 * kAvx512N + 16, acc71);
+
+  const __m512 scale = _mm512_set1_ps(alpha);
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    const float* acc = tile + ii * kAvx512N;
+    if (cols == kAvx512N) {
+      _mm512_storeu_ps(c_row, _mm512_fmadd_ps(scale, _mm512_loadu_ps(acc),
+                                              _mm512_loadu_ps(c_row)));
+      _mm512_storeu_ps(c_row + 16,
+                       _mm512_fmadd_ps(scale, _mm512_loadu_ps(acc + 16),
+                                       _mm512_loadu_ps(c_row + 16)));
+      continue;
+    }
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * acc[jj];
+    }
+  }
+}
+
+// То же ядро с весами в половинной разрядности.
+//
+// Развёртывание здесь не требует отдельного признака процессора: vcvtph2ps на
+// 512-разрядном регистре входит в сам AVX512F, в отличие от 256-разрядного
+// варианта, который живёт в F16C. Поэтому атрибут target тот же, что у соседа
+// сверху.
+
+__attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows_half(
+    int64_t kc, const float* __restrict a, int64_t lda,
+    const Half* __restrict b, int64_t bstride, float alpha,
+    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+  __m512 acc00 = _mm512_setzero_ps();
+  __m512 acc01 = _mm512_setzero_ps();
+  __m512 acc10 = _mm512_setzero_ps();
+  __m512 acc11 = _mm512_setzero_ps();
+  __m512 acc20 = _mm512_setzero_ps();
+  __m512 acc21 = _mm512_setzero_ps();
+  __m512 acc30 = _mm512_setzero_ps();
+  __m512 acc31 = _mm512_setzero_ps();
+  __m512 acc40 = _mm512_setzero_ps();
+  __m512 acc41 = _mm512_setzero_ps();
+  __m512 acc50 = _mm512_setzero_ps();
+  __m512 acc51 = _mm512_setzero_ps();
+  __m512 acc60 = _mm512_setzero_ps();
+  __m512 acc61 = _mm512_setzero_ps();
+  __m512 acc70 = _mm512_setzero_ps();
+  __m512 acc71 = _mm512_setzero_ps();
+
+  const float* a0 = a;
+  const float* a1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* a2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* a3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* a4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* a5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+  const float* a6 = a + (rows > 6 ? 6 : rows - 1) * lda;
+  const float* a7 = a + (rows > 7 ? 7 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    const __m256i* packed = reinterpret_cast<const __m256i*>(b + p * bstride);
+    const __m512 b0 = _mm512_cvtph_ps(_mm256_loadu_si256(packed));
+    const __m512 b1 = _mm512_cvtph_ps(_mm256_loadu_si256(packed + 1));
 
     __m512 av = _mm512_set1_ps(a0[p]);
     acc00 = _mm512_fmadd_ps(av, b0, acc00);
@@ -1046,6 +1288,182 @@ void neon_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
   }
 }
 
+// То же ядро с весами в половинной разрядности.
+//
+// Ради этого ядра ветка и заведена. Выигрыш на Raspberry Pi обязан быть больше,
+// чем на x86: замер пропускной способности показал, что четыре потока там
+// упираются в память заметно раньше, чем в арифметику, а генерация по токену —
+// это как раз чистое чтение весов.
+
+void neon_kernel_rows_half(int64_t kc, const float* __restrict a,
+                           int64_t lda,
+                           const Half* __restrict b, int64_t bstride,
+                           float alpha,
+                           float* __restrict c, int64_t ldc, int64_t rows,
+                           int64_t cols) {
+  float32x4_t acc00 = vdupq_n_f32(0.0f);
+  float32x4_t acc01 = vdupq_n_f32(0.0f);
+  float32x4_t acc10 = vdupq_n_f32(0.0f);
+  float32x4_t acc11 = vdupq_n_f32(0.0f);
+  float32x4_t acc20 = vdupq_n_f32(0.0f);
+  float32x4_t acc21 = vdupq_n_f32(0.0f);
+  float32x4_t acc30 = vdupq_n_f32(0.0f);
+  float32x4_t acc31 = vdupq_n_f32(0.0f);
+  float32x4_t acc40 = vdupq_n_f32(0.0f);
+  float32x4_t acc41 = vdupq_n_f32(0.0f);
+  float32x4_t acc50 = vdupq_n_f32(0.0f);
+  float32x4_t acc51 = vdupq_n_f32(0.0f);
+  float32x4_t acc60 = vdupq_n_f32(0.0f);
+  float32x4_t acc61 = vdupq_n_f32(0.0f);
+  float32x4_t acc70 = vdupq_n_f32(0.0f);
+  float32x4_t acc71 = vdupq_n_f32(0.0f);
+  float32x4_t acc80 = vdupq_n_f32(0.0f);
+  float32x4_t acc81 = vdupq_n_f32(0.0f);
+  float32x4_t acc90 = vdupq_n_f32(0.0f);
+  float32x4_t acc91 = vdupq_n_f32(0.0f);
+  float32x4_t acc100 = vdupq_n_f32(0.0f);
+  float32x4_t acc101 = vdupq_n_f32(0.0f);
+  float32x4_t acc110 = vdupq_n_f32(0.0f);
+  float32x4_t acc111 = vdupq_n_f32(0.0f);
+
+  // Указатели на строки берутся заранее: недостающие показывают на последнюю
+  // действительную, и их вклад в C всё равно не записывается.
+  const float* r0 = a + (rows > 0 ? 0 : rows - 1) * lda;
+  const float* r1 = a + (rows > 1 ? 1 : rows - 1) * lda;
+  const float* r2 = a + (rows > 2 ? 2 : rows - 1) * lda;
+  const float* r3 = a + (rows > 3 ? 3 : rows - 1) * lda;
+  const float* r4 = a + (rows > 4 ? 4 : rows - 1) * lda;
+  const float* r5 = a + (rows > 5 ? 5 : rows - 1) * lda;
+  const float* r6 = a + (rows > 6 ? 6 : rows - 1) * lda;
+  const float* r7 = a + (rows > 7 ? 7 : rows - 1) * lda;
+  const float* r8 = a + (rows > 8 ? 8 : rows - 1) * lda;
+  const float* r9 = a + (rows > 9 ? 9 : rows - 1) * lda;
+  const float* r10 = a + (rows > 10 ? 10 : rows - 1) * lda;
+  const float* r11 = a + (rows > 11 ? 11 : rows - 1) * lda;
+
+  for (int64_t p = 0; p < kc; ++p) {
+    // Восемь весов приходят одной 128-разрядной загрузкой вместо двух по 128.
+    // Разворачиваются они командой FCVTL: vcvt_f32_f16 берёт младшую половину,
+    // vcvt_high_f32_f16 — старшую, и второй не нужно предварительно её
+    // выделять. Обе входят в базовый ARMv8-A: расширение FEAT_FP16 добавляет
+    // АРИФМЕТИКУ половинной разрядности, а преобразование было с самого
+    // начала. Здесь нужно только преобразование.
+    const float16x8_t packed =
+        vld1q_f16(reinterpret_cast<const __fp16*>(b + p * bstride));
+    const float32x4_t b0 = vcvt_f32_f16(vget_low_f16(packed));
+    const float32x4_t b1 = vcvt_high_f32_f16(packed);
+    // Значения A собираются в вектор только затем, чтобы множитель брался из
+    // дорожки: загрузка каждого по отдельности стоила бы столько же.
+    const float32x4_t a0 = {r0[p], r1[p], r2[p], r3[p]};
+    const float32x4_t a1 = {r4[p], r5[p], r6[p], r7[p]};
+    const float32x4_t a2 = {r8[p], r9[p], r10[p], r11[p]};
+
+    acc00 = vfmaq_laneq_f32(acc00, b0, a0, 0);
+    acc01 = vfmaq_laneq_f32(acc01, b1, a0, 0);
+    acc10 = vfmaq_laneq_f32(acc10, b0, a0, 1);
+    acc11 = vfmaq_laneq_f32(acc11, b1, a0, 1);
+    acc20 = vfmaq_laneq_f32(acc20, b0, a0, 2);
+    acc21 = vfmaq_laneq_f32(acc21, b1, a0, 2);
+    acc30 = vfmaq_laneq_f32(acc30, b0, a0, 3);
+    acc31 = vfmaq_laneq_f32(acc31, b1, a0, 3);
+
+    acc40 = vfmaq_laneq_f32(acc40, b0, a1, 0);
+    acc41 = vfmaq_laneq_f32(acc41, b1, a1, 0);
+    acc50 = vfmaq_laneq_f32(acc50, b0, a1, 1);
+    acc51 = vfmaq_laneq_f32(acc51, b1, a1, 1);
+    acc60 = vfmaq_laneq_f32(acc60, b0, a1, 2);
+    acc61 = vfmaq_laneq_f32(acc61, b1, a1, 2);
+    acc70 = vfmaq_laneq_f32(acc70, b0, a1, 3);
+    acc71 = vfmaq_laneq_f32(acc71, b1, a1, 3);
+
+    acc80 = vfmaq_laneq_f32(acc80, b0, a2, 0);
+    acc81 = vfmaq_laneq_f32(acc81, b1, a2, 0);
+    acc90 = vfmaq_laneq_f32(acc90, b0, a2, 1);
+    acc91 = vfmaq_laneq_f32(acc91, b1, a2, 1);
+    acc100 = vfmaq_laneq_f32(acc100, b0, a2, 2);
+    acc101 = vfmaq_laneq_f32(acc101, b1, a2, 2);
+    acc110 = vfmaq_laneq_f32(acc110, b0, a2, 3);
+    acc111 = vfmaq_laneq_f32(acc111, b1, a2, 3);
+  }
+
+  if (rows == kNeonM && cols == kNeonN) {
+    // Быстрый путь — полная плитка, и она же подавляющее большинство вызовов:
+    // неполные бывают только по краям матрицы. Развёрнут целиком, чтобы
+    // аккумуляторы не пришлось адресовать по вычисляемому индексу.
+    float* row0 = c + 0 * ldc;
+    vst1q_f32(row0, vfmaq_n_f32(vld1q_f32(row0), acc00, alpha));
+    vst1q_f32(row0 + 4, vfmaq_n_f32(vld1q_f32(row0 + 4), acc01, alpha));
+    float* row1 = c + 1 * ldc;
+    vst1q_f32(row1, vfmaq_n_f32(vld1q_f32(row1), acc10, alpha));
+    vst1q_f32(row1 + 4, vfmaq_n_f32(vld1q_f32(row1 + 4), acc11, alpha));
+    float* row2 = c + 2 * ldc;
+    vst1q_f32(row2, vfmaq_n_f32(vld1q_f32(row2), acc20, alpha));
+    vst1q_f32(row2 + 4, vfmaq_n_f32(vld1q_f32(row2 + 4), acc21, alpha));
+    float* row3 = c + 3 * ldc;
+    vst1q_f32(row3, vfmaq_n_f32(vld1q_f32(row3), acc30, alpha));
+    vst1q_f32(row3 + 4, vfmaq_n_f32(vld1q_f32(row3 + 4), acc31, alpha));
+    float* row4 = c + 4 * ldc;
+    vst1q_f32(row4, vfmaq_n_f32(vld1q_f32(row4), acc40, alpha));
+    vst1q_f32(row4 + 4, vfmaq_n_f32(vld1q_f32(row4 + 4), acc41, alpha));
+    float* row5 = c + 5 * ldc;
+    vst1q_f32(row5, vfmaq_n_f32(vld1q_f32(row5), acc50, alpha));
+    vst1q_f32(row5 + 4, vfmaq_n_f32(vld1q_f32(row5 + 4), acc51, alpha));
+    float* row6 = c + 6 * ldc;
+    vst1q_f32(row6, vfmaq_n_f32(vld1q_f32(row6), acc60, alpha));
+    vst1q_f32(row6 + 4, vfmaq_n_f32(vld1q_f32(row6 + 4), acc61, alpha));
+    float* row7 = c + 7 * ldc;
+    vst1q_f32(row7, vfmaq_n_f32(vld1q_f32(row7), acc70, alpha));
+    vst1q_f32(row7 + 4, vfmaq_n_f32(vld1q_f32(row7 + 4), acc71, alpha));
+    float* row8 = c + 8 * ldc;
+    vst1q_f32(row8, vfmaq_n_f32(vld1q_f32(row8), acc80, alpha));
+    vst1q_f32(row8 + 4, vfmaq_n_f32(vld1q_f32(row8 + 4), acc81, alpha));
+    float* row9 = c + 9 * ldc;
+    vst1q_f32(row9, vfmaq_n_f32(vld1q_f32(row9), acc90, alpha));
+    vst1q_f32(row9 + 4, vfmaq_n_f32(vld1q_f32(row9 + 4), acc91, alpha));
+    float* row10 = c + 10 * ldc;
+    vst1q_f32(row10, vfmaq_n_f32(vld1q_f32(row10), acc100, alpha));
+    vst1q_f32(row10 + 4, vfmaq_n_f32(vld1q_f32(row10 + 4), acc101, alpha));
+    float* row11 = c + 11 * ldc;
+    vst1q_f32(row11, vfmaq_n_f32(vld1q_f32(row11), acc110, alpha));
+    vst1q_f32(row11 + 4, vfmaq_n_f32(vld1q_f32(row11 + 4), acc111, alpha));
+    return;
+  }
+
+  // Край матрицы. Здесь аккумуляторы всё равно уезжают в память, но путь
+  // редкий, и важна на нём правильность границы, а не скорость.
+  float values[kNeonM][kNeonN];
+  vst1q_f32(values[0], acc00);
+  vst1q_f32(values[0] + 4, acc01);
+  vst1q_f32(values[1], acc10);
+  vst1q_f32(values[1] + 4, acc11);
+  vst1q_f32(values[2], acc20);
+  vst1q_f32(values[2] + 4, acc21);
+  vst1q_f32(values[3], acc30);
+  vst1q_f32(values[3] + 4, acc31);
+  vst1q_f32(values[4], acc40);
+  vst1q_f32(values[4] + 4, acc41);
+  vst1q_f32(values[5], acc50);
+  vst1q_f32(values[5] + 4, acc51);
+  vst1q_f32(values[6], acc60);
+  vst1q_f32(values[6] + 4, acc61);
+  vst1q_f32(values[7], acc70);
+  vst1q_f32(values[7] + 4, acc71);
+  vst1q_f32(values[8], acc80);
+  vst1q_f32(values[8] + 4, acc81);
+  vst1q_f32(values[9], acc90);
+  vst1q_f32(values[9] + 4, acc91);
+  vst1q_f32(values[10], acc100);
+  vst1q_f32(values[10] + 4, acc101);
+  vst1q_f32(values[11], acc110);
+  vst1q_f32(values[11] + 4, acc111);
+  for (int64_t ii = 0; ii < rows; ++ii) {
+    float* c_row = c + ii * ldc;
+    for (int64_t jj = 0; jj < cols; ++jj) {
+      c_row[jj] += alpha * values[ii][jj];
+    }
+  }
+}
+
 #endif  // LLM_HAS_NEON
 
 const MicroKernelChoice* build_table(int* count) {
@@ -1077,6 +1495,7 @@ const MicroKernelChoice* build_table(int* count) {
                                      kScalarN,
                                      &scalar_kernel,
                                      &scalar_kernel_rows,
+                                     &scalar_kernel_rows_half,
                                      &plain_transpose_pack,
                                      "скалярное 4x32",
                                      LLM_HAS_NEON != 0};
@@ -1090,6 +1509,7 @@ const MicroKernelChoice* build_table(int* count) {
                                      kNeonN,
                                      &neon_kernel,
                                      &neon_kernel_rows,
+                                     &neon_kernel_rows_half,
                                      &neon_transpose_pack,
                                      "NEON 12x8",
                                      true};
@@ -1102,9 +1522,18 @@ const MicroKernelChoice* build_table(int* count) {
                                      kAvx2N,
                                      &avx2_kernel,
                                      &avx2_kernel_rows,
+                                     &avx2_kernel_rows_half,
                                      &avx2_transpose_pack,
                                      "AVX2 6x16",
                                      true};
+    // Ядро с весами половинной разрядности отзывается отдельно: vcvtph2ps на
+    // 256-разрядном регистре живёт в F16C, а он по набору инструкций из AVX2
+    // не следует. Без признака остаётся обычное ядро, а половинная разрядность
+    // на этом процессоре просто не применяется — вместо SIGILL на первой же
+    // плитке.
+    if (!cpu.f16c) {
+      table[size].kernel.run_rows_half = nullptr;
+    }
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
@@ -1112,6 +1541,7 @@ const MicroKernelChoice* build_table(int* count) {
                                      kAvx512N,
                                      &avx512_kernel,
                                      &avx512_kernel_rows,
+                                     &avx512_kernel_rows_half,
                                      &avx2_transpose_pack,
                                      "AVX-512 8x32",
                                      true};

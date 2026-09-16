@@ -88,6 +88,31 @@ void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
   }
 }
 
+// Упаковка блока B из весов половинной разрядности.
+//
+// Только для нетранспонированного B, и это не упущение: транспонированный B
+// бывает во внимании, то есть у активаций, а половинная разрядность здесь
+// заведена для весов. Перестановку с одновременным развёртыванием пришлось бы
+// писать отдельным векторным ядром ради случая, которого нет.
+//
+// Развёртывание в обычную разрядность происходит здесь, при записи в панель.
+// Микроядро дальше видит обычный float и ничего не знает про половинную
+// разрядность — потому блочный путь и не потребовал второго набора ядер.
+void pack_b_half(const Half* b, int64_t ldb, int64_t row0, int64_t col0,
+                 int64_t kc, int64_t nc, int64_t nr, float* bpack) {
+  const int64_t panels = ceil_div(nc, nr);
+  for (int64_t panel = 0; panel < panels; ++panel) {
+    float* dst = bpack + panel * kc * nr;
+    const int64_t first = panel * nr;
+    const int64_t cols = std::min(nr, nc - first);
+    for (int64_t p = 0; p < kc; ++p) {
+      const Half* src = b + (row0 + p) * ldb + col0 + first;
+      half_to_floats(src, dst + p * nr, cols);
+      std::fill(dst + p * nr + cols, dst + p * nr + nr, 0.0f);
+    }
+  }
+}
+
 // Упаковка блока B: kc x nc матрицы op(B), панелями по nr столбцов. Всё то же
 // самое, что у панели A, с обратным распределением случаев: подряд лежит
 // нужное как раз у нетранспонированного B.
@@ -162,6 +187,11 @@ struct GemmTask {
   const float* a;
   int64_t lda;
   const float* b;
+  // Веса половинной разрядности. Ненулевой указатель означает, что читать надо
+  // отсюда, а b не задан. Два поля, а не объединение с признаком: объединение
+  // пришлось бы разбирать в каждом месте, где B читается, а так проверка одна
+  // и в одном месте.
+  const Half* b_half;
   int64_t ldb;
   float beta;
   float* c;
@@ -172,6 +202,7 @@ struct GemmTask {
   int64_t block_n;
   MicroKernelFn run;
   MicroKernelRowsFn run_rows;
+  MicroKernelRowsHalfFn run_rows_half;
   PackTransposeFn pack_transpose;
 };
 
@@ -196,8 +227,13 @@ void gemm_rect(const GemmTask& task, int64_t row0, int64_t rows, int64_t col0,
       const int64_t kc = std::min(kBlockK, task.k - pc);
 
       buffers.b.resize(static_cast<std::size_t>(ceil_div(nc, nr) * nr * kc));
-      pack_b(task.transpose_b, task.b, task.ldb, pc, col0 + jc, kc, nc, nr,
-             task.pack_transpose, buffers.b.data());
+      if (task.b_half != nullptr) {
+        pack_b_half(task.b_half, task.ldb, pc, col0 + jc, kc, nc, nr,
+                    buffers.b.data());
+      } else {
+        pack_b(task.transpose_b, task.b, task.ldb, pc, col0 + jc, kc, nc, nr,
+               task.pack_transpose, buffers.b.data());
+      }
 
       for (int64_t ic = 0; ic < rows; ic += task.block_m) {
         const int64_t mc = std::min(task.block_m, rows - ic);
@@ -312,6 +348,29 @@ Partition choose_partition(int64_t m, int64_t n, int64_t k, int64_t mr,
 // борются ещё плитки A и запись C.
 constexpr double kDirectMaxBBytes = 256.0 * 1024.0;
 
+// Сколько строк результата считать прямым путём независимо от размера B.
+//
+// Порог выше — про то, останется ли B в кэше. Этот — про то, окупится ли
+// упаковка вообще. Блочный путь упаковывает B один раз за проход, и стоит это
+// k * n работы, а самого умножения на упакованную панель приходится m * k * n.
+// При m = 1 упаковка стоит столько же, сколько всё умножение, и платить за неё
+// нечем. Прямой путь взамен перечитывает B по разу на каждый блок строк, то
+// есть ceil(m / mr) раз, — вот где он начинает проигрывать.
+//
+// Замер, отношение «блочный к прямому» при k = 256, n = 4096 (B = 4 МБ):
+//
+//                   m=1    m=4    m=8   m=12   m=16
+//   скалярное mr=4  1.37   1.42   1.09   0.98   0.92
+//   AVX2      mr=6  1.85   1.84   1.15   1.14   0.92
+//   AVX-512   mr=8  1.93   1.93   1.89   1.30   1.29
+//
+// Перелом приходится на разное m, потому что mr у ядер разный. Порог обязан
+// быть один на всех — иначе выбор пути стал бы машинным свойством, а пути
+// делят глубину по-разному, — поэтому взят по самому мелкому ядру: восемь.
+// Почти весь выигрыш при этом остаётся, а он приходится как раз на генерацию
+// по одному токену, где m равно единице.
+constexpr int64_t kDirectMaxRows = 8;
+
 // Кратность ширины результата, при которой прямой путь применим.
 //
 // Число подобрано так, чтобы делиться на ширину плитки любого микроядра: 32 у
@@ -342,7 +401,25 @@ bool use_direct(const GemmTask& task, int64_t m, int64_t n) {
   if (n % kDirectAlign != 0 || kDirectAlign % task.nr != 0) {
     return false;
   }
-  (void)m;
+  // Размер считается по четыре байта на вес и тогда, когда веса лежат в
+  // половинной разрядности. Физически в кэше их вдвое меньше, и порог, взятый
+  // по настоящим байтам, пустил бы прямым путём вдвое более широкую матрицу.
+  // Так делать нельзя, и причина та же, по которой чуть выше проверяется
+  // кратность общему числу, а не ширине плитки: выбор пути не должен зависеть
+  // ни от чего, кроме формы задачи.
+  //
+  // Прямой и блочный пути делят глубину k по-разному, то есть складывают
+  // слагаемые в разном порядке. Если бы разрядность хранения меняла путь, то
+  // gemm_half_b перестал бы совпадать с gemm на тех же округлённых весах — а
+  // это совпадение и есть то, чем половинная разрядность здесь проверяется.
+  // Сверять её стало бы не с чем.
+  //
+  // Цена этой строгости мала: она отсекает только матрицы в полосе от 64 до
+  // 128 килобайт в половинной разрядности, а у моделей этого проекта матрицы
+  // либо заметно меньше нижней границы, либо на порядок больше верхней.
+  if (m <= kDirectMaxRows) {
+    return true;
+  }
   const double b_bytes =
       4.0 * static_cast<double>(task.k) * static_cast<double>(n);
   return b_bytes <= kDirectMaxBBytes;
@@ -354,7 +431,29 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
   const int64_t k = task.k;
 
   const float* bbase = task.b;
+  const Half* bbase_half = task.b_half;
   int64_t bstride = task.ldb;
+
+  // Запасной путь для процессора без развёртывания половинной разрядности
+  // одной командой. Веса разворачиваются целиком в буфер упаковки, и дальше
+  // всё идёт обычным ядром.
+  //
+  // Выигрыша здесь нет — байт читается и пишется больше, чем без половинной
+  // разрядности вовсе. Смысл в другом: путь обязан остаться тем же. Если бы
+  // отсутствие команды переводило вычисление на блочный путь, тот поделил бы
+  // глубину иначе, и результат на такой машине отличался бы от результата на
+  // всех остальных.
+  std::vector<float> expanded;
+  if (bbase_half != nullptr && task.run_rows_half == nullptr) {
+    expanded.resize(static_cast<std::size_t>(k * n));
+    for (int64_t p = 0; p < k; ++p) {
+      half_to_floats(bbase_half + p * task.ldb, expanded.data() + p * n, n);
+    }
+    bbase = expanded.data();
+    bbase_half = nullptr;
+    bstride = n;
+  }
+
   if (task.transpose_b) {
     PackBuffers& buffers = pack_buffers();
     buffers.b.resize(static_cast<std::size_t>(ceil_div(n, nr) * nr * k));
@@ -369,6 +468,12 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
     for (int64_t i = first; i < last; i += mr) {
       const int64_t rows = std::min(mr, last - i);
       for (int64_t j = 0; j < n; j += nr) {
+        if (bbase_half != nullptr) {
+          task.run_rows_half(k, task.a + i * task.lda, task.lda, bbase_half + j,
+                             bstride, task.alpha, task.c + i * task.ldc + j,
+                             task.ldc, rows, nr);
+          continue;
+        }
         const float* bpanel =
             task.transpose_b ? bbase + (j / nr) * k * nr : bbase + j;
         task.run_rows(k, task.a + i * task.lda, task.lda, bpanel, bstride,
@@ -436,53 +541,17 @@ void gemm_naive(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
   }
 }
 
-void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
-          float alpha, const float* a, int64_t lda, const float* b, int64_t ldb,
-          float beta, float* c, int64_t ldc) {
-  check_arguments(transpose_a, transpose_b, m, n, k, lda, ldb, ldc);
+namespace {
 
-  if (m == 0 || n == 0) {
-    return;
-  }
-  if (k == 0 || alpha == 0.0f) {
-    scale_c(m, n, beta, c, ldc);
-    return;
-  }
-
-  // Микроядро выбирается по возможностям процессора — один раз, а не на
-  // каждый вызов: best_micro_kernel считает выбор при первом обращении.
-  const MicroKernel& kernel = best_micro_kernel();
-
-  GemmTask task;
-  task.transpose_a = transpose_a;
-  task.transpose_b = transpose_b;
-  task.k = k;
-  task.alpha = alpha;
-  task.a = a;
-  task.lda = lda;
-  task.b = b;
-  task.ldb = ldb;
-  task.beta = beta;
-  task.c = c;
-  task.ldc = ldc;
-  task.mr = kernel.mr;
-  task.nr = kernel.nr;
-  task.run = kernel.run;
-  task.run_rows = kernel.run_rows;
-  task.pack_transpose = kernel.pack_transpose;
-
-  // Блоки округляются вверх до кратного плитке. Иначе последняя плитка блока
-  // была бы неполной всегда, а не только на краю матрицы, и медленный путь
-  // записи срабатывал бы постоянно.
-  task.block_m = ceil_div(kBlockM, task.mr) * task.mr;
-  task.block_n = ceil_div(kBlockN, task.nr) * task.nr;
-
+// Общая часть обоих входов: выбор пути и деление по потокам. Отличаются входы
+// только тем, откуда берётся B, а это уже записано в задаче.
+void run_gemm(GemmTask& task, int64_t m, int64_t n) {
   if (use_direct(task, m, n)) {
     gemm_direct(task, m, n);
     return;
   }
 
-  const Partition split = choose_partition(m, n, k, task.mr, task.nr);
+  const Partition split = choose_partition(m, n, task.k, task.mr, task.nr);
   if (split.tasks <= 1) {
     gemm_rect(task, 0, m, 0, n);
     return;
@@ -508,6 +577,77 @@ void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
       gemm_rect(task, 0, m, begin, end - begin);
     }
   });
+}
+
+// Заполняет всё, что не зависит от разрядности B.
+bool prepare_task(GemmTask* task, bool transpose_a, bool transpose_b, int64_t m,
+                  int64_t n, int64_t k, float alpha, const float* a,
+                  int64_t lda, int64_t ldb, float beta, float* c, int64_t ldc) {
+  if (m == 0 || n == 0) {
+    return false;
+  }
+  if (k == 0 || alpha == 0.0f) {
+    scale_c(m, n, beta, c, ldc);
+    return false;
+  }
+
+  // Микроядро выбирается по возможностям процессора — один раз, а не на
+  // каждый вызов: best_micro_kernel считает выбор при первом обращении.
+  const MicroKernel& kernel = best_micro_kernel();
+
+  task->transpose_a = transpose_a;
+  task->transpose_b = transpose_b;
+  task->k = k;
+  task->alpha = alpha;
+  task->a = a;
+  task->lda = lda;
+  task->b = nullptr;
+  task->b_half = nullptr;
+  task->ldb = ldb;
+  task->beta = beta;
+  task->c = c;
+  task->ldc = ldc;
+  task->mr = kernel.mr;
+  task->nr = kernel.nr;
+  task->run = kernel.run;
+  task->run_rows = kernel.run_rows;
+  task->run_rows_half = kernel.run_rows_half;
+  task->pack_transpose = kernel.pack_transpose;
+
+  // Блоки округляются вверх до кратного плитке. Иначе последняя плитка блока
+  // была бы неполной всегда, а не только на краю матрицы, и медленный путь
+  // записи срабатывал бы постоянно.
+  task->block_m = ceil_div(kBlockM, task->mr) * task->mr;
+  task->block_n = ceil_div(kBlockN, task->nr) * task->nr;
+  return true;
+}
+
+}  // namespace
+
+void gemm(bool transpose_a, bool transpose_b, int64_t m, int64_t n, int64_t k,
+          float alpha, const float* a, int64_t lda, const float* b, int64_t ldb,
+          float beta, float* c, int64_t ldc) {
+  check_arguments(transpose_a, transpose_b, m, n, k, lda, ldb, ldc);
+  GemmTask task;
+  if (!prepare_task(&task, transpose_a, transpose_b, m, n, k, alpha, a, lda,
+                    ldb, beta, c, ldc)) {
+    return;
+  }
+  task.b = b;
+  run_gemm(task, m, n);
+}
+
+void gemm_half_b(bool transpose_a, int64_t m, int64_t n, int64_t k, float alpha,
+                 const float* a, int64_t lda, const Half* b, int64_t ldb,
+                 float beta, float* c, int64_t ldc) {
+  check_arguments(transpose_a, false, m, n, k, lda, ldb, ldc);
+  GemmTask task;
+  if (!prepare_task(&task, transpose_a, false, m, n, k, alpha, a, lda, ldb,
+                    beta, c, ldc)) {
+    return;
+  }
+  task.b_half = b;
+  run_gemm(task, m, n);
 }
 
 }  // namespace ops

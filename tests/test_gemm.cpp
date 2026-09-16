@@ -472,3 +472,129 @@ LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
     llm::ops::force_micro_kernel(nullptr);
   }
 }
+
+// --- веса половинной разрядности ---------------------------------------------
+//
+// Обещание gemm_half_b одно, и оно сильное: результат обязан совпасть ПОБИТОВО
+// с обычным gemm, которому дали те же веса, уже прошедшие округление. Не «в
+// пределах погрешности» — побитово. Из этого следует, что половинная
+// разрядность не может испортить ничего, кроме самих весов, и что машины с
+// разными наборами инструкций по-прежнему считают одинаково.
+//
+// Если бы проверка была с допуском, она пропустила бы ровно те ошибки, ради
+// которых написана: перепутанный порядок накопления, потерянный краевой
+// столбец, другой путь внутри gemm.
+
+namespace {
+
+struct HalfCase {
+  std::int64_t m;
+  std::int64_t n;
+  std::int64_t k;
+  const char* what;
+};
+
+void check_half_matches_rounded(const HalfCase& shape) {
+  llm::Rng rng(20240816 + shape.n);
+  std::vector<float> a = random_matrix(&rng, shape.m, shape.k);
+  std::vector<float> b = random_matrix(&rng, shape.k, shape.n);
+
+  // Веса округляются ОБЕИМ сторонам. Иначе проверка смешала бы два вопроса —
+  // правильность ядра и точность половинной разрядности — и не ответила бы ни
+  // на один.
+  std::vector<llm::Half> packed(b.size());
+  llm::floats_to_half(b.data(), packed.data(),
+                      static_cast<std::int64_t>(b.size()));
+  llm::half_to_floats(packed.data(), b.data(),
+                      static_cast<std::int64_t>(b.size()));
+
+  std::vector<float> reference(static_cast<std::size_t>(shape.m * shape.n),
+                               0.25f);
+  std::vector<float> actual = reference;
+
+  llm::ops::gemm(false, false, shape.m, shape.n, shape.k, 1.5f, a.data(),
+                 shape.k, b.data(), shape.n, 0.5f, reference.data(), shape.n);
+  llm::ops::gemm_half_b(false, shape.m, shape.n, shape.k, 1.5f, a.data(),
+                        shape.k, packed.data(), shape.n, 0.5f, actual.data(),
+                        shape.n);
+
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    LLM_CHECK_MSG(reference[i] == actual[i],
+                  shape.what << ": элемент " << i << " даёт " << actual[i]
+                             << " вместо " << reference[i]);
+  }
+}
+
+// Формы подобраны по порогу прямого пути: он включается, когда B укладывается в
+// 256 килобайт. Средняя строка — та самая полоса, где порог, посчитанный по
+// настоящим байтам половинной разрядности, пустил бы gemm_half_b прямым путём,
+// а обычный gemm остался бы на блочном. Первая написанная здесь версия так и
+// делала, и эта строка её уронила: пути делят глубину по-разному. Поэтому
+// размер считается по четыре байта на вес независимо от хранения, а строка
+// осталась сторожить это решение.
+const HalfCase kHalfCases[] = {
+    {1, 256, 256, "генерация, прямой путь"},
+    {1, 384, 256, "генерация, полоса у порога прямого пути"},
+    {1, 1024, 256, "генерация, блочный путь"},
+    {7, 256, 256, "неполная плитка строк, прямой путь"},
+    {7, 1024, 256, "неполная плитка строк, блочный путь"},
+    {64, 256, 704, "батч, глубина больше куска"},
+    {64, 1024, 256, "батч, блочный путь"},
+    {33, 320, 97, "нечётные размеры, край плитки"},
+};
+
+}  // namespace
+
+LLM_TEST(Gemm, HalfWeightsMatchRoundedExactly) {
+  for (std::size_t i = 0; i < sizeof(kHalfCases) / sizeof(kHalfCases[0]); ++i) {
+    check_half_matches_rounded(kHalfCases[i]);
+  }
+}
+
+// То же самое на каждом собранном микроядре. Ядро прямого пути у каждого своё,
+// и ошибиться в нём можно независимо от остальных.
+LLM_TEST(Gemm, HalfWeightsAgreeAcrossKernels) {
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  int checked = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      continue;
+    }
+    llm::ops::force_micro_kernel(&table[i].kernel);
+    for (std::size_t j = 0; j < sizeof(kHalfCases) / sizeof(kHalfCases[0]);
+         ++j) {
+      check_half_matches_rounded(kHalfCases[j]);
+    }
+    ++checked;
+  }
+  llm::ops::force_micro_kernel(nullptr);
+  LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
+}
+
+// Запасной путь: процессор умеет считать, но не умеет разворачивать половинную
+// разрядность одной командой. Тогда веса разворачиваются целиком заранее — и
+// вот что здесь проверяется: результат обязан остаться тем же побитово, потому
+// что путь внутри gemm не изменился. Если бы запасной вариант уходил на
+// блочный путь, тот поделил бы глубину иначе, и такая машина считала бы не как
+// все остальные.
+LLM_TEST(Gemm, HalfFallbackKeepsTheSamePath) {
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  int checked = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available || table[i].kernel.run_rows_half == nullptr) {
+      continue;
+    }
+    llm::ops::MicroKernel crippled = table[i].kernel;
+    crippled.run_rows_half = nullptr;
+    llm::ops::force_micro_kernel(&crippled);
+    for (std::size_t j = 0; j < sizeof(kHalfCases) / sizeof(kHalfCases[0]);
+         ++j) {
+      check_half_matches_rounded(kHalfCases[j]);
+    }
+    ++checked;
+  }
+  llm::ops::force_micro_kernel(nullptr);
+  LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
+}

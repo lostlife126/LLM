@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "core/fp16.h"
 #include "core/half.h"
 #include "core/random.h"
 #include "testing.h"
@@ -43,6 +44,38 @@ LLM_TEST(Half, RoundTripSurvivesEveryValue) {
   // перестал бы быть полным, и об этом никто бы не узнал.
   LLM_CHECK_MSG(checked == 65536 - 2046,
                 "прошли круг " << checked << " значений вместо 63490");
+}
+
+// Пакетное развёртывание считается не так, как from_fp16: там разбор случаев и
+// цикл нормализации, здесь арифметика без ветвей, которую компилятор
+// раскладывает по векторам. Значит нужна проверка, что это одна и та же
+// функция, и проверка полным перебором — выборочная прошла бы и при сломанной
+// субнормальной области, а именно ради малых значений всё и затевалось.
+LLM_TEST(Half, BulkExpansionEqualsReferenceOnEveryValue) {
+  std::vector<Half> all(0x10000u);
+  for (uint32_t bits = 0; bits < 0x10000u; ++bits) {
+    all[bits].bits = static_cast<uint16_t>(bits);
+  }
+  std::vector<float> expanded(all.size());
+  llm::half_to_floats(all.data(), expanded.data(),
+                      static_cast<int64_t>(all.size()));
+
+  for (uint32_t bits = 0; bits < 0x10000u; ++bits) {
+    const float reference = llm::from_fp16(static_cast<uint16_t>(bits));
+    if (std::isnan(reference)) {
+      // NaN не сравнивается сам с собой; сверяются разряды, потому что и
+      // старшая часть мантиссы обязана дойти без изменений.
+      LLM_CHECK_MSG(std::isnan(expanded[bits]),
+                    "значение " << bits << " перестало быть NaN");
+      LLM_CHECK_MSG(llm::float_bits(expanded[bits]) ==
+                        llm::float_bits(reference),
+                    "разряды NaN у значения " << bits << " разошлись");
+      continue;
+    }
+    LLM_CHECK_MSG(expanded[bits] == reference,
+                  "значение " << bits << " развернулось в " << expanded[bits]
+                              << " вместо " << reference);
+  }
 }
 
 LLM_TEST(Half, BulkMatchesScalar) {

@@ -19,6 +19,8 @@
 
 #include <cstdint>
 
+#include "core/half.h"
+
 namespace llm {
 namespace ops {
 
@@ -73,11 +75,34 @@ using MicroKernelRowsFn = void (*)(int64_t kc, const float* a, int64_t lda,
                                    float* c, int64_t ldc, int64_t rows,
                                    int64_t cols);
 
+// То же самое, но B лежит в половинной разрядности.
+//
+// Зачем отдельное ядро, а не преобразование B заранее. При генерации по одному
+// токену на каждый прочитанный вес приходится ровно одно умножение с
+// накоплением: развернуть матрицу в float заранее значило бы прочитать её в
+// половинной разрядности, записать в обычной и прочитать снова — вдвое больше
+// байт, чем сейчас, вместо вдвое меньше. Развёртывание обязано происходить
+// внутри ядра, в регистрах, между загрузкой и умножением.
+//
+// Побитовая воспроизводимость при этом сохраняется, и это не случайность.
+// Развёртывание половинной разрядности в float точное: каждое значение
+// представимо. Значит после него идут ровно те же умножения с накоплением в
+// том же порядке, что и у обычного ядра, которому дали уже округлённые веса, —
+// и результат совпадает побитово. Единственное численное отличие от fp32 —
+// само округление весов, а оно одинаково на любой машине.
+//
+// Требования к вызывающему те же, что у ядра выше.
+using MicroKernelRowsHalfFn = void (*)(int64_t kc, const float* a, int64_t lda,
+                                       const Half* b, int64_t bstride,
+                                       float alpha, float* c, int64_t ldc,
+                                       int64_t rows, int64_t cols);
+
 struct MicroKernel {
   int64_t mr = 0;
   int64_t nr = 0;
   MicroKernelFn run = nullptr;
   MicroKernelRowsFn run_rows = nullptr;
+  MicroKernelRowsHalfFn run_rows_half = nullptr;
   PackTransposeFn pack_transpose = nullptr;
   const char* name = "";
 

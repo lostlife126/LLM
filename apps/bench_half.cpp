@@ -32,6 +32,7 @@
 #include "core/half.h"
 #include "core/random.h"
 #include "core/thread_pool.h"
+#include "ops/gemm.h"
 
 namespace {
 
@@ -183,28 +184,84 @@ void measure(int64_t m, int64_t n, int64_t k) {
 
 #endif  // LLM_HALF_X86
 
+// Второй замер: то же самое, но уже настоящими функциями библиотеки. Первый
+// отвечал на вопрос «стоит ли это писать», второй — на вопрос «написано ли оно
+// так, как задумано». Числа у них разные и сравнивать их между собой не надо:
+// ядро прототипа считает плиткой 1 x 64 без упаковки, библиотека выбирает путь
+// и плитку сама.
+void measure_library(int64_t m, int64_t n, int64_t k) {
+  llm::Rng rng(4321);
+  std::vector<float> a(static_cast<std::size_t>(m * k));
+  std::vector<float> b(static_cast<std::size_t>(k * n));
+  for (std::size_t i = 0; i < a.size(); ++i) a[i] = rng.normal() * 0.05f;
+  for (std::size_t i = 0; i < b.size(); ++i) b[i] = rng.normal() * 0.05f;
+
+  std::vector<llm::Half> bh(b.size());
+  llm::floats_to_half(b.data(), bh.data(), static_cast<int64_t>(b.size()));
+  llm::half_to_floats(bh.data(), b.data(), static_cast<int64_t>(b.size()));
+
+  std::vector<float> c32(static_cast<std::size_t>(m * n), 0.0f);
+  std::vector<float> c16(static_cast<std::size_t>(m * n), 0.0f);
+
+  const double seconds32 = bench::best_seconds(
+      [&]() {
+        llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n,
+                       0.0f, c32.data(), n);
+      },
+      0.4);
+  const double seconds16 = bench::best_seconds(
+      [&]() {
+        llm::ops::gemm_half_b(false, m, n, k, 1.0f, a.data(), k, bh.data(), n,
+                              0.0f, c16.data(), n);
+      },
+      0.4);
+
+  int64_t mismatches = 0;
+  for (std::size_t i = 0; i < c32.size(); ++i) {
+    if (c32[i] != c16[i]) ++mismatches;
+  }
+
+  std::printf(
+      "m=%-4lld k=%-5lld n=%-5lld  B=%6.2f МБ | fp32 %7.3f мс | fp16 %7.3f мс "
+      "| %.2fx | расхождений %lld\n",
+      static_cast<long long>(m), static_cast<long long>(k),
+      static_cast<long long>(n),
+      4.0 * static_cast<double>(k) * static_cast<double>(n) / 1048576.0,
+      seconds32 * 1e3, seconds16 * 1e3, seconds32 / seconds16,
+      static_cast<long long>(mismatches));
+}
+
 }  // namespace
 
 int main() {
-#if !LLM_HALF_X86
-  std::printf("замер написан под x86 с F16C; на этой машине пропущен\n");
-  return 0;
-#else
-  std::printf("процессор: %s\n\n", llm::cpu_features().to_string().c_str());
-  if (!llm::cpu_features().has_avx2_f16c()) {
-    std::printf("нет AVX2+FMA+F16C; замер пропущен\n");
-    return 0;
-  }
+  std::printf("процессор: %s\n", llm::cpu_features().to_string().c_str());
 
   // Формы взяты из настоящей модели: k — это d_model или ffn_hidden, n — их
-  // же или размер словаря. m = 1 — генерация по токену, m = 16 — тот же слой
-  // при обучении, для проверки, что вывод про память относится именно к
-  // генерации.
+  // же или размер словаря. m = 1 — генерация по токену, m больше единицы —
+  // тот же слой при обучении, для проверки, что вывод про память относится
+  // именно к генерации.
   static const int64_t shapes[][3] = {
-      {1, 256, 256},   {1, 256, 704},   {1, 704, 256},  {1, 256, 4096},
-      {1, 512, 4096},  {4, 256, 4096},  {16, 256, 4096}, {64, 256, 4096},
+      {1, 256, 256},  {1, 256, 704},  {1, 704, 256},   {1, 256, 4096},
+      {1, 512, 4096}, {4, 256, 4096}, {16, 256, 4096}, {64, 256, 4096},
   };
-  for (std::size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); ++i) {
+  const std::size_t count = sizeof(shapes) / sizeof(shapes[0]);
+
+  std::printf("\nбиблиотека: gemm против gemm_half_b\n");
+  for (std::size_t i = 0; i < count; ++i) {
+    measure_library(shapes[i][0], shapes[i][2], shapes[i][1]);
+  }
+
+#if !LLM_HALF_X86
+  std::printf("\nотдельное ядро прототипа написано под x86 с F16C; пропущено\n");
+  return 0;
+#else
+  if (!llm::cpu_features().has_avx2_f16c()) {
+    std::printf("\nнет F16C; ядро прототипа пропущено\n");
+    return 0;
+  }
+  std::printf("\nпрототип: одна форма цикла, отличается только тип B\n");
+
+  for (std::size_t i = 0; i < count; ++i) {
     measure(shapes[i][0], shapes[i][2], shapes[i][1]);
   }
   return 0;
