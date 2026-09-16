@@ -32,6 +32,7 @@ endif()
 add_library(llm_core
   src/core/check.cpp
   src/core/cpu.cpp
+  src/core/half.cpp
   src/core/random.cpp
   src/core/shape.cpp
   src/core/storage.cpp
@@ -89,6 +90,9 @@ target_link_libraries(bench_gemm PRIVATE llm_core)
 add_executable(bench_exp apps/bench_exp.cpp)
 target_link_libraries(bench_exp PRIVATE llm_core)
 
+add_executable(bench_half apps/bench_half.cpp)
+target_link_libraries(bench_half PRIVATE llm_core)
+
 add_executable(bench_qk apps/bench_qk.cpp)
 target_link_libraries(bench_qk PRIVATE llm_core)
 
@@ -134,6 +138,7 @@ add_executable(llm_tests
   tests/test_fp16.cpp
   tests/test_gemm.cpp
   tests/test_grad.cpp
+  tests/test_half.cpp
   tests/test_hf.cpp
   tests/test_hf_tokenizer.cpp
   tests/test_infer.cpp
@@ -169,6 +174,7 @@ set(LLM_TEST_SUITES
   FastExp
   Fp16
   Grad
+  Half
   Hf
   HfTokenizer
   Infer

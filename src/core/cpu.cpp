@@ -15,6 +15,7 @@ CpuFeatures probe() {
   __builtin_cpu_init();
   out.avx2 = __builtin_cpu_supports("avx2") != 0;
   out.fma = __builtin_cpu_supports("fma") != 0;
+  out.f16c = __builtin_cpu_supports("f16c") != 0;
   out.avx512f = __builtin_cpu_supports("avx512f") != 0;
   out.avx512bw = __builtin_cpu_supports("avx512bw") != 0;
   out.avx512vl = __builtin_cpu_supports("avx512vl") != 0;
@@ -44,6 +45,9 @@ std::string CpuFeatures::to_string() const {
   }
   if (fma) {
     out << "fma ";
+  }
+  if (f16c) {
+    out << "f16c ";
   }
   if (avx512f) {
     out << "avx512f ";
