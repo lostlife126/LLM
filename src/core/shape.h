@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "core/check.h"
+#include "core/dims.h"
 
 namespace llm {
 
@@ -24,13 +25,12 @@ class Shape {
  public:
   Shape() {}
   Shape(std::initializer_list<int64_t> dims) : dims_(dims) { validate(); }
-  explicit Shape(std::vector<int64_t> dims) : dims_(std::move(dims)) {
-    validate();
-  }
+  explicit Shape(const std::vector<int64_t>& dims) : dims_(dims) { validate(); }
+  explicit Shape(const Dims& dims) : dims_(dims) { validate(); }
 
-  int rank() const { return static_cast<int>(dims_.size()); }
+  int rank() const { return dims_.size(); }
   bool is_scalar() const { return dims_.empty(); }
-  const std::vector<int64_t>& dims() const { return dims_; }
+  const Dims& dims() const { return dims_; }
 
   // Отрицательная ось отсчитывается с конца, как в numpy: dim(-1) — последняя.
   // Внутри операций это избавляет от постоянного writing rank() - 1.
@@ -42,9 +42,7 @@ class Shape {
     return normalized;
   }
 
-  int64_t dim(int axis) const {
-    return dims_[static_cast<std::size_t>(normalize_axis(axis))];
-  }
+  int64_t dim(int axis) const { return dims_[normalize_axis(axis)]; }
 
   int64_t operator[](int axis) const { return dim(axis); }
 
@@ -55,7 +53,7 @@ class Shape {
  private:
   void validate() const;
 
-  std::vector<int64_t> dims_;
+  Dims dims_;
 };
 
 bool operator==(const Shape& lhs, const Shape& rhs);
@@ -64,7 +62,7 @@ std::ostream& operator<<(std::ostream& os, const Shape& shape);
 
 // Шаги плотного размещения в памяти: последняя ось идёт с шагом 1, каждая
 // предыдущая — с шагом, равным произведению всех последующих размеров.
-std::vector<int64_t> contiguous_strides(const Shape& shape);
+Dims contiguous_strides(const Shape& shape);
 
 // Совместимость форм по правилам numpy: оси выравниваются справа, ось размера
 // 1 растягивается до размера соседа. Возвращает false вместо падения, потому

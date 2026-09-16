@@ -45,9 +45,8 @@ LLM_TEST(Shape, Equality) {
 }
 
 LLM_TEST(Shape, ContiguousStrides) {
-  const std::vector<std::int64_t> strides =
-      llm::contiguous_strides(llm::Shape({2, 3, 4}));
-  LLM_CHECK_EQ(strides.size(), static_cast<std::size_t>(3));
+  const llm::Dims strides = llm::contiguous_strides(llm::Shape({2, 3, 4}));
+  LLM_CHECK_EQ(strides.size(), 3);
   LLM_CHECK_EQ(strides[0], static_cast<std::int64_t>(12));
   LLM_CHECK_EQ(strides[1], static_cast<std::int64_t>(4));
   LLM_CHECK_EQ(strides[2], static_cast<std::int64_t>(1));

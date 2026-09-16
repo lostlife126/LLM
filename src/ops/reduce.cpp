@@ -20,8 +20,8 @@ namespace {
 // одну ячейку. Промежуточная сумма в этом случае берётся в double: она всё
 // равно нужна, а точность достаётся бесплатно.
 void accumulate_blocks(const Shape& shape,
-                       const std::vector<int64_t>& in_strides, const float* in,
-                       const std::vector<int64_t>& acc_strides, float* acc) {
+                       const Dims& in_strides, const float* in,
+                       const Dims& acc_strides, float* acc) {
   const BlockWalkN<2> walk = block_walk2(shape, in_strides, acc_strides);
   const int64_t run = walk.run();
   const int64_t in_step = walk.run_stride(0);

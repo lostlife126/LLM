@@ -7,7 +7,7 @@
 namespace llm {
 
 void Shape::validate() const {
-  for (std::size_t i = 0; i < dims_.size(); ++i) {
+  for (int i = 0; i < dims_.size(); ++i) {
     LLM_CHECK_MSG(dims_[i] >= 0,
                   "отрицательный размер по оси " << i << ": " << dims_[i]);
   }
@@ -17,7 +17,7 @@ int64_t Shape::numel() const {
   // Для скаляра (ранг 0) произведение по пустому множеству равно 1: в тензоре
   // ранга 0 ровно один элемент.
   int64_t total = 1;
-  for (std::size_t i = 0; i < dims_.size(); ++i) {
+  for (int i = 0; i < dims_.size(); ++i) {
     if (dims_[i] == 0) {
       return 0;
     }
@@ -33,7 +33,7 @@ int64_t Shape::numel() const {
 std::string Shape::to_string() const {
   std::ostringstream oss;
   oss << "(";
-  for (std::size_t i = 0; i < dims_.size(); ++i) {
+  for (int i = 0; i < dims_.size(); ++i) {
     if (i != 0) {
       oss << ", ";
     }
@@ -53,12 +53,12 @@ std::ostream& operator<<(std::ostream& os, const Shape& shape) {
   return os << shape.to_string();
 }
 
-std::vector<int64_t> contiguous_strides(const Shape& shape) {
+Dims contiguous_strides(const Shape& shape) {
   const int rank = shape.rank();
-  std::vector<int64_t> strides(static_cast<std::size_t>(rank));
+  Dims strides = Dims::zeros(rank);
   int64_t running = 1;
   for (int axis = rank - 1; axis >= 0; --axis) {
-    strides[static_cast<std::size_t>(axis)] = running;
+    strides[axis] = running;
     running *= shape.dim(axis);
   }
   return strides;
@@ -69,7 +69,7 @@ bool try_broadcast(const Shape& lhs, const Shape& rhs, Shape* out) {
   const int lhs_pad = rank - lhs.rank();
   const int rhs_pad = rank - rhs.rank();
 
-  std::vector<int64_t> dims(static_cast<std::size_t>(rank));
+  Dims dims = Dims::zeros(rank);
   for (int axis = 0; axis < rank; ++axis) {
     // Отсутствующие слева оси считаются равными 1 — это и есть выравнивание
     // справа.
@@ -78,10 +78,10 @@ bool try_broadcast(const Shape& lhs, const Shape& rhs, Shape* out) {
     if (left != right && left != 1 && right != 1) {
       return false;
     }
-    dims[static_cast<std::size_t>(axis)] = std::max(left, right);
+    dims[axis] = std::max(left, right);
   }
   if (out != nullptr) {
-    *out = Shape(std::move(dims));
+    *out = Shape(dims);
   }
   return true;
 }

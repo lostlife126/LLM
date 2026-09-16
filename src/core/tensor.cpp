@@ -24,7 +24,7 @@ constexpr int64_t kCopyGrain = 1 << 14;
 // Копирование идёт кусками подряд идущих элементов, а не по одному: см.
 // BlockWalk. Для плотного тензора кусок один на весь тензор, и всё сводится к
 // memcpy; для перестановки осей внимания кусок равен размеру головы.
-void copy_dense(const Shape& shape, const std::vector<int64_t>& strides,
+void copy_dense(const Shape& shape, const Dims& strides,
                 const float* in, float* out) {
   const BlockWalkN<1> walk = block_walk(shape, strides);
   const int64_t run = walk.run();
@@ -61,12 +61,12 @@ void copy_dense(const Shape& shape, const std::vector<int64_t>& strides,
 }  // namespace
 
 Tensor::Tensor(std::shared_ptr<Storage> storage, float* data,
-               const Shape& shape, std::vector<int64_t> strides)
+               const Shape& shape, const Dims& strides)
     : storage_(std::move(storage)),
       data_(data),
       shape_(shape),
-      strides_(std::move(strides)) {
-  LLM_DCHECK_EQ(static_cast<int>(strides_.size()), shape_.rank());
+      strides_(strides) {
+  LLM_DCHECK_EQ(strides_.size(), shape_.rank());
 }
 
 Tensor Tensor::uninitialized(const Shape& shape) {
@@ -206,13 +206,11 @@ Tensor Tensor::reshape(const Shape& shape) const {
 Tensor Tensor::transpose(int axis_a, int axis_b) const {
   const int a = shape_.normalize_axis(axis_a);
   const int b = shape_.normalize_axis(axis_b);
-  std::vector<int64_t> dims = shape_.dims();
-  std::vector<int64_t> strides = strides_;
-  std::swap(dims[static_cast<std::size_t>(a)],
-            dims[static_cast<std::size_t>(b)]);
-  std::swap(strides[static_cast<std::size_t>(a)],
-            strides[static_cast<std::size_t>(b)]);
-  return Tensor(storage_, data_, Shape(std::move(dims)), std::move(strides));
+  Dims dims = shape_.dims();
+  Dims strides = strides_;
+  std::swap(dims[a], dims[b]);
+  std::swap(strides[a], strides[b]);
+  return Tensor(storage_, data_, Shape(dims), strides);
 }
 
 Tensor Tensor::permute(const std::vector<int>& order) const {
@@ -220,17 +218,17 @@ Tensor Tensor::permute(const std::vector<int>& order) const {
                 "перестановка из " << order.size() << " осей для тензора ранга "
                                    << rank());
   std::vector<bool> seen(order.size(), false);
-  std::vector<int64_t> dims(order.size());
-  std::vector<int64_t> strides(order.size());
+  Dims dims;
+  Dims strides;
   for (std::size_t i = 0; i < order.size(); ++i) {
     const int axis = shape_.normalize_axis(order[i]);
     LLM_CHECK_MSG(!seen[static_cast<std::size_t>(axis)],
                   "ось " << axis << " указана в перестановке дважды");
     seen[static_cast<std::size_t>(axis)] = true;
-    dims[i] = shape_.dim(axis);
-    strides[i] = strides_[static_cast<std::size_t>(axis)];
+    dims.push_back(shape_.dim(axis));
+    strides.push_back(strides_[axis]);
   }
-  return Tensor(storage_, data_, Shape(std::move(dims)), std::move(strides));
+  return Tensor(storage_, data_, Shape(dims), strides);
 }
 
 Tensor Tensor::slice(int axis, int64_t start, int64_t count) const {
@@ -240,22 +238,28 @@ Tensor Tensor::slice(int axis, int64_t start, int64_t count) const {
   LLM_CHECK_MSG(start + count <= shape_.dim(a),
                 "срез [" << start << ", " << start + count << ") по оси " << a
                          << " выходит за границу " << shape_.dim(a));
-  std::vector<int64_t> dims = shape_.dims();
-  dims[static_cast<std::size_t>(a)] = count;
-  float* data = data_ + start * strides_[static_cast<std::size_t>(a)];
-  return Tensor(storage_, data, Shape(std::move(dims)), strides_);
+  Dims dims = shape_.dims();
+  dims[a] = count;
+  float* data = data_ + start * strides_[a];
+  return Tensor(storage_, data, Shape(dims), strides_);
 }
 
 Tensor Tensor::select(int axis, int64_t index) const {
   const int a = shape_.normalize_axis(axis);
   LLM_CHECK_GE(index, static_cast<int64_t>(0));
   LLM_CHECK_LT(index, shape_.dim(a));
-  std::vector<int64_t> dims = shape_.dims();
-  std::vector<int64_t> strides = strides_;
-  dims.erase(dims.begin() + a);
-  strides.erase(strides.begin() + a);
-  float* data = data_ + index * strides_[static_cast<std::size_t>(a)];
-  return Tensor(storage_, data, Shape(std::move(dims)), std::move(strides));
+  // Удаление оси: в новый набор переписывается всё, кроме неё.
+  Dims dims;
+  Dims strides;
+  for (int axis = 0; axis < rank(); ++axis) {
+    if (axis == a) {
+      continue;
+    }
+    dims.push_back(shape_.dim(axis));
+    strides.push_back(strides_[axis]);
+  }
+  float* data = data_ + index * strides_[a];
+  return Tensor(storage_, data, Shape(dims), strides);
 }
 
 Tensor Tensor::expand(const Shape& shape) const {
@@ -263,22 +267,21 @@ Tensor Tensor::expand(const Shape& shape) const {
                                             << shape_ << " -> " << shape);
   // Оси выравниваются справа, как в broadcast: новые оси добавляются слева.
   const int pad = shape.rank() - rank();
-  std::vector<int64_t> strides(static_cast<std::size_t>(shape.rank()), 0);
+  Dims strides = Dims::zeros(shape.rank());
   for (int axis = 0; axis < rank(); ++axis) {
     const int64_t from = shape_.dim(axis);
     const int64_t to = shape.dim(axis + pad);
     if (from == to) {
-      strides[static_cast<std::size_t>(axis + pad)] =
-          strides_[static_cast<std::size_t>(axis)];
+      strides[axis + pad] = strides_[axis];
     } else {
       // Шаг 0: все индексы по этой оси читают одну и ту же ячейку. Так
       // растяжение выражается без копирования данных.
       LLM_CHECK_MSG(from == 1, "ось " << axis << " размера " << from
                                       << " нельзя растянуть до " << to);
-      strides[static_cast<std::size_t>(axis + pad)] = 0;
+      strides[axis + pad] = 0;
     }
   }
-  return Tensor(storage_, data_, shape, std::move(strides));
+  return Tensor(storage_, data_, shape, strides);
 }
 
 Tensor Tensor::contiguous() const {
@@ -317,7 +320,7 @@ std::string Tensor::debug_string(int64_t max_values) const {
   oss << "Tensor" << shape_;
   if (!is_contiguous()) {
     oss << " strides(";
-    for (std::size_t i = 0; i < strides_.size(); ++i) {
+    for (int i = 0; i < strides_.size(); ++i) {
       if (i != 0) {
         oss << ", ";
       }

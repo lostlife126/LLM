@@ -286,8 +286,8 @@ Var cat(const std::vector<Var>& parts, int axis) {
     total += parts[i].shape().dim(normalized);
   }
 
-  std::vector<int64_t> dims = parts[0].shape().dims();
-  dims[static_cast<std::size_t>(normalized)] = total;
+  Dims dims = parts[0].shape().dims();
+  dims[normalized] = total;
   Tensor value = Tensor::zeros(Shape(dims));
 
   std::vector<int64_t> offsets;

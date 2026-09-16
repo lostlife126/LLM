@@ -44,7 +44,7 @@ class Tensor {
                             const std::vector<float>& values);
 
   const Shape& shape() const { return shape_; }
-  const std::vector<int64_t>& strides() const { return strides_; }
+  const Dims& strides() const { return strides_; }
 
   // Различие между «пустым» и «неопределённым» тензором существенно.
   // Неопределённый — это Tensor(), у него вообще нет хранилища; таким,
@@ -60,7 +60,7 @@ class Tensor {
   bool empty() const { return numel() == 0; }
 
   int64_t stride(int axis) const {
-    return strides_[static_cast<std::size_t>(shape_.normalize_axis(axis))];
+    return strides_[shape_.normalize_axis(axis)];
   }
 
   // Плотное размещение: шаги в точности такие, как у contiguous_strides.
@@ -151,14 +151,14 @@ class Tensor {
 
  private:
   Tensor(std::shared_ptr<Storage> storage, float* data, const Shape& shape,
-         std::vector<int64_t> strides);
+         const Dims& strides);
 
   int64_t flat_offset(const int64_t* index, int count) const;
 
   std::shared_ptr<Storage> storage_;  // владение; у вида — общее с владельцем
   float* data_ = nullptr;
   Shape shape_;
-  std::vector<int64_t> strides_;
+  Dims strides_;
 };
 
 std::ostream& operator<<(std::ostream& os, const Tensor& tensor);

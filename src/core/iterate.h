@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "core/dims.h"
 #include "core/shape.h"
 
 namespace llm {
@@ -26,36 +27,34 @@ namespace detail {
 // смещения вычитается весь накопленный по этой оси вклад.
 //
 // Корректно работает с шагом 0 (растянутая ось) и с любой перестановкой осей.
-inline void advance(const Shape& shape, std::vector<int64_t>* index,
-                    const std::vector<int64_t>* const* strides,
-                    int64_t* offsets, int count) {
+inline void advance(const Shape& shape, Dims* index,
+                    const Dims* const* strides, int64_t* offsets, int count) {
   for (int axis = shape.rank() - 1; axis >= 0; --axis) {
-    const std::size_t a = static_cast<std::size_t>(axis);
-    (*index)[a] += 1;
+    (*index)[axis] += 1;
     for (int t = 0; t < count; ++t) {
-      offsets[t] += (*strides[t])[a];
+      offsets[t] += (*strides[t])[axis];
     }
-    if ((*index)[a] < shape.dim(axis)) {
+    if ((*index)[axis] < shape.dim(axis)) {
       return;
     }
     for (int t = 0; t < count; ++t) {
-      offsets[t] -= (*index)[a] * (*strides[t])[a];
+      offsets[t] -= (*index)[axis] * (*strides[t])[axis];
     }
-    (*index)[a] = 0;
+    (*index)[axis] = 0;
   }
 }
 
 }  // namespace detail
 
 template <typename Fn>
-void for_each_offset(const Shape& shape, const std::vector<int64_t>& strides,
+void for_each_offset(const Shape& shape, const Dims& strides,
                      Fn fn) {
   const int64_t total = shape.numel();
   if (total == 0) {
     return;
   }
-  std::vector<int64_t> index(static_cast<std::size_t>(shape.rank()), 0);
-  const std::vector<int64_t>* all[] = {&strides};
+  Dims index = Dims::zeros(shape.rank());
+  const Dims* all[] = {&strides};
   int64_t offsets[] = {0};
   for (int64_t counter = 0; counter < total; ++counter) {
     fn(offsets[0]);
@@ -64,14 +63,14 @@ void for_each_offset(const Shape& shape, const std::vector<int64_t>& strides,
 }
 
 template <typename Fn>
-void for_each_offset2(const Shape& shape, const std::vector<int64_t>& strides_a,
-                      const std::vector<int64_t>& strides_b, Fn fn) {
+void for_each_offset2(const Shape& shape, const Dims& strides_a,
+                      const Dims& strides_b, Fn fn) {
   const int64_t total = shape.numel();
   if (total == 0) {
     return;
   }
-  std::vector<int64_t> index(static_cast<std::size_t>(shape.rank()), 0);
-  const std::vector<int64_t>* all[] = {&strides_a, &strides_b};
+  Dims index = Dims::zeros(shape.rank());
+  const Dims* all[] = {&strides_a, &strides_b};
   int64_t offsets[] = {0, 0};
   for (int64_t counter = 0; counter < total; ++counter) {
     fn(offsets[0], offsets[1]);
@@ -80,15 +79,15 @@ void for_each_offset2(const Shape& shape, const std::vector<int64_t>& strides_a,
 }
 
 template <typename Fn>
-void for_each_offset3(const Shape& shape, const std::vector<int64_t>& strides_a,
-                      const std::vector<int64_t>& strides_b,
-                      const std::vector<int64_t>& strides_c, Fn fn) {
+void for_each_offset3(const Shape& shape, const Dims& strides_a,
+                      const Dims& strides_b,
+                      const Dims& strides_c, Fn fn) {
   const int64_t total = shape.numel();
   if (total == 0) {
     return;
   }
-  std::vector<int64_t> index(static_cast<std::size_t>(shape.rank()), 0);
-  const std::vector<int64_t>* all[] = {&strides_a, &strides_b, &strides_c};
+  Dims index = Dims::zeros(shape.rank());
+  const Dims* all[] = {&strides_a, &strides_b, &strides_c};
   int64_t offsets[] = {0, 0, 0};
   for (int64_t counter = 0; counter < total; ++counter) {
     fn(offsets[0], offsets[1], offsets[2]);
@@ -124,7 +123,7 @@ class BlockWalkN {
  public:
   // strides[s] — набор номер s; все наборы описывают одну и ту же форму.
   BlockWalkN(const Shape& shape,
-             const std::vector<int64_t>* const (&strides)[kSets]) {
+             const Dims* const (&strides)[kSets]) {
     const int rank = shape.rank();
     int collapsed = 0;
     for (int set = 0; set < kSets; ++set) {
@@ -143,7 +142,7 @@ class BlockWalkN {
       for (int axis = rank - 2; axis >= 0; --axis) {
         bool mergeable = true;
         for (int set = 0; set < kSets; ++set) {
-          const std::vector<int64_t>& s = *strides[set];
+          const Dims& s = *strides[set];
           const std::size_t a = static_cast<std::size_t>(axis);
           if (s[a] != s[a + 1] * shape.dim(axis + 1)) {
             mergeable = false;
@@ -203,9 +202,9 @@ class BlockWalkN {
     // Размеры и шаги копируются в курсор, а не берутся по указателю на обход.
     // Так у каждого потока свои, и чтения соседних потоков не делят одну
     // строку кэша.
-    std::vector<int64_t> dims_;
-    std::vector<int64_t> strides_[kSets];
-    std::vector<int64_t> index_;
+    Dims dims_;
+    Dims strides_[kSets];
+    Dims index_;
     int64_t offsets_[kSets] = {};
   };
 
@@ -217,9 +216,9 @@ class BlockWalkN {
       cursor.strides_[set] = outer_strides_[set];
       cursor.offsets_[set] = 0;
     }
-    cursor.index_.assign(dims_.size(), 0);
-    for (int axis = static_cast<int>(dims_.size()) - 1; axis >= 0; --axis) {
-      const std::size_t a = static_cast<std::size_t>(axis);
+    cursor.index_ = Dims::zeros(dims_.size());
+    for (int axis = dims_.size() - 1; axis >= 0; --axis) {
+      const int a = axis;
       const int64_t position = block % dims_[a];
       block /= dims_[a];
       cursor.index_[a] = position;
@@ -231,8 +230,8 @@ class BlockWalkN {
   }
 
  private:
-  std::vector<int64_t> dims_;
-  std::vector<int64_t> outer_strides_[kSets];
+  Dims dims_;
+  Dims outer_strides_[kSets];
   int64_t run_strides_[kSets] = {};
   int64_t run_ = 1;
   int64_t blocks_ = 1;
@@ -240,15 +239,15 @@ class BlockWalkN {
 
 // Удобные обёртки: обход с одним и с двумя наборами шагов.
 inline BlockWalkN<1> block_walk(const Shape& shape,
-                                const std::vector<int64_t>& strides) {
-  const std::vector<int64_t>* const sets[1] = {&strides};
+                                const Dims& strides) {
+  const Dims* const sets[1] = {&strides};
   return BlockWalkN<1>(shape, sets);
 }
 
 inline BlockWalkN<2> block_walk2(const Shape& shape,
-                                 const std::vector<int64_t>& strides_a,
-                                 const std::vector<int64_t>& strides_b) {
-  const std::vector<int64_t>* const sets[2] = {&strides_a, &strides_b};
+                                 const Dims& strides_a,
+                                 const Dims& strides_b) {
+  const Dims* const sets[2] = {&strides_a, &strides_b};
   return BlockWalkN<2>(shape, sets);
 }
 
