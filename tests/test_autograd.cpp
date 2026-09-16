@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "autograd/node.h"
+#include "core/fp16.h"
 #include "autograd/ops.h"
 #include "testing.h"
 
@@ -225,4 +226,141 @@ LLM_TEST(Autograd, AccumulateAdoptsATemporaryOfItsOwn) {
   variable.node()->accumulate(std::move(contribution));
   LLM_CHECK_MSG(variable.grad().data() == address,
                 "временный буфер скопирован вместо того, чтобы быть забранным");
+}
+
+// --- имитация половинной разрядности ----------------------------------------
+//
+// На этой имитации держится вывод о том, сходится ли обучение в половинной
+// разрядности, — и до сих пор её ничто не проверяло. Это хуже, чем отсутствие
+// проверки у обычного кода: неработающая имитация не падает, а выдаёт числа
+// fp32, и вывод получается «всё сходится», сколь бы разрядность ни была мала.
+
+namespace {
+
+using llm::autograd::set_fp16_simulation;
+
+// Сколько элементов НЕ представимы в половинной разрядности.
+int64_t not_representable(const llm::Tensor& tensor) {
+  const llm::Tensor dense = tensor.contiguous();
+  int64_t count = 0;
+  for (int64_t i = 0; i < dense.numel(); ++i) {
+    if (llm::round_to_fp16(dense.data()[i]) != dense.data()[i]) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+llm::Tensor awkward_values(int64_t count) {
+  // Значения подобраны так, чтобы в половинной разрядности они НЕ были
+  // представимы: иначе проверка прошла бы и при выключенной имитации.
+  llm::Tensor out = llm::Tensor::uninitialized(llm::Shape({count}));
+  for (int64_t i = 0; i < count; ++i) {
+    out.data()[i] = 1.0f / (3.0f + static_cast<float>(i));
+  }
+  return out;
+}
+
+// Переключатель, возвращающий имитацию в исходное состояние при любом выходе.
+// Величина глобальная, и оставить её включённой значило бы испортить все
+// следующие тесты в наборе.
+struct SimulationGuard {
+  explicit SimulationGuard(bool enabled) : saved_(llm::autograd::fp16_simulation()) {
+    set_fp16_simulation(enabled);
+  }
+  ~SimulationGuard() { set_fp16_simulation(saved_); }
+  bool saved_;
+};
+
+}  // namespace
+
+LLM_TEST(Autograd, Fp16SimulationRoundsOperationResults) {
+  const Var a = Var::leaf(awkward_values(16), true);
+  const Var b = Var::leaf(awkward_values(16), true);
+
+  int64_t rough_without = 0;
+  {
+    SimulationGuard off(false);
+    const Var result = llm::autograd::mul(a, b);
+    rough_without = not_representable(result.value());
+  }
+  // Иначе проверка ниже пуста: значения и так оказались представимыми.
+  LLM_CHECK_MSG(rough_without > 0,
+                "без имитации все " << 16
+                                    << " значений уже представимы — проверка "
+                                       "ничего не проверяет");
+
+  SimulationGuard on(true);
+  const Var result = llm::autograd::mul(a, b);
+  LLM_CHECK_MSG(not_representable(result.value()) == 0,
+                "с имитацией осталось "
+                    << not_representable(result.value())
+                    << " значений, не представимых в половинной разрядности");
+}
+
+// Градиенты важнее результатов: именно они проваливаются в нуль на малых
+// значениях, и ради них имитация и написана. Обратный проход идёт мимо ленты,
+// через accumulate, то есть это отдельный путь и отдельная возможность
+// ошибиться.
+LLM_TEST(Autograd, Fp16SimulationRoundsGradients) {
+  const Var a = Var::leaf(awkward_values(16), true);
+  const Var b = Var::leaf(awkward_values(16), true);
+
+  int64_t rough_without = 0;
+  {
+    SimulationGuard off(false);
+    Var loss = llm::autograd::sum_all(llm::autograd::mul(a, b));
+    loss.backward();
+    rough_without = not_representable(a.grad());
+    a.node()->clear_grad();
+    b.node()->clear_grad();
+  }
+  LLM_CHECK_MSG(rough_without > 0,
+                "без имитации градиент уже представим — проверка пуста");
+
+  SimulationGuard on(true);
+  Var loss = llm::autograd::sum_all(llm::autograd::mul(a, b));
+  loss.backward();
+  LLM_CHECK_MSG(not_representable(a.grad()) == 0,
+                "с имитацией в градиенте осталось "
+                    << not_representable(a.grad())
+                    << " непредставимых значений");
+}
+
+// Вид на параметр имитация трогать не должна.
+//
+// Reshape, slice по первой оси, select дают тензоры ПЛОТНЫЕ, но делящие
+// хранилище с владельцем. Запись в такой вид меняет данные владельца — а
+// параметр округлять нельзя: веса в половинной разрядности включаются
+// отдельным флагом, и замер сходимости показал, что обучение их не переносит.
+//
+// Сейчас в модели видов на параметры нет, так что тест сторожит будущее. Он же
+// проверяет, что условие не выключило имитацию целиком: соседние тесты
+// требуют от неё работы.
+LLM_TEST(Autograd, Fp16SimulationLeavesParameterViewsAlone) {
+  const Var weight = Var::leaf(awkward_values(12), true);
+  const int64_t rough_before = not_representable(weight.value());
+  LLM_CHECK_MSG(rough_before > 0, "параметр уже представим — проверка пуста");
+
+  std::vector<float> before(weight.value().numel());
+  for (int64_t i = 0; i < weight.value().numel(); ++i) {
+    before[static_cast<std::size_t>(i)] = weight.value().data()[i];
+  }
+
+  {
+    SimulationGuard on(true);
+    const Var view = llm::autograd::reshape(weight, llm::Shape({3, 4}));
+    // Вид плотный — значит без условия на единоличное владение имитация
+    // округлила бы его, а с ним данные параметра.
+    LLM_CHECK_MSG(view.value().is_contiguous(),
+                  "вид перестал быть плотным, и тест больше ничего не сторожит");
+  }
+
+  for (int64_t i = 0; i < weight.value().numel(); ++i) {
+    LLM_CHECK_MSG(weight.value().data()[i] == before[static_cast<std::size_t>(i)],
+                  "параметр изменился в элементе " << i << ": "
+                                                   << weight.value().data()[i]
+                                                   << " вместо "
+                                                   << before[static_cast<std::size_t>(i)]);
+  }
 }

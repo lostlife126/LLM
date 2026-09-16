@@ -243,6 +243,22 @@ void compare_paths() {
                      b.data(), c.n, 0.0f, out.data(), c.n);
     };
 
+    // Порог по числу строк — не единственное условие прямого пути: он
+    // включается ещё и когда B укладывается в кэш второго уровня. Поэтому
+    // подмена порога управляет выбором только при достаточно большой B, и
+    // формы здесь подобраны так, чтобы это было верно. Проверяется, а не
+    // предполагается: иначе замер молча сравнивал бы прямой путь с самим
+    // собой.
+    const double b_bytes = 4.0 * static_cast<double>(c.k) *
+                           static_cast<double>(c.n);
+    if (b_bytes <= 256.0 * 1024.0) {
+      std::printf("  форма m=%lld n=%lld k=%lld пропущена: B укладывается в\n"
+                  "  кэш, и прямой путь включён независимо от порога\n",
+                  static_cast<long long>(c.m), static_cast<long long>(c.n),
+                  static_cast<long long>(c.k));
+      continue;
+    }
+
     // Порог ниже числа строк выключает прямой путь, порог выше — включает.
     llm::ops::force_direct_max_rows(c.m);
     const double direct = bench::best_seconds(once, 0.3);

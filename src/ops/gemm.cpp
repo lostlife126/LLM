@@ -110,26 +110,39 @@ void pack_a(bool transpose_a, const float* a, int64_t lda, int64_t row0,
             PackTransposeFn pack_transpose, float* apack) {
   count_a(mc * kc * 4);
   const int64_t panels = ceil_div(mc, mr);
-  for (int64_t panel = 0; panel < panels; ++panel) {
-    float* dst = apack + panel * kc * mr;
-    const int64_t first = panel * mr;
-    const int64_t rows = std::min(mr, mc - first);
 
-    if (transpose_a) {
-      // op(A) транспонировано: подряд в памяти идут строки панели, и каждая
-      // копируется как есть. Добивка нулями нужна только у последней панели
-      // блока, но обходится она дёшево.
-      for (int64_t p = 0; p < kc; ++p) {
-        const float* src = a + (col0 + p) * lda + row0 + first;
-        std::copy(src, src + rows, dst + p * mr);
-        std::fill(dst + p * mr + rows, dst + p * mr + mr, 0.0f);
-      }
-    } else {
-      // Подряд идёт шаг по глубине, а нужен шаг по строке — то самое
-      // транспонирование, которое упаковка и берёт на себя. Делает его
-      // микроядро: раскладка панели его, и векторный способ переставить блок
-      // зависит от набора инструкций.
-      pack_transpose(a + (row0 + first) * lda + col0, lda, mr, rows, kc, dst);
+  if (!transpose_a) {
+    // Подряд идёт шаг по глубине, а нужен шаг по строке — то самое
+    // транспонирование, которое упаковка и берёт на себя. Делает его
+    // микроядро: раскладка панели его, и векторный способ переставить блок
+    // зависит от набора инструкций.
+    for (int64_t panel = 0; panel < panels; ++panel) {
+      const int64_t first = panel * mr;
+      const int64_t rows = std::min(mr, mc - first);
+      pack_transpose(a + (row0 + first) * lda + col0, lda, mr, rows, kc,
+                     apack + panel * kc * mr);
+    }
+    return;
+  }
+
+  // op(A) транспонировано: подряд в памяти идут строки панели, и каждая
+  // копируется как есть.
+  //
+  // Порядок циклов — глубина снаружи, панели внутри, по той же причине, что и
+  // в pack_b: наоборот читалось бы по mr значений из каждой строки с шагом
+  // lda, и при большой lda каждое чтение попадало бы в новую страницу. Здесь
+  // читается целая строка блока подряд, до mc значений.
+  //
+  // Путь этот работает в обратном проходе: транспонированное op(A) появляется
+  // там, где градиент идёт по другому сомножителю.
+  for (int64_t p = 0; p < kc; ++p) {
+    const float* row = a + (col0 + p) * lda + row0;
+    for (int64_t panel = 0; panel < panels; ++panel) {
+      const int64_t first = panel * mr;
+      const int64_t rows = std::min(mr, mc - first);
+      float* dst = apack + panel * kc * mr + p * mr;
+      std::copy(row + first, row + first + rows, dst);
+      std::fill(dst + rows, dst + mr, 0.0f);
     }
   }
 }
