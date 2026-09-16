@@ -45,9 +45,16 @@ else
   grep -m1 "model name" /proc/cpuinfo
 fi
 echo
-echo "-- признаки набора инструкций (нужен asimdhp: половинная разрядность в арифметике)"
-grep -m1 "Features" /proc/cpuinfo | tr ' ' '\n' | grep -E "asimd|fp|half|hp$" | tr '\n' ' '
-echo
+echo "-- признаки набора инструкций"
+echo "   (fphp и asimdhp означают арифметику половинной разрядности; для"
+echo "    того, что здесь используется, довольно одного преобразования,"
+echo "    а оно есть в базовом ARMv8-A всегда)"
+if grep -q "Features" /proc/cpuinfo; then
+  grep -m1 "Features" /proc/cpuinfo | tr ' ' '\n' | grep -E "asimd|^fp|half|hp$" | tr '\n' ' '
+  echo
+else
+  echo "   строки Features нет — значит это не ARM"
+fi
 echo
 echo "-- размеры кэшей"
 for d in /sys/devices/system/cpu/cpu0/cache/index*; do
@@ -61,9 +68,14 @@ echo "-- память"
 free -m | sed 's/^/  /'
 echo
 echo "-- режим частоты"
+found=0
 for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-  [ -f "$c" ] && echo "  $c = $(cat $c)"
+  if [ -f "$c" ]; then
+    echo "  $c = $(cat $c)"
+    found=1
+  fi
 done
+[ "$found" = "0" ] && echo "  cpufreq недоступен"
 if have vcgencmd; then
   echo "  частота ядра: $(vcgencmd measure_clock arm)"
 fi
