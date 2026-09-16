@@ -1,8 +1,11 @@
 #include "ops/embedding.h"
 
+#include <algorithm>
+
 #include <cstring>
 
 #include "core/check.h"
+#include "ops/parallel.h"
 
 namespace llm {
 namespace ops {
@@ -42,15 +45,28 @@ Tensor embedding_backward(const Tensor& grad_output,
   float* table = out.data();
 
   for (std::size_t position = 0; position < ids.size(); ++position) {
-    const int64_t id = ids[position];
-    LLM_CHECK_MSG(id >= 0 && id < vocab_size,
-                  "токен " << id << " вне словаря размера " << vocab_size);
-    const float* source = grad + static_cast<int64_t>(position) * dim;
-    float* target = table + id * dim;
-    for (int64_t i = 0; i < dim; ++i) {
-      target[i] += source[i];
-    }
+    LLM_CHECK_MSG(ids[position] >= 0 && ids[position] < vocab_size,
+                  "токен " << ids[position] << " вне словаря размера "
+                           << vocab_size);
   }
+
+  // Делится по столбцам таблицы, а не по позициям, и это единственное деление,
+  // которое здесь работает. Два токена в батче могут оказаться одинаковыми, и
+  // тогда по позициям потоки писали бы в одну и ту же строку. По столбцам
+  // ячейки у потоков не пересекаются вовсе, а порядок сложения внутри столбца
+  // остаётся порядком позиций — то есть результат не зависит от числа ядер.
+  // Зерно в столбцах: работы на столбец ровно столько, сколько позиций.
+  const int64_t grain = std::max<int64_t>(
+      1, kElementGrain / std::max<int64_t>(static_cast<int64_t>(ids.size()), 1));
+  parallel_range(dim, grain, [&](int64_t first, int64_t last) {
+    for (std::size_t position = 0; position < ids.size(); ++position) {
+      const float* source = grad + static_cast<int64_t>(position) * dim;
+      float* target = table + ids[position] * dim;
+      for (int64_t i = first; i < last; ++i) {
+        target[i] += source[i];
+      }
+    }
+  });
   return out;
 }
 

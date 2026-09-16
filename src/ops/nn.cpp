@@ -84,7 +84,10 @@ void rms_norm_backward(const Tensor& grad_output, const Tensor& input,
   const float* x = dense_data(input, &input_holder);
   const float* w = dense_data(weight, &weight_holder);
 
-  *grad_input = Tensor::zeros(input.shape());
+  // Градиент по входу заполняется целиком — каждая строка, каждый элемент, —
+  // поэтому обнулять его незачем. Градиент веса, наоборот, накапливается по
+  // частям и обязан начинаться с нуля.
+  *grad_input = Tensor::uninitialized(input.shape());
   *grad_weight = Tensor::zeros(weight.shape());
   float* dx = grad_input->data();
   float* dw = grad_weight->data();
@@ -196,7 +199,9 @@ void layer_norm_backward(const Tensor& grad_output, const Tensor& input,
   const float* x = dense_data(input, &input_holder);
   const float* w = dense_data(weight, &weight_holder);
 
-  *grad_input = Tensor::zeros(input.shape());
+  // По входу — заполняется целиком, обнулять незачем; по весу и свободному
+  // члену — накапливается, начинать надо с нуля.
+  *grad_input = Tensor::uninitialized(input.shape());
   *grad_weight = Tensor::zeros(weight.shape());
   *grad_bias = Tensor::zeros(weight.shape());
   float* dx = grad_input->data();

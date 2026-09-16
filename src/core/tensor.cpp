@@ -79,9 +79,18 @@ Tensor Tensor::uninitialized(const Shape& shape) {
 
 Tensor Tensor::zeros(const Shape& shape) {
   Tensor result = uninitialized(shape);
-  if (result.storage_) {
-    result.storage_->zero();
+  if (!result.storage_) {
+    return result;
   }
+  // Обнуление делится по потокам, а не идёт одним memset. За шаг обучения
+  // обнуляется 15 МБ у nano и 76 МБ у tiny; в один поток это заметная часть
+  // той последовательной доли, в которую упирается масштабируемость.
+  const int64_t count = result.numel();
+  float* data = result.data();
+  parallel_range(count, kCopyGrain, [&](int64_t begin, int64_t end) {
+    std::memset(data + begin, 0,
+                static_cast<std::size_t>(end - begin) * sizeof(float));
+  });
   return result;
 }
 
