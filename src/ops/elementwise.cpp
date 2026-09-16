@@ -115,6 +115,15 @@ void copy_or_add(const Tensor& source, Tensor* target, bool add) {
   if (target->numel() == 0) {
     return;
   }
+  // У цели не должно быть нулевых шагов, и это не формальность. Нулевой шаг
+  // означает, что несколько элементов формы ложатся в одну ячейку: прибавка
+  // тогда накопилась бы в неё многократно, а обход идёт по потокам — то есть
+  // ещё и с гонкой. Все нынешние вызывающие передают либо плотный тензор,
+  // либо срез плотного, у которых нулевых шагов не бывает; проверка записывает
+  // это требование, а не предполагает его.
+  for (int axis = 0; axis < target->rank(); ++axis) {
+    LLM_DCHECK(target->shape().dim(axis) <= 1 || target->stride(axis) != 0);
+  }
   const float* in = source.data();
   float* out = target->data();
   const BlockWalkN<2> walk =

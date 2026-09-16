@@ -184,10 +184,12 @@ Tensor z_loss_backward(const Tensor& logits, float grad_output) {
 
     const float maximum = row_maximum(row_data, vocab);
     exp_shifted(row_data, maximum, grad_row, vocab);
-    double sum_exp = 0.0;
-    for (int64_t i = 0; i < vocab; ++i) {
-      sum_exp += grad_row[i];
-    }
+    // row_sum, а не обычный цикл с одним накопителем. Прямой проход считает ту
+    // же сумму через row_sum, и складывались бы они в разном порядке: градиент
+    // тогда соответствовал бы не тем потерям, которые посчитаны. Разница лежит
+    // в младших разрядах и проверку градиента с допуском прошла бы, но
+    // расхождение прямого и обратного прохода лучше не заводить вовсе.
+    const double sum_exp = row_sum(grad_row, vocab);
     const double z = static_cast<double>(maximum) + std::log(sum_exp);
     // Производная логарифма суммы экспонент по логиту — это softmax, а
     // производная квадрата даёт множитель 2z. Деление на число строк — от

@@ -541,14 +541,20 @@ float attention_entropy(const Tensor& weights, int64_t query_offset) {
     for (int64_t query = 0; query < queries; ++query) {
       // Сколько ключей доступно этому запросу: он видит себя и всё прошлое.
       const int64_t available = query + query_offset + 1;
-      if (available < 2) {
+      const int64_t limit = available < keys ? available : keys;
+      // Проверяется limit, а не available, и это не то же самое. Нормировка
+      // ниже делит на log(limit), и при limit == 1 это делённый на нуль нуль,
+      // то есть NaN во всей метрике. Условие на available закрывало бы это
+      // лишь пока число ключей согласовано со смещением запроса — сейчас оно
+      // согласовано, но полагаться на согласованность вызывающего здесь не на
+      // что, а NaN в диагностике обнаруживается долго.
+      if (limit < 2) {
         // Единственный доступный ключ — энтропия ноль по построению, и делить
         // было бы не на что.
         continue;
       }
       const float* row = data + (matrix * queries + query) * keys;
       double entropy = 0.0;
-      const int64_t limit = available < keys ? available : keys;
       for (int64_t key = 0; key < limit; ++key) {
         if (row[key] > 0.0f) {
           entropy -= static_cast<double>(row[key]) * std::log(row[key]);

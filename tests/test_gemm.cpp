@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "core/random.h"
@@ -662,5 +663,77 @@ LLM_TEST(Gemm, HalfFallbackKeepsTheSamePath) {
     ++checked;
   }
   llm::ops::force_micro_kernel(nullptr);
+  LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
+}
+
+// --- транспонирующая упаковка ------------------------------------------------
+//
+// Единственная неарифметическая примитивная операция в умножении: она только
+// переставляет значения, поэтому «то же самое» здесь означает буквально то же
+// самое, без всякого допуска.
+//
+// До сих пор она проверялась лишь косвенно — через сравнение ядер между собой,
+// потому что упаковка панели A входит в любое обычное умножение. Проверка
+// работала, но не пиняла контракт: раскладку панели и добивку нулями там, где
+// действительных строк меньше, чем дорожек. Маскированный хвост векторного
+// варианта вдобавок срабатывает только у AVX2 — у него плитка шириной шесть, а
+// у AVX-512 тридцать два, то есть кратна восьми и хвоста не даёт.
+LLM_TEST(Gemm, TransposePackMatchesTheScalarReference) {
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  LLM_CHECK_MSG(count > 0, "таблица ядер пуста");
+
+  // Скалярное ядро пользуется простым вариантом упаковки, он и эталон.
+  llm::ops::PackTransposeFn reference = nullptr;
+  for (int i = 0; i < count; ++i) {
+    if (std::string(table[i].kernel.name).find("скалярное") == 0) {
+      reference = table[i].kernel.pack_transpose;
+    }
+  }
+  LLM_CHECK_MSG(reference != nullptr, "скалярное ядро не найдено");
+
+  llm::Rng rng(515);
+  int checked = 0;
+  // Ширины дорожек — все, какие встречаются у ядер проекта, плюс не кратная
+  // восьми: именно на ней работает маскированный хвост.
+  const std::int64_t lanes_list[] = {4, 6, 8, 12, 16, 32};
+  const std::int64_t depths[] = {1, 3, 8, 9, 16, 33};
+
+  for (std::size_t l = 0; l < sizeof(lanes_list) / sizeof(lanes_list[0]); ++l) {
+    const std::int64_t lanes = lanes_list[l];
+    for (std::size_t d = 0; d < sizeof(depths) / sizeof(depths[0]); ++d) {
+      const std::int64_t kc = depths[d];
+      // Действительных строк может быть меньше дорожек — это край матрицы.
+      for (std::int64_t rows = 1; rows <= lanes; ++rows) {
+        // Шаг строки нарочно больше глубины: панель берётся из середины
+        // матрицы, и упаковка не вправе читать соседние столбцы.
+        const std::int64_t lda = kc + 5;
+        const std::vector<float> source = random_matrix(&rng, lanes, lda);
+
+        std::vector<float> expected(
+            static_cast<std::size_t>(kc * lanes), -7.0f);
+        reference(source.data(), lda, lanes, rows, kc, expected.data());
+
+        for (int i = 0; i < count; ++i) {
+          if (!table[i].available) {
+            continue;
+          }
+          std::vector<float> actual(
+              static_cast<std::size_t>(kc * lanes), -7.0f);
+          table[i].kernel.pack_transpose(source.data(), lda, lanes, rows, kc,
+                                         actual.data());
+          for (std::size_t j = 0; j < expected.size(); ++j) {
+            LLM_CHECK_MSG(actual[j] == expected[j],
+                          table[i].kernel.name
+                              << ": дорожек " << lanes << ", строк " << rows
+                              << ", глубина " << kc << ", элемент " << j
+                              << " равен " << actual[j] << " вместо "
+                              << expected[j]);
+          }
+          ++checked;
+        }
+      }
+    }
+  }
   LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
 }
