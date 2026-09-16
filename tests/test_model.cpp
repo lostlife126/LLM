@@ -452,6 +452,77 @@ void check_half_forward_matches(bool tie_embeddings) {
 
 }  // namespace
 
+// Готовая транспонированная таблица не меняет ни одного разряда.
+//
+// Обещание сильное и проверяется как сильное. Упаковка с перестановкой лишь
+// переставляет значения, а порядок накопления по глубине у обоих путей один и
+// тот же — значит совпадать обязано побитово, а не приблизительно. Если бы
+// совпадало приблизительно, это означало бы, что пути расходятся, и тогда
+// логиты зависели бы от того, вызвали ли подготовку.
+LLM_TEST(Model, PreparedEmbeddingGivesTheSameLogits) {
+  ModelConfig config = test_config();
+  config.tie_embeddings = true;
+  config.validate();
+
+  Model model(config, 555);
+  const int64_t batch = 2;
+  const int64_t seq = 5;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 8080);
+
+  const std::vector<float> reference = forward_logits(&model, ids, batch, seq);
+  model.prepare_inference();
+  const std::vector<float> actual = forward_logits(&model, ids, batch, seq);
+
+  LLM_CHECK_MSG(reference.size() == actual.size(), "формы логитов разошлись");
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    LLM_CHECK_MSG(reference[i] == actual[i],
+                  "логит " << i << " равен " << actual[i] << " вместо "
+                           << reference[i]);
+  }
+}
+
+// Подготовка не должна задевать обучение: при включённой ленте выходная
+// проекция обязана идти через сам параметр, иначе градиент до таблицы
+// эмбеддингов не дойдёт и обучение молча перестанет её обновлять.
+LLM_TEST(Model, PreparingInferenceDoesNotChangeTraining) {
+  ModelConfig config = test_config();
+  config.tie_embeddings = true;
+  config.validate();
+
+  Model model(config, 606);
+  const int64_t batch = 2;
+  const int64_t seq = 5;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 9090);
+
+  Var before = model.loss(ids, batch, seq);
+  before.backward();
+  const std::vector<llm::nn::NamedParameter> parameters = model.parameters();
+  llm::Tensor grad_before = parameters[0].value->grad().clone();
+  const float loss_before = before.value().data()[0];
+  for (std::size_t i = 0; i < parameters.size(); ++i) {
+    parameters[i].value->zero_grad();
+  }
+
+  model.prepare_inference();
+
+  Var after = model.loss(ids, batch, seq);
+  after.backward();
+  const float loss_after = after.value().data()[0];
+
+  LLM_CHECK_MSG(loss_before == loss_after,
+                "потери стали " << loss_after << " вместо " << loss_before);
+  // Первый параметр — таблица эмбеддингов, и именно её градиент исчез бы,
+  // если бы выходная проекция пошла мимо параметра.
+  const llm::Tensor& grad_after = parameters[0].value->grad();
+  LLM_CHECK_MSG(grad_after.defined(), "градиент таблицы эмбеддингов пропал");
+  for (int64_t i = 0; i < grad_before.numel(); ++i) {
+    LLM_CHECK_MSG(grad_before.data()[i] == grad_after.data()[i],
+                  "градиент таблицы изменился в элементе " << i);
+  }
+}
+
 LLM_TEST(Model, HalfWeightsGiveTheSameLogits) {
   check_half_forward_matches(true);
   check_half_forward_matches(false);

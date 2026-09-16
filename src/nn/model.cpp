@@ -605,6 +605,13 @@ Var Model::forward(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
       matrix.columns = config_.vocab_size;
       return Var::constant(ops::matmul_half(hidden.value(), matrix));
     }
+    if (embedding_transposed_.value().defined() && !autograd::grad_enabled()) {
+      // Та же величина, но таблица уже переложена: умножение идёт без
+      // упаковки с перестановкой, которая иначе повторялась бы на каждый
+      // токен. Порядок накопления по глубине тот же, результат совпадает
+      // побитово.
+      return autograd::matmul(hidden, embedding_transposed_);
+    }
     // Та же матрица, что и на входе, только транспонированная. Строка таблицы
     // задаёт и representation токена на входе, и направление, близость к
     // которому даёт высокий логит на выходе.
@@ -683,6 +690,26 @@ Var Model::loss(const std::vector<int32_t>& ids, int64_t batch, int64_t seq,
   return autograd::add(
       cross_entropy,
       autograd::mul_scalar(autograd::z_loss(flat), config_.z_loss_coef));
+}
+
+void Model::prepare_inference() {
+  if (!config_.tie_embeddings) {
+    return;  // выходная проекция и так лежит как надо
+  }
+  const Tensor& table = token_embedding_.value();
+  const Tensor dense = table.is_contiguous() ? table : table.contiguous();
+  const int64_t vocab = dense.dim(0);
+  const int64_t width = dense.dim(1);
+
+  Tensor transposed = Tensor::uninitialized(Shape({width, vocab}));
+  float* destination = transposed.data();
+  const float* values = dense.data();
+  for (int64_t row = 0; row < vocab; ++row) {
+    for (int64_t column = 0; column < width; ++column) {
+      destination[column * vocab + row] = values[row * width + column];
+    }
+  }
+  embedding_transposed_ = Var::constant(std::move(transposed));
 }
 
 void Model::pack_half() {

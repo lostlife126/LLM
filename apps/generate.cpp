@@ -111,6 +111,10 @@ int main(int argc, char** argv) {
   generate_config.sampler.seed = 2026;
   generate_config.stop_token = stop_token;
 
+  // Таблица эмбеддингов перекладывается один раз, а не на каждый токен.
+  // Логиты от этого не меняются ни в одном разряде.
+  model.prepare_inference();
+
   std::printf("\n--- затравка ---\n%s", prompt_text.c_str());
   std::fflush(stdout);
 
