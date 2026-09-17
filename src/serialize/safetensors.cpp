@@ -153,11 +153,25 @@ SafeTensors SafeTensors::load(const std::string& path) {
                   path << ": файл оборвался на заголовке");
   }
 
-  // Данные — весь остаток файла.
-  std::ostringstream rest;
-  rest << file.rdbuf();
-  const std::string data = rest.str();
-  result.data_.assign(data.begin(), data.end());
+  // Данные — весь остаток файла. Читаются они прямо в свой буфер, а не через
+  // ostringstream: тот держал бы внутреннюю копию, ещё одну возвращал бы
+  // str(), и третью занял бы вектор. У настоящей модели файл сам по себе в
+  // гигабайтах, и тройной пик — это разница между «загрузилось» и «не хватило
+  // памяти».
+  const std::streampos data_begin = file.tellg();
+  file.seekg(0, std::ios::end);
+  const std::streampos data_end = file.tellg();
+  LLM_CHECK_MSG(data_begin >= 0 && data_end >= data_begin,
+                path << ": не удалось измерить длину файла");
+  const std::size_t data_bytes =
+      static_cast<std::size_t>(data_end - data_begin);
+  file.seekg(data_begin);
+  result.data_.resize(data_bytes);
+  if (data_bytes != 0) {
+    file.read(result.data_.data(), static_cast<std::streamsize>(data_bytes));
+    LLM_CHECK_MSG(static_cast<std::size_t>(file.gcount()) == data_bytes,
+                  path << ": файл оборвался на данных");
+  }
 
   const JsonDocument document = JsonDocument::parse(header);
   const JsonValue root = document.root();
