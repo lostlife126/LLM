@@ -20,7 +20,7 @@ const char kGpt4Pattern[] =
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| "
     "?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
-bool is_space(uint32_t code) {
+bool is_space_code(uint32_t code) {
   // \s в этих выражениях — пробельные символы Unicode. Для наших задач
   // достаточно набора ASCII плюс неразрывный пробел и пробелы из блока
   // пунктуации: именно они встречаются в текстах.
@@ -31,7 +31,33 @@ bool is_space(uint32_t code) {
          code == 0x3000u;
 }
 
-bool is_newline(uint32_t code) { return code == '\n' || code == '\r'; }
+// Разряды кодовой точки спрашиваются только у годной последовательности.
+//
+// Иначе разряд куска определял бы сам испорченный байт, а не то, что он
+// испорчен. Пример настоящий: «аб» в UTF-8 — D0 B0 D0 B1, и если текст
+// обрезан посередине буквы, остаётся хвостовой байт D0. Кодовая точка U+00D0
+// — это буква Ð, так что мусор молча приклеивался бы к слову, и граница куска
+// зависела бы от того, какой именно байт уцелел. Байты 0x85 и 0xA0 тем же
+// путём попадали бы в пробелы, а 0xB2 — в цифры.
+//
+// Годной последовательности проверка ничего не меняет: у неё valid всегда
+// истинно. Негодная уходит в разряд прочих символов — туда, где ей и место:
+// байт-левел BPE всё равно кодирует байты, а не символы.
+bool is_space(const Utf8Char& ch) { return ch.valid && is_space_code(ch.code); }
+
+bool is_letter(const Utf8Char& ch) {
+  return ch.valid && is_unicode_letter(ch.code);
+}
+
+bool is_number(const Utf8Char& ch) {
+  return ch.valid && is_unicode_number(ch.code);
+}
+
+bool is_newline(const Utf8Char& ch) {
+  return ch.valid && (ch.code == '\n' || ch.code == '\r');
+}
+
+bool is_blank(const Utf8Char& ch) { return ch.valid && ch.code == ' '; }
 
 // Длина совпадения одного из сокращений в позиции at. Ноль, если нет.
 std::size_t match_contraction(StrView text, std::size_t at, bool ignore_case) {
@@ -69,7 +95,7 @@ std::size_t whitespace_end(StrView text, std::size_t at) {
   while (position < text.size()) {
     const Utf8Char ch =
         decode_utf8(text.data() + position, text.size() - position);
-    if (!is_space(ch.code)) {
+    if (!is_space(ch)) {
       break;
     }
     position += static_cast<std::size_t>(ch.bytes);
@@ -84,7 +110,7 @@ std::size_t run_end(StrView text, std::size_t at, Predicate allowed) {
   while (position < text.size()) {
     const Utf8Char ch =
         decode_utf8(text.data() + position, text.size() - position);
-    if (!allowed(ch.code)) {
+    if (!allowed(ch)) {
       break;
     }
     position += static_cast<std::size_t>(ch.bytes);
@@ -92,9 +118,8 @@ std::size_t run_end(StrView text, std::size_t at, Predicate allowed) {
   return position;
 }
 
-bool is_other(uint32_t code) {
-  return !is_space(code) && !is_unicode_letter(code) &&
-         !is_unicode_number(code);
+bool is_other(const Utf8Char& ch) {
+  return !is_space(ch) && !is_letter(ch) && !is_number(ch);
 }
 
 // \s+(?!\S): пробельная цепочка, за которой не идёт непробельный символ.
@@ -138,13 +163,13 @@ std::size_t match_gpt2(StrView text, std::size_t at) {
   // один символ нужного разряда.
   const Utf8Char first = decode_utf8(text.data() + at, text.size() - at);
   const std::size_t after_space =
-      first.code == ' ' ? at + static_cast<std::size_t>(first.bytes) : at;
+      is_blank(first) ? at + static_cast<std::size_t>(first.bytes) : at;
 
-  const std::size_t letters = run_end(text, after_space, is_unicode_letter);
+  const std::size_t letters = run_end(text, after_space, is_letter);
   if (letters > after_space) {
     return letters - at;
   }
-  const std::size_t numbers = run_end(text, after_space, is_unicode_number);
+  const std::size_t numbers = run_end(text, after_space, is_number);
   if (numbers > after_space) {
     return numbers - at;
   }
@@ -177,17 +202,16 @@ std::size_t match_gpt4(StrView text, std::size_t at) {
   // попадает не только пробел, но и, например, открывающая скобка перед
   // словом.
   {
-    const bool skippable = !is_newline(first.code) &&
-                           !is_unicode_letter(first.code) &&
-                           !is_unicode_number(first.code);
+    const bool skippable =
+        !is_newline(first) && !is_letter(first) && !is_number(first);
     if (skippable) {
       const std::size_t after = at + static_cast<std::size_t>(first.bytes);
-      const std::size_t letters = run_end(text, after, is_unicode_letter);
+      const std::size_t letters = run_end(text, after, is_letter);
       if (letters > after) {
         return letters - at;
       }
     }
-    const std::size_t letters = run_end(text, at, is_unicode_letter);
+    const std::size_t letters = run_end(text, at, is_letter);
     if (letters > at) {
       return letters - at;
     }
@@ -200,7 +224,7 @@ std::size_t match_gpt4(StrView text, std::size_t at) {
     while (position < text.size() && taken < 3) {
       const Utf8Char ch =
           decode_utf8(text.data() + position, text.size() - position);
-      if (!is_unicode_number(ch.code)) {
+      if (!is_number(ch)) {
         break;
       }
       position += static_cast<std::size_t>(ch.bytes);
@@ -214,7 +238,7 @@ std::size_t match_gpt4(StrView text, std::size_t at) {
   // ` ?[^\s\p{L}\p{N}]+[\r\n]*`
   {
     const std::size_t after_space =
-        first.code == ' ' ? at + static_cast<std::size_t>(first.bytes) : at;
+        is_blank(first) ? at + static_cast<std::size_t>(first.bytes) : at;
     const std::size_t others = run_end(text, after_space, is_other);
     if (others > after_space) {
       const std::size_t newlines = run_end(text, others, is_newline);
@@ -231,7 +255,7 @@ std::size_t match_gpt4(StrView text, std::size_t at) {
     std::size_t position = at;
     while (position < end) {
       const Utf8Char ch = decode_utf8(text.data() + position, end - position);
-      if (is_newline(ch.code)) {
+      if (is_newline(ch)) {
         last_newline = position + static_cast<std::size_t>(ch.bytes);
       }
       position += static_cast<std::size_t>(ch.bytes);
