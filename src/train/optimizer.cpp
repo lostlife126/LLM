@@ -16,6 +16,20 @@ AdamW::AdamW(std::vector<nn::NamedParameter> parameters,
              const AdamWConfig& config)
     : parameters_(std::move(parameters)), config_(config), step_(0) {
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
+    // Обучаемость проверяется здесь, а не там, где она понадобится.
+    // У замороженного параметра нет узла графа, и обрезка нормы обратилась бы
+    // к пустому указателю: сначала grad() бросил бы «запрошен градиент
+    // переменной, которая его не требует», а строкой ниже scale_grad просто
+    // разыменовал бы ноль. Сообщение оттуда не сказало бы, что виноват состав
+    // списка, переданного оптимизатору.
+    //
+    // Тренер передаёт trainable_parameters и под это условие подходит всегда;
+    // а вот parameters() у модели с адаптерами LoRA содержит замороженные
+    // базовые веса, и передать его сюда — ошибка вызывающего.
+    LLM_CHECK_MSG(parameters_[i].value->requires_grad(),
+                  "параметр " << parameters_[i].name
+                              << " не требует градиента: оптимизатору нужен "
+                                 "список обучаемых, а не всех");
     const Tensor& value = parameters_[i].value->value();
     LLM_CHECK_MSG(value.is_contiguous(),
                   "параметр " << parameters_[i].name << " размещён неплотно");

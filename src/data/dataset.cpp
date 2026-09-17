@@ -36,8 +36,13 @@ std::vector<int32_t> TokenDataset::sample_batch(int64_t batch, int64_t seq,
 
   std::vector<int32_t> result;
   result.reserve(static_cast<std::size_t>(batch * seq));
-  // Начало окна может быть любым: последнее допустимое — такое, при котором
-  // окно ещё целиком помещается.
+  // Начало окна может быть любым из available - seq возможных.
+  //
+  // Строго говоря, помещается и окно, начинающееся ровно на available - seq, —
+  // то есть возможных начал на единицу больше. Это окно не берётся, и менять
+  // тут нечего: любая правка сдвинет поток случайных чисел, а значит и все
+  // измеренные числа обучения, ради одного окна из миллиона. Комментарий
+  // поправлен, чтобы он описывал то, что делает код.
   const uint64_t positions = static_cast<uint64_t>(available - seq);
   for (int64_t item = 0; item < batch; ++item) {
     const int64_t start = begin + static_cast<int64_t>(rng->index(positions));

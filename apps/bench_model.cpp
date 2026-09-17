@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
   double optimizer_seconds = 0.0;
   {
     llm::train::AdamWConfig adam_config;
-    llm::train::AdamW optimizer(model.parameters(), adam_config);
+    llm::train::AdamW optimizer(model.trainable_parameters(), adam_config);
     llm::autograd::Var loss = model.loss(ids, batch, seq);
     loss.backward();
     optimizer_seconds = bench::best_seconds(
