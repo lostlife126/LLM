@@ -373,7 +373,11 @@ Bpe Bpe::load(const std::string& path) {
   for (std::size_t i = 0; i < count; ++i) {
     Merge merge;
     file >> merge.left >> merge.right;
-    LLM_CHECK_MSG(file.good(), "словарь оборвался на слиянии " << i);
+    // Именно fail(), а не good(). Числовое чтение, дошедшее ровно до конца
+    // файла, выставляет eofbit, хотя число прочитано целиком; good() при
+    // этом ложно. Словарь без перевода строки в конце — а такой легко
+    // получить, поправив файл руками, — отвергался бы как оборванный.
+    LLM_CHECK_MSG(!file.fail(), "словарь оборвался на слиянии " << i);
 
     const int32_t limit = kFirstMergeToken + static_cast<int32_t>(i);
     LLM_CHECK_MSG(merge.left >= 0 && merge.left < limit && merge.right >= 0 &&

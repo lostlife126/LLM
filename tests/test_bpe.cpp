@@ -247,6 +247,22 @@ LLM_TEST(Bpe, LoadRejectsBrokenFile) {
   std::remove(path.c_str());
 }
 
+LLM_TEST(Bpe, LoadAcceptsFileWithoutTrailingNewline) {
+  // Числовое чтение, дошедшее ровно до конца файла, выставляет eofbit, хотя
+  // само число прочитано целиком. Проверка через good() отвергала бы такой
+  // словарь как оборванный — а получить его проще простого, поправив файл
+  // руками.
+  const std::string path = "test_no_newline.bpe";
+  {
+    std::ofstream file(path.c_str());
+    file << "llmbpe 1\nmerges 2\n104 101\n259 32";  // без перевода строки
+  }
+  const llm::Bpe bpe = llm::Bpe::load(path);
+  LLM_CHECK_EQ(bpe.merge_count(), 2);
+  LLM_CHECK(bpe.token_bytes(260) == "he ");
+  std::remove(path.c_str());
+}
+
 LLM_TEST(Bpe, TrainingRejectsTooSmallVocab) {
   LLM_EXPECT_THROWS(llm::Bpe::train(sample_corpus(), 100, false));
 }
