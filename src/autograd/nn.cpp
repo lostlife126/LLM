@@ -1,5 +1,7 @@
 #include "autograd/nn.h"
 
+#include <utility>
+
 #include "core/check.h"
 #include "ops/elementwise.h"
 #include "ops/embedding.h"
@@ -44,11 +46,15 @@ Var rms_norm(const Var& input, const Var& weight, float eps) {
                         Tensor grad_weight;
                         ops::rms_norm_backward(grad, saved_input, saved_weight,
                                                eps, &grad_input, &grad_weight);
+                        // std::move, а не копия. Перегрузка accumulate для
+                        // временных значений забирает буфер вместо клонирования
+                        // — ради этого она и заведена, — а здесь тензоры
+                        // размером с активации и больше не нужны никому.
                         if (input_node) {
-                          input_node->accumulate(grad_input);
+                          input_node->accumulate(std::move(grad_input));
                         }
                         if (weight_node) {
-                          weight_node->accumulate(grad_weight);
+                          weight_node->accumulate(std::move(grad_weight));
                         }
                       });
 }
@@ -89,13 +95,13 @@ Var layer_norm(const Var& input, const Var& weight, const Var& bias,
                                                  saved_weight, eps, &grad_input,
                                                  &grad_weight, &grad_bias);
                         if (input_node) {
-                          input_node->accumulate(grad_input);
+                          input_node->accumulate(std::move(grad_input));
                         }
                         if (weight_node) {
-                          weight_node->accumulate(grad_weight);
+                          weight_node->accumulate(std::move(grad_weight));
                         }
                         if (bias_node) {
-                          bias_node->accumulate(grad_bias);
+                          bias_node->accumulate(std::move(grad_bias));
                         }
                       });
 }
@@ -230,7 +236,10 @@ Var cross_entropy(const Var& logits, const std::vector<int32_t>& targets) {
                         if (scale != 1.0f) {
                           contribution = ops::mul_scalar(contribution, scale);
                         }
-                        node->accumulate(contribution);
+                        // std::move: тензор здесь размером (строки, словарь),
+                        // у пресета tiny это тридцать два мегабайта, и копия
+                        // делалась бы на каждом шаге обучения.
+                        node->accumulate(std::move(contribution));
                       });
 }
 
