@@ -23,12 +23,16 @@ Tensor apply_rotation(const Tensor& input, int64_t position_offset, float theta,
   Tensor out = Tensor::uninitialized(input.shape());
   float* result = out.data();
 
-  const int64_t pairs = head_dim / 2;
-  const int64_t blocks =
-      sequence == 0 ? 0 : input.numel() / (sequence * head_dim);
-  if (blocks == 0 || pairs == 0) {
+  // Пустой тензор — не ошибка, но и работы с ним нет. Проверка стоит до
+  // подсчёта блоков, потому что делится там на sequence * head_dim, а пустым
+  // тензор бывает как раз тогда, когда один из множителей нулевой: у формы
+  // (3, 0) чётность головы соблюдена, и деление уходило в ноль — не в отказ с
+  // сообщением, а в SIGFPE.
+  if (input.numel() == 0) {
     return out;
   }
+  const int64_t pairs = head_dim / 2;
+  const int64_t blocks = input.numel() / (sequence * head_dim);
 
   // Синусы и косинусы считаются один раз на (позицию, пару), а не на каждый
   // элемент.

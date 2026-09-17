@@ -209,6 +209,21 @@ LLM_TEST(Nn, RopeEncodesRelativePosition) {
   LLM_CHECK(std::fabs(dot_at(3, 0) - reference) > 1e-3);
 }
 
+LLM_TEST(Nn, RopeOnEmptyTensorDoesNotDivideByZero) {
+  // Форма (3, 0): размерность головы нулевая, а чётность при этом соблюдена,
+  // так что проверка на чётность такой тензор пропускала. Дальше число
+  // блоков считалось делением на sequence * head_dim, и получался не отказ с
+  // сообщением, а SIGFPE.
+  const llm::Tensor empty = llm::Tensor::zeros(llm::Shape({3, 0}));
+  const llm::Tensor rotated = llm::ops::rope(empty, 0, 10000.0f);
+  LLM_CHECK_EQ(rotated.numel(), static_cast<int64_t>(0));
+
+  // И с другой стороны: нулевая длина последовательности.
+  const llm::Tensor no_steps = llm::Tensor::zeros(llm::Shape({0, 4}));
+  LLM_CHECK_EQ(llm::ops::rope(no_steps, 0, 10000.0f).numel(),
+               static_cast<int64_t>(0));
+}
+
 LLM_TEST(Nn, RopePreservesLength) {
   // Поворот — ортогональное преобразование, длина вектора не меняется.
   const llm::Tensor input = random_tensor(llm::Shape({3, 8}), 49);
