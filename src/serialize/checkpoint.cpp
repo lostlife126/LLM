@@ -47,6 +47,23 @@ std::string read_string(std::ifstream* file, const std::string& path) {
   return text;
 }
 
+// Развилка архитектуры, прочитанная из файла. Предел проверяется здесь, а не
+// там, где развилка понадобится: дальше выбор делается сравнением с одним
+// значением («это LayerNorm?»), и незнакомый байт молча означал бы другую
+// ветвь. Чекпоинт с испорченным байтом загрузился бы и считал бы не то, что в
+// нём записано, — ровно тот случай, ради которого в заголовке стоят метки
+// порядка байтов и формата float.
+uint8_t read_choice(std::ifstream* file, const std::string& path,
+                    const char* what, uint8_t limit) {
+  const uint8_t value = read_pod<uint8_t>(file, path);
+  LLM_CHECK_MSG(value < limit,
+                "в чекпоинте " << path << " развилка " << what << " равна "
+                               << static_cast<int>(value)
+                               << ", а известны значения от 0 до "
+                               << static_cast<int>(limit - 1));
+  return value;
+}
+
 void write_config(std::ofstream* file, const nn::ModelConfig& config) {
   write_pod<int64_t>(file, config.vocab_size);
   write_pod<int64_t>(file, config.d_model);
@@ -87,10 +104,12 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path,
   config.init_std = read_pod<float>(file, path);
   config.tie_embeddings = read_pod<uint8_t>(file, path) != 0;
   if (version >= 2) {
-    config.norm = static_cast<nn::NormKind>(read_pod<uint8_t>(file, path));
-    config.position =
-        static_cast<nn::PositionKind>(read_pod<uint8_t>(file, path));
-    config.ffn = static_cast<nn::FfnKind>(read_pod<uint8_t>(file, path));
+    config.norm = static_cast<nn::NormKind>(
+        read_choice(file, path, "нормировки", 2));
+    config.position = static_cast<nn::PositionKind>(
+        read_choice(file, path, "позиций", 3));
+    config.ffn =
+        static_cast<nn::FfnKind>(read_choice(file, path, "FFN", 2));
     config.post_norm = read_pod<uint8_t>(file, path) != 0;
   }
   if (version >= 3) {

@@ -382,6 +382,40 @@ LLM_TEST(Train, CheckpointRejectsSameShapeDifferentHyperparameters) {
   std::remove(path.c_str());
 }
 
+LLM_TEST(Train, CheckpointRejectsUnknownArchitectureChoice) {
+  // Развилки архитектуры лежат в файле байтами, а выбираются сравнением с
+  // одним значением: «это LayerNorm?». Значит незнакомый байт означал бы
+  // просто другую ветвь — модель загрузилась бы и считала бы не то, что в
+  // файле записано, и заметить это было бы нечем.
+  const std::string path = "test_choice.llmw";
+  Model saved(test_config(), 1);
+  llm::serialize::save_checkpoint(path, &saved, 0);
+
+  std::string bytes;
+  {
+    std::ifstream input(path.c_str(), std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    bytes = buffer.str();
+  }
+  std::remove(path.c_str());
+
+  // Байт нормировки идёт сразу за заголовком и телом конфигурации версии 1:
+  // magic, версия, метка порядка байт, метка float, семь int64 и три float,
+  // байт связывания эмбеддингов.
+  const std::size_t norm_at = 4 + 4 + 4 + 4 + 7 * 8 + 3 * 4 + 1;
+  LLM_CHECK_GT(bytes.size(), norm_at);
+  bytes[norm_at] = 7;  // такой нормировки не существует
+
+  const std::string broken = "test_choice_broken.llmw";
+  {
+    std::ofstream output(broken.c_str(), std::ios::binary);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  LLM_EXPECT_THROWS(llm::serialize::read_config(broken));
+  std::remove(broken.c_str());
+}
+
 LLM_TEST(Train, ReadsOlderCheckpointFormat) {
   // Версия 1 формата не знала про архитектурные развилки. Старые чекпоинты
   // обязаны читаться: иначе смена формата заставляла бы переобучать модель.
