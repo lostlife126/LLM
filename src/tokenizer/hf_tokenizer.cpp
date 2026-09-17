@@ -154,6 +154,8 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
       const JsonValue item = added.at(i);
       HfAddedToken token;
       token.id = static_cast<int32_t>(item.field("id").integer());
+      LLM_CHECK_MSG(token.id >= 0, origin << ": добавленный токен с номером "
+                                          << token.id);
       token.content = item.field("content").text();
       token.special = item.has("special") && item.field("special").is_bool() &&
                       item.field("special").boolean();
@@ -170,7 +172,12 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
     }
     // Длинные вперёд: при пересекающихся записях выигрывать должна длинная,
     // иначе «<|endoftext|>» распадётся на «<|end» и остаток.
-    std::sort(out.added_tokens_.begin(), out.added_tokens_.end(),
+    //
+    // Устойчивая сортировка: на разбор порядок среди записей одной длины не
+    // влияет (две разные записи одной длины не могут совпасть в одном месте),
+    // но added_tokens() отдаётся наружу, и пусть он не зависит от того, чья
+    // это стандартная библиотека.
+    std::stable_sort(out.added_tokens_.begin(), out.added_tokens_.end(),
               [](const HfAddedToken& a, const HfAddedToken& b) {
                 return a.content.size() > b.content.size();
               });
@@ -300,10 +307,7 @@ std::vector<int32_t> HfTokenizer::encode(StrView text) const {
   // Особые токены вырезаются до всего остального: в слияниях они не
   // участвуют. Поиск идёт по самой длинной записи вперёд, поэтому вложенные
   // записи не дробят друг друга.
-  std::string source = text.to_string();
-  if (add_prefix_space_ && !source.empty() && source[0] != ' ') {
-    source = " " + source;
-  }
+  const std::string source = text.to_string();
 
   std::vector<std::pair<std::size_t, std::size_t>> specials;  // начало, длина
   std::vector<int32_t> special_ids;
@@ -330,7 +334,17 @@ std::vector<int32_t> HfTokenizer::encode(StrView text) const {
     const std::size_t stop =
         i < specials.size() ? specials[i].first : source.size();
     if (stop > position) {
-      const StrView segment(source.data() + position, stop - position);
+      // Ведущий пробел добавляется каждому обычному промежутку, а не тексту
+      // целиком. Так устроен эталон: особые токены вырезаются первыми, и
+      // предтокенизатор запускается на каждом оставшемся куске отдельно —
+      // значит и add_prefix_space срабатывает на каждом. Разница видна, как
+      // только особый токен стоит не в начале: у «hello<|endoftext|>hello»
+      // второе «hello» тоже обязано получить пробел.
+      std::string piece(source, position, stop - position);
+      if (add_prefix_space_ && piece[0] != ' ') {
+        piece.insert(piece.begin(), ' ');
+      }
+      const StrView segment(piece.data(), piece.size());
       const std::vector<StrView> chunks = pretokenize(segment, rule_);
       for (std::size_t c = 0; c < chunks.size(); ++c) {
         // Каждый байт куска — отдельный символ байтового алфавита.

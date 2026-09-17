@@ -308,6 +308,16 @@ LLM_TEST(HfTokenizer, AddPrefixSpaceChangesTheFirstToken) {
   LLM_CHECK(tokenizer.add_prefix_space());
   LLM_CHECK_EQ(tokenizer.decode(tokenizer.encode("world")),
                std::string(" world"));
+
+  // Пробел достаётся каждому обычному промежутку, а не тексту целиком.
+  // В эталоне особые токены вырезаются первыми, и предтокенизатор
+  // запускается на каждом оставшемся куске отдельно — значит и пробел
+  // добавляется каждому. Если добавить его один раз всему тексту, второе
+  // «hello» останется без пробела, и модель получит другой токен.
+  const std::vector<int32_t> ids = tokenizer.encode("hello<|endoftext|>hello");
+  const std::vector<int32_t> expected = {7, 11, 17, 7, 11};
+  LLM_CHECK(ids == expected);
+  LLM_CHECK_EQ(tokenizer.decode(ids), std::string(" hello<|endoftext|> hello"));
 }
 
 LLM_TEST(HfTokenizer, RefusesWhatChangesTheSplitSilently) {
