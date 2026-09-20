@@ -746,3 +746,73 @@ LLM_TEST(Nn, ElementwiseKernelsDoNotDependOnThreadCount) {
     expect_bitwise_equal("z_loss", zloss_one, llm::ops::z_loss(logits));
   }
 }
+
+LLM_TEST(Nn, GradLayerNormOnARowLongerThanTheAccumulators) {
+  // Градиент LayerNorm проверяется численно в Variants.GradLayerNorm, но там
+  // строка шириной 6 — короче восьми накопителей. Значит основной цикл
+  // накопления в layer_norm_backward не выполняется НИ РАЗУ: условие
+  // i + 8 <= width ложно сразу, и вся работа достаётся хвостовому циклу.
+  //
+  // Здесь ширина 19: основной цикл проходит дважды, хвост добирает три
+  // элемента. Ошибка в раскладке по накопителям видна только так.
+  const auto fn = [](const std::vector<Var>& v) {
+    return weighted_sum(llm::autograd::layer_norm(v[0], v[1], v[2], kEps), 84);
+  };
+  LLM_EXPECT_GRADCHECK(
+      fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({2, 19}), 85),
+                                    random_tensor(llm::Shape({19}), 86),
+                                    random_tensor(llm::Shape({19}), 87)}));
+}
+
+LLM_TEST(Nn, GradRmsNormOnARowLongerThanTheAccumulators) {
+  // То же у RMSNorm: Nn.GradRmsNorm берёт ширину 6, и row_dot3 с
+  // row_sum_squares там тоже идут одним хвостом. Ширина 19 включает основной
+  // цикл.
+  const auto fn = [](const std::vector<Var>& v) {
+    return weighted_sum(llm::autograd::rms_norm(v[0], v[1], kEps), 88);
+  };
+  LLM_EXPECT_GRADCHECK(
+      fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({2, 19}), 89),
+                                    random_tensor(llm::Shape({19}), 90)}));
+}
+
+LLM_TEST(Nn, GradMaskedSoftmaxFusedPath) {
+  // Слитый masked_softmax — то, что стоит в модели (см. nn/model.cpp), — не
+  // проверялся численно ни разу. Проверялась раздельная цепочка causal_mask +
+  // softmax и то, что слитая совпадает с ней побитово на уровне ops. Этого
+  // почти достаточно, но обёртка автограда остаётся непроверенной: она
+  // протаскивает масштаб и смещение запроса, и перепутанный аргумент здесь не
+  // поймало бы ничто.
+  //
+  // Ширина 9 — больше восьми накопителей, чтобы основной цикл row_dot в
+  // обратном проходе выполнялся, а не только хвост.
+  const float scale = 0.3125f;
+  const auto fn = [scale](const std::vector<Var>& v) {
+    return weighted_sum(llm::autograd::masked_softmax(v[0], scale, 0), 91);
+  };
+  LLM_EXPECT_GRADCHECK(
+      fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({2, 9, 9}), 92)}));
+}
+
+LLM_TEST(Nn, GradSoftmaxAndCrossEntropyOnLongerRows) {
+  // У обоих обратный проход опирается на row_dot и row_sum, а прежние
+  // проверки брали ширину 5 — меньше восьми накопителей, то есть основной
+  // цикл там не выполнялся вовсе. Разница видна: та же поломка в основном
+  // цикле LayerNorm прошла мимо проверки шириной 6 и была поймана только
+  // шириной 19.
+  {
+    const auto fn = [](const std::vector<Var>& v) {
+      return weighted_sum(llm::autograd::softmax(v[0]), 93);
+    };
+    LLM_EXPECT_GRADCHECK(
+        fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({3, 19}), 94)}));
+  }
+  {
+    const std::vector<std::int32_t> targets = {11, 3, 17, 0};
+    const auto fn = [&targets](const std::vector<Var>& v) {
+      return llm::autograd::cross_entropy(v[0], targets);
+    };
+    LLM_EXPECT_GRADCHECK(
+        fn, std::vector<llm::Tensor>({random_tensor(llm::Shape({4, 19}), 95)}));
+  }
+}
