@@ -400,3 +400,103 @@ LLM_TEST(Sampler, TemperatureSharpensAndFlattens) {
                 "низкая температура выбирала лучший токен реже высокой: "
                     << sharp_best << " против " << flat_best);
 }
+
+LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
+  // Совпадение кэша с пересчётом проверялось на одной конфигурации. А кэш —
+  // ровно то место, где варианты ломаются по отдельности: QK-норма считается
+  // ДО записи в кэш, обучаемые позиции берут номер из смещения, у MQA одна
+  // голова ключей размножается на все головы запросов. Ошибка в любом из этих
+  // мест не падает, а даёт другой текст — и только при генерации с кэшем, то
+  // есть в том единственном режиме, в котором модель и работает.
+  struct Variant {
+    const char* name;
+    ModelConfig config;
+  };
+
+  std::vector<Variant> variants;
+  {
+    ModelConfig c = test_config();
+    c.qk_norm = true;
+    variants.push_back(Variant{"QK-норма", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.position = llm::nn::PositionKind::kLearned;
+    variants.push_back(Variant{"обучаемые позиции", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.position = llm::nn::PositionKind::kNone;
+    variants.push_back(Variant{"без позиций", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.n_kv_heads = 1;
+    c.validate();
+    variants.push_back(Variant{"MQA", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.n_kv_heads = c.n_heads;
+    c.validate();
+    variants.push_back(Variant{"MHA", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.post_norm = true;
+    variants.push_back(Variant{"пост-норма", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.norm = llm::nn::NormKind::kLayerNorm;
+    variants.push_back(Variant{"LayerNorm", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.ffn = llm::nn::FfnKind::kGeluMlp;
+    variants.push_back(Variant{"обычный FFN", c});
+  }
+  {
+    ModelConfig c = test_config();
+    c.tie_embeddings = false;
+    variants.push_back(Variant{"развязанные эмбеддинги", c});
+  }
+
+  for (std::size_t i = 0; i < variants.size(); ++i) {
+    const ModelConfig& config = variants[i].config;
+    Model model(config, 17);
+    const std::vector<int32_t> prompt = random_ids(5, config.vocab_size, 1);
+
+    GenerateConfig cached;
+    cached.max_tokens = 10;
+    cached.sampler.temperature = 0.8f;
+    cached.sampler.seed = 99;
+    cached.use_cache = true;
+
+    GenerateConfig full = cached;
+    full.use_cache = false;
+
+    const GenerateResult with_cache = llm::infer::generate(
+        &model, prompt, cached, llm::infer::TokenCallback(), true);
+    const GenerateResult without_cache = llm::infer::generate(
+        &model, prompt, full, llm::infer::TokenCallback(), true);
+
+    LLM_CHECK_MSG(with_cache.step_logits.size() ==
+                      without_cache.step_logits.size(),
+                  variants[i].name << ": разное число шагов");
+    for (std::size_t step = 0; step < with_cache.step_logits.size(); ++step) {
+      const std::vector<float>& a = with_cache.step_logits[step];
+      const std::vector<float>& b = without_cache.step_logits[step];
+      LLM_CHECK_EQ(a.size(), b.size());
+      for (std::size_t token = 0; token < a.size(); ++token) {
+        LLM_CHECK_MSG(a[token] == b[token],
+                      variants[i].name
+                          << ": шаг " << step << ", токен " << token
+                          << ": с кэшем " << a[token] << ", без кэша "
+                          << b[token]);
+      }
+    }
+    LLM_CHECK_MSG(with_cache.tokens == without_cache.tokens,
+                  variants[i].name << ": разошёлся выбранный текст");
+  }
+}
