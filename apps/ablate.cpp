@@ -167,6 +167,9 @@ struct Outcome {
   std::vector<float> validation_loss;
 
   float mean() const {
+    if (validation_loss.empty()) {
+      return 0.0f;  // как в mean_of ниже: делить на ноль не на что
+    }
     double total = 0.0;
     for (std::size_t i = 0; i < validation_loss.size(); ++i) {
       total += validation_loss[i];
@@ -335,15 +338,21 @@ int main(int argc, char** argv) {
     outcomes.push_back(outcome);
   }
 
+  // Базовый вариант считается всегда, поэтому пустым список не бывает — и
+  // проверка на пустоту ничего не ловила. Ловить надо другое: фильтр,
+  // не выбравший ничего сверх базового. Это опечатка в подстроке, и таблица
+  // из одной строки про неё не скажет ничего — колонка разностей будет
+  // сравнивать базовый вариант сам с собой.
+  LLM_CHECK_MSG(filter.empty() || outcomes.size() > 1,
+                "фильтр '" << filter
+                           << "' не выбрал ни одного варианта сверх базового");
+  const Outcome& baseline = outcomes[0];
+
   // Итоговая таблица, отсортированная по качеству.
   std::vector<Outcome> sorted = outcomes;
   std::sort(
       sorted.begin(), sorted.end(),
       [](const Outcome& a, const Outcome& b) { return a.mean() < b.mean(); });
-
-  LLM_CHECK_MSG(!outcomes.empty(),
-                "фильтр '" << filter << "' ничего не выбрал");
-  const Outcome& baseline = outcomes[0];
 
   std::printf("\n%s %s %s %s %s %s %s\n", llm::pad_utf8("вариант", 26).c_str(),
               llm::pad_utf8_right("параметров", 10).c_str(),
