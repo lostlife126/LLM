@@ -4,10 +4,9 @@
 #include <utility>
 #include <unordered_set>
 
-#include <cstdlib>
-
 #include "core/check.h"
 #include "core/fp16.h"
+#include "core/util.h"
 #include "ops/elementwise.h"
 #include "ops/parallel.h"
 
@@ -17,31 +16,33 @@ namespace {
 
 bool g_grad_enabled = true;
 
-// Читается один раз при первом обращении: переменная окружения не меняется
-// по ходу прогона, а проверять её на каждой операции было бы заметно.
-bool probe_fp16_from_environment() {
-  const char* value = std::getenv("LLM_FP16");
-  return value != nullptr && value[0] != '\0' && value[0] != '0';
+// Переменная окружения читается один раз при первом обращении и дальше живёт
+// обычной переменной: getenv на каждой операции был бы заметен.
+//
+// Именно при первом обращении, а не при статической инициализации. Разбор
+// строгий и на непонятном значении падает, а падение до входа в main — это
+// std::terminate, где от сообщения остаётся то, что успеет напечатать
+// обработчик по умолчанию.
+bool& fp16_flag() {
+  static bool value = env_flag("LLM_FP16");
+  return value;
 }
 
-bool probe_fp16_weights_from_environment() {
-  const char* value = std::getenv("LLM_FP16_WEIGHTS");
-  return value != nullptr && value[0] != '\0' && value[0] != '0';
+bool& fp16_weight_flag() {
+  static bool value = env_flag("LLM_FP16_WEIGHTS");
+  return value;
 }
-
-bool g_fp16_simulation = probe_fp16_from_environment();
-bool g_fp16_weight_simulation = probe_fp16_weights_from_environment();
 
 }  // namespace
 
-bool fp16_simulation() { return g_fp16_simulation; }
+bool fp16_simulation() { return fp16_flag(); }
 
-bool fp16_weight_simulation() { return g_fp16_weight_simulation; }
+bool fp16_weight_simulation() { return fp16_weight_flag(); }
 
-void set_fp16_simulation(bool enabled) { g_fp16_simulation = enabled; }
+void set_fp16_simulation(bool enabled) { fp16_flag() = enabled; }
 
 void apply_fp16_simulation(Tensor* tensor) {
-  if (!g_fp16_simulation || tensor == nullptr || !tensor->defined()) {
+  if (!fp16_flag() || tensor == nullptr || !tensor->defined()) {
     return;
   }
   // Только плотные. Вид на чужой буфер сюда не попадает: операции, которые

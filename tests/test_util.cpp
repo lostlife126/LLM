@@ -95,3 +95,33 @@ LLM_TEST(Cpu, FeatureListIsSeparatedByExactlyOneBlank) {
   }
   LLM_CHECK_EQ(words, expected);
 }
+
+// Переключатель из окружения разбирается строго.
+//
+// Проверка нужна ровно из-за одного случая: LLM_FP16=off. Прежнее правило —
+// «включено, если непусто и не начинается с нуля» — на нём ВКЛЮЧАЛО имитацию
+// половинной разрядности. Слово, которым режим выключают, его включало, и
+// замер сходимости шёл не про то, про что заявлен, молча.
+LLM_TEST(Util, EnvFlagRefusesWhatItDoesNotUnderstand) {
+  LLM_CHECK(!llm::parse_env_flag("X", nullptr));
+  LLM_CHECK(!llm::parse_env_flag("X", ""));
+
+  const char* off[] = {"0", "false", "no", "off", "FALSE", "Off", "NO"};
+  for (std::size_t i = 0; i < sizeof(off) / sizeof(off[0]); ++i) {
+    LLM_CHECK_MSG(!llm::parse_env_flag("X", off[i]),
+                  "'" << off[i] << "' должно выключать");
+  }
+  const char* on[] = {"1", "true", "yes", "on", "TRUE", "On", "YES"};
+  for (std::size_t i = 0; i < sizeof(on) / sizeof(on[0]); ++i) {
+    LLM_CHECK_MSG(llm::parse_env_flag("X", on[i]),
+                  "'" << on[i] << "' должно включать");
+  }
+
+  // Всё остальное — падение, а не догадка. В том числе «01» и «2»: прежнее
+  // правило видело в них истину, и «0x0» тоже считало ложью по первому байту.
+  LLM_EXPECT_THROWS(llm::parse_env_flag("X", "2"));
+  LLM_EXPECT_THROWS(llm::parse_env_flag("X", "01"));
+  LLM_EXPECT_THROWS(llm::parse_env_flag("X", "0x0"));
+  LLM_EXPECT_THROWS(llm::parse_env_flag("X", "да"));
+  LLM_EXPECT_THROWS(llm::parse_env_flag("X", " 1"));
+}

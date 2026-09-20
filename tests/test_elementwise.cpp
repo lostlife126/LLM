@@ -113,6 +113,27 @@ LLM_TEST(Elementwise, Mean) {
   LLM_EXPECT_NEAR(llm::ops::mean(source, {1}, false)(0), 2.0, 1e-6);
 }
 
+// Повторённая ось — отказ, а не тихо другой ответ.
+//
+// Сумме повтор безразличен: набор осей внутри разворачивается в множество, и
+// второе упоминание ничего не добавляет. А mean делит на ПРОИЗВЕДЕНИЕ размеров
+// перечисленных осей, и повтор возводит делитель в квадрат: mean по {1, 1} у
+// матрицы 2x3 выдавал бы треть настоящего среднего. Ни падения, ни признака.
+LLM_TEST(Elementwise, ReductionRefusesARepeatedAxis) {
+  const llm::Tensor source = values(llm::Shape({2, 3}), {1, 2, 3, 4, 5, 6});
+
+  LLM_EXPECT_THROWS(llm::ops::sum(source, {1, 1}, false));
+  LLM_EXPECT_THROWS(llm::ops::mean(source, {1, 1}, false));
+  // Та же ось, записанная с конца: проверка обязана смотреть на нормализованный
+  // номер, иначе -1 и 1 у матрицы разошлись бы.
+  LLM_EXPECT_THROWS(llm::ops::sum(source, {1, -1}, false));
+  LLM_EXPECT_THROWS(llm::ops::sum(source, {0, 1, 0}, true));
+
+  // А разные оси по-прежнему складываются.
+  const llm::Tensor total = llm::ops::sum(source, {0, 1}, false);
+  LLM_EXPECT_NEAR(*total.data(), 21.0, 1e-6);
+}
+
 LLM_TEST(Elementwise, SumOverNonContiguous) {
   const llm::Tensor source = values(llm::Shape({2, 3}), {1, 2, 3, 4, 5, 6});
   const llm::Tensor sums = llm::ops::sum(source.transpose(0, 1), {1}, false);

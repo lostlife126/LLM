@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <vector>
 
 #include "core/check.h"
 #include "core/thread_pool.h"
+#include "core/util.h"
 #include "ops/micro_kernel.h"
 
 namespace llm {
@@ -28,13 +28,8 @@ std::atomic<long long> g_bytes_a(0);
 std::atomic<long long> g_bytes_b(0);
 std::atomic<long long> g_bytes_c(0);
 
-bool probe_traffic_from_environment() {
-  const char* value = std::getenv("LLM_TRAFFIC");
-  return value != nullptr && value[0] != '\0' && value[0] != '0';
-}
-
 bool traffic_enabled() {
-  static const bool enabled = probe_traffic_from_environment();
+  static const bool enabled = env_flag("LLM_TRAFFIC");
   return enabled;
 }
 

@@ -76,6 +76,21 @@ Var make_unary_view(const Var& input, const char* name, Tensor value,
       [node, grad_fn](const Tensor& grad) { node->accumulate(grad_fn(grad)); });
 }
 
+// Форма результата редукции с сохранёнными осями: те же размеры, но по
+// сокращаемым осям единица.
+//
+// Считается по форме, а не прогоном ops::sum ради его shape(). Прогон здесь и
+// стоял, и это была редукция всего тензора целиком — выброшенная сразу после
+// того, как у неё спросили форму. То есть sum и mean считали своё значение
+// дважды.
+Shape keepdim_shape(const Shape& input, const std::vector<int>& axes) {
+  Dims dims = input.dims();
+  for (std::size_t i = 0; i < axes.size(); ++i) {
+    dims[static_cast<std::size_t>(input.normalize_axis(axes[i]))] = 1;
+  }
+  return Shape(dims);
+}
+
 }  // namespace
 
 Var add(const Var& a, const Var& b) {
@@ -163,13 +178,13 @@ Var sum(const Var& input, const std::vector<int>& axes, bool keepdim) {
   const Shape input_shape = input.shape();
   // Форма с сохранёнными осями нужна обратному проходу: растянуть (b, t) до
   // (b, t, d) нельзя, а (b, t, 1) — можно.
-  const Shape keepdim_shape = ops::sum(input.value(), axes, true).shape();
+  const Shape kept = keepdim_shape(input_shape, axes);
   return make_unary(
       input, "sum", ops::sum(input.value(), axes, keepdim),
-      [input_shape, keepdim_shape](const Tensor& grad) {
+      [input_shape, kept](const Tensor& grad) {
         // Каждый элемент входа вошёл в сумму ровно один раз,
         // поэтому градиент просто размножается обратно.
-        return grad.contiguous().reshape(keepdim_shape).expand(input_shape);
+        return grad.contiguous().reshape(kept).expand(input_shape);
       });
 }
 
@@ -180,12 +195,12 @@ Var mean(const Var& input, const std::vector<int>& axes, bool keepdim) {
   }
   LLM_CHECK_GT(count, static_cast<int64_t>(0));
   const Shape input_shape = input.shape();
-  const Shape keepdim_shape = ops::sum(input.value(), axes, true).shape();
+  const Shape kept = keepdim_shape(input_shape, axes);
   const float scale = 1.0f / static_cast<float>(count);
   return make_unary(input, "mean", ops::mean(input.value(), axes, keepdim),
-                    [input_shape, keepdim_shape, scale](const Tensor& grad) {
+                    [input_shape, kept, scale](const Tensor& grad) {
                       return ops::mul_scalar(grad, scale)
-                          .reshape(keepdim_shape)
+                          .reshape(kept)
                           .expand(input_shape);
                     });
 }

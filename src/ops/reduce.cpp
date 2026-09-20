@@ -56,8 +56,15 @@ Tensor sum(const Tensor& input, const std::vector<int>& axes, bool keepdim) {
   const int rank = input.rank();
   std::vector<bool> reduced(static_cast<std::size_t>(rank), false);
   for (std::size_t i = 0; i < axes.size(); ++i) {
-    reduced[static_cast<std::size_t>(input.shape().normalize_axis(axes[i]))] =
-        true;
+    const std::size_t axis =
+        static_cast<std::size_t>(input.shape().normalize_axis(axes[i]));
+    // Повтор оси запрещён, хотя сама сумма его пережила бы: набор осей —
+    // множество, и второе упоминание ничего не меняет. А вот mean делит на
+    // произведение размеров перечисленных осей, и повтор превратил бы делитель
+    // в квадрат — без падения и без признака. Проще не пустить сюда.
+    LLM_CHECK_MSG(!reduced[axis],
+                  "ось " << axis << " перечислена в редукции дважды");
+    reduced[axis] = true;
   }
 
   std::vector<int64_t> kept(static_cast<std::size_t>(rank));

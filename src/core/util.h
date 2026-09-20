@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 #include "core/check.h"
@@ -67,6 +68,45 @@ inline std::string pad_utf8_right(const std::string& text, std::size_t width) {
     return text;
   }
   return std::string(width - characters, ' ') + text;
+}
+
+// Разбор булева переключателя из переменной окружения. value — то, что вернул
+// getenv, то есть возможен и нулевой указатель; name нужен только сообщению.
+//
+// Разбор строгий, и это не придирчивость. Прежнее правило — «включено, если
+// значение непусто и не начинается с нуля» — включало режим на off, false и no,
+// то есть ровно на тех словах, которыми его пытаются выключить. Переключатели
+// эти управляют тем, ЧТО измеряется: имитацией половинной разрядности и учётом
+// трафика памяти. Опечатка в них не падала и ничего не печатала — просто замер
+// оказывался про другое.
+//
+// Отделено от getenv ради проверки: подменять окружение в тесте пришлось бы
+// через setenv, а это глобальное состояние на весь прогон.
+inline bool parse_env_flag(const char* name, const char* value) {
+  if (value == nullptr || value[0] == '\0') {
+    return false;
+  }
+  std::string text(value);
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] >= 'A' && text[i] <= 'Z') {
+      text[i] = static_cast<char>(text[i] - 'A' + 'a');
+    }
+  }
+  if (text == "0" || text == "false" || text == "no" || text == "off") {
+    return false;
+  }
+  if (text == "1" || text == "true" || text == "yes" || text == "on") {
+    return true;
+  }
+  LLM_CHECK_MSG(false, "переменная окружения "
+                           << name << " равна '" << value
+                           << "': ожидается 0/1, false/true, no/yes или "
+                              "off/on");
+  return false;
+}
+
+inline bool env_flag(const char* name) {
+  return parse_env_flag(name, std::getenv(name));
 }
 
 inline bool is_aligned(const void* pointer, std::size_t alignment) {

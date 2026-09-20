@@ -410,3 +410,50 @@ LLM_TEST(Autograd, Fp16SimulationRoundsOperationsThatSaveTheirOutput) {
                                 << " непредставимых значений");
   }
 }
+
+// Обратный проход редукции при любом наборе осей.
+//
+// Градиент суммы размножается обратно по сокращённым осям, и делается это
+// через промежуточную форму с сохранёнными осями: растянуть (2, 4) до
+// (2, 3, 4) нельзя, а (2, 1, 4) — можно. Форма эта считается по форме входа, и
+// проверяется здесь именно она: перечислены оси с конца, по две сразу и все
+// разом, а на выходе — градиент формы входа, полный единиц (для суммы) или
+// одинаковых долей (для среднего).
+LLM_TEST(Autograd, ReductionSpreadsTheGradientBackOverEveryAxisSet) {
+  const llm::Shape shape({2, 3, 4});
+  const std::vector<std::vector<int>> axis_sets = {
+      {0}, {1}, {2}, {-1}, {-2}, {0, 2}, {1, -1}, {0, 1, 2}};
+
+  for (std::size_t s = 0; s < axis_sets.size(); ++s) {
+    const std::vector<int>& axes = axis_sets[s];
+    int64_t reduced = 1;
+    for (std::size_t i = 0; i < axes.size(); ++i) {
+      reduced *= shape.dim(axes[i]);
+    }
+
+    for (int which = 0; which < 2; ++which) {
+      const bool averaging = which == 1;
+      for (int keep = 0; keep < 2; ++keep) {
+        Var x = Var::leaf(llm::Tensor::full(shape, 2.0f), true);
+        const Var reduction =
+            averaging ? llm::autograd::mean(x, axes, keep != 0)
+                      : llm::autograd::sum(x, axes, keep != 0);
+        // Свернуть до скаляра: backward берёт начало только от него, а
+        // оставшиеся оси у части наборов ещё есть.
+        llm::autograd::sum_all(reduction).backward();
+
+        const llm::Tensor& grad = x.grad();
+        LLM_CHECK_MSG(grad.defined(), "набор осей " << s << ": градиента нет");
+        LLM_CHECK_MSG(grad.shape() == shape,
+                      "набор осей " << s << ": градиент формы " << grad.shape()
+                                    << " вместо " << shape);
+        const double expected =
+            averaging ? 1.0 / static_cast<double>(reduced) : 1.0;
+        const llm::Tensor dense = grad.contiguous();
+        for (int64_t i = 0; i < dense.numel(); ++i) {
+          LLM_EXPECT_NEAR(dense.data()[i], expected, 1e-6);
+        }
+      }
+    }
+  }
+}
