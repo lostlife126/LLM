@@ -94,9 +94,10 @@ GradCheckResult gradcheck(
     // Масштаб для относительного сравнения берётся по всему тензору, а не по
     // элементу: у отдельного элемента градиент может быть близок к нулю, и
     // деление на него превратило бы шум в «ошибку».
-    double scale = 1.0;
+    double gradient_scale = 0.0;
     for (std::size_t j = 0; j < analytic.size(); ++j) {
-      scale = std::max(scale, std::fabs(static_cast<double>(analytic[j])));
+      gradient_scale =
+          std::max(gradient_scale, std::fabs(static_cast<double>(analytic[j])));
     }
 
     std::vector<Tensor> perturbed;
@@ -105,6 +106,16 @@ GradCheckResult gradcheck(
     }
     Tensor& target = perturbed[i];
     float* data = target.data();
+
+    // Сравнение идёт по наибольшему абсолютному расхождению, а делится оно на
+    // масштаб один раз после цикла. Масштаб для входа постоянен, поэтому
+    // наибольшее относительное расхождение достигается на том же элементе,
+    // что и наибольшее абсолютное, — а значения функции, нужные для нижней
+    // границы масштаба, к концу цикла как раз известны.
+    double worst_absolute = 0.0;
+    int64_t worst_element = 0;
+    double worst_numeric = 0.0;
+    double value_scale = 0.0;
 
     for (int64_t element = 0; element < target.numel(); ++element) {
       const float original = data[element];
@@ -115,23 +126,55 @@ GradCheckResult gradcheck(
       const double minus = evaluate(fn, perturbed);
       data[element] = original;
 
-      const double numeric = (plus - minus) / (2.0 * static_cast<double>(step));
-      const double error =
-          std::fabs(numeric -
-                    static_cast<double>(
-                        analytic[static_cast<std::size_t>(element)])) /
-          scale;
+      value_scale = std::max(value_scale,
+                             std::max(std::fabs(plus), std::fabs(minus)));
 
-      if (error > worst) {
-        worst = error;
-        detail.str(std::string());
-        detail << "вход " << i << ", элемент " << element
-               << ": обратный проход дал "
-               << analytic[static_cast<std::size_t>(element)]
-               << ", численная оценка " << numeric
-               << ", относительное расхождение " << error << " при допуске "
-               << tolerance;
+      const double numeric = (plus - minus) / (2.0 * static_cast<double>(step));
+      const double absolute = std::fabs(
+          numeric -
+          static_cast<double>(analytic[static_cast<std::size_t>(element)]));
+      if (absolute > worst_absolute) {
+        worst_absolute = absolute;
+        worst_element = element;
+        worst_numeric = numeric;
       }
+    }
+
+    // Нижняя граница масштаба — не единица, а разрешение самого метода.
+    //
+    // Единица была здесь раньше и выглядела безобидно, а на деле подменяла
+    // относительное сравнение абсолютным везде, где градиенты меньше её.
+    // Замер по всем проверкам проекта: так выходило в 38 случаях из 51, и в
+    // худшем градиенты были величиной 0.064 — то есть допуск 1e-3 означал там
+    // не «десятые доли процента», как обещает заголовок, а полтора процента.
+    //
+    // Делить на сам масштаб градиента без всякой границы тоже нельзя: у
+    // тензора, где градиент всюду близок к нулю, шум численной оценки дал бы
+    // сколь угодно большое отношение. Но граница должна быть не взята с
+    // потолка, а равна тому, что метод вообще способен различить. Центральная
+    // разность вычитает два близких значения функции и делит на 2h, поэтому
+    // её собственный шум — порядка eps * |f| / h при машинной точности float.
+    //
+    // На проверках проекта эта граница не срабатывает ни разу (|f| порядка
+    // единицы, h = 1e-2, то есть шум около 1.2e-5, а наименьший градиент
+    // 0.064), и сравнение получается честно относительным. Наибольшее
+    // расхождение по всему суду после этого — 1.16e-4 при допуске 1e-3.
+    const double kFloatEpsilon = 1.1920929e-7;
+    const double resolution =
+        kFloatEpsilon * value_scale / static_cast<double>(step);
+    const double scale = std::max(gradient_scale, resolution);
+    const double error = scale > 0.0 ? worst_absolute / scale : worst_absolute;
+
+    if (error > worst) {
+      worst = error;
+      detail.str(std::string());
+      detail << "вход " << i << ", элемент " << worst_element
+             << ": обратный проход дал "
+             << analytic[static_cast<std::size_t>(worst_element)]
+             << ", численная оценка " << worst_numeric
+             << ", относительное расхождение " << error << " при допуске "
+             << tolerance << " (масштаб градиента " << gradient_scale
+             << ", разрешение метода " << resolution << ")";
     }
   }
 
