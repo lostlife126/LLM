@@ -90,3 +90,54 @@ LLM_TEST(Storage, MoveAssignReleasesOldBuffer) {
   LLM_CHECK_EQ(target.nbytes(), static_cast<std::size_t>(16));
   LLM_EXPECT_NEAR(target.as<float>()[0], 1.5, 0.0);
 }
+
+LLM_TEST(Storage, FreedBufferComesBackFromThePool) {
+  // Пул — не украшение: без него шаг обучения платит за разметку страниц.
+  // Проверяем, что освобождённый буфер действительно возвращается на тот же
+  // размер, и что выравнивание у переиспользованного не хуже, чем у свежего.
+  //
+  // Размер взят заведомо не встречающийся в остальных тестах, чтобы в очереди
+  // этого размера ничего постороннего не лежало.
+  const std::size_t nbytes = 7 * 1024 + 8;
+  const void* first = nullptr;
+  {
+    llm::Storage storage(nbytes);
+    first = storage.data();
+    LLM_CHECK(llm::is_aligned(first, llm::Storage::kAlignment));
+  }
+  llm::Storage again(nbytes);
+  LLM_CHECK_MSG(again.data() == first, "буфер не вернулся из пула");
+  LLM_CHECK(llm::is_aligned(again.data(), llm::Storage::kAlignment));
+
+  // А буфер другого размера — это другая очередь, и совпасть он не обязан.
+  llm::Storage other(nbytes + llm::Storage::kAlignment);
+  LLM_CHECK(other.data() != first);
+}
+
+LLM_TEST(Storage, RecycledBufferIsNotSilentlyZero) {
+  // Обратная сторона пула: переиспользованный буфер приходит с прошлым
+  // содержимым, а не с нулями, как свежие страницы от ядра. Тест закрепляет,
+  // что Storage нулей не обещает и что zero() для этого и существует.
+  const std::size_t count = 512;
+  {
+    llm::Storage storage(count * sizeof(std::int32_t));
+    llm::Span<std::int32_t> values = storage.as<std::int32_t>();
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = 0x5A5A5A5A;
+    }
+  }
+  llm::Storage again(count * sizeof(std::int32_t));
+  bool any_nonzero = false;
+  llm::Span<const std::int32_t> values = again.as<std::int32_t>();
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (values[i] != 0) {
+      any_nonzero = true;
+    }
+  }
+  LLM_CHECK_MSG(any_nonzero, "переиспользованный буфер оказался нулевым");
+
+  again.zero();
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    LLM_CHECK_EQ(values[i], 0);
+  }
+}

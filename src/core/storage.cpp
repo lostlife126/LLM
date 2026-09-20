@@ -46,11 +46,31 @@ class BufferPool {
   unsigned char* take(std::size_t capacity) {
     const Map::iterator it = free_.find(capacity);
     if (it == free_.end() || it->second.empty()) {
-      return new unsigned char[capacity];
+      return poison(new unsigned char[capacity], capacity);
     }
     unsigned char* block = it->second.back();
     it->second.pop_back();
     held_ -= capacity;
+    return poison(block, capacity);
+  }
+
+  // Пул меняет то, чего никто не обещал, но на что легко опереться нечаянно.
+  // Крупный блок от аллокатора приходит свежими страницами, то есть нулями;
+  // блок из пула приходит с прошлым содержимым. Код, забывший что-то
+  // проинициализировать, до появления пула работал бы правильно, а после —
+  // молча неправильно, и только на больших размерах.
+  //
+  // Поэтому в отладочной сборке буфер забивается 0xFF: во float это NaN,
+  // в целом -1, и любое чтение неинициализированного сразу видно. Проверено:
+  // с забивкой в Release шесть шагов nano дают побайтово тот же чекпоинт, то
+  // есть сейчас на нули никто не опирается. Забивка остаётся сторожем на
+  // будущее и в Release не стоит ничего.
+  static unsigned char* poison(unsigned char* block, std::size_t capacity) {
+#ifndef NDEBUG
+    std::memset(block, 0xFF, capacity);
+#else
+    (void)capacity;
+#endif
     return block;
   }
 
