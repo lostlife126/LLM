@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "core/tensor.h"
@@ -281,4 +283,71 @@ LLM_TEST(Tensor, CloneOfViewIsDense) {
   LLM_CHECK(repeated.is_contiguous());
   repeated(0, 0) = 9.0f;
   LLM_EXPECT_NEAR(repeated(1, 0), 0.0, 0.0);
+}
+
+LLM_TEST(Tensor, UndefinedTensorSurvivesBeingPrinted) {
+  // Неопределённый тензор — законное состояние: таким остаётся градиент
+  // переменной, до которой обратный проход не дошёл. Ранг у него 0, значит
+  // numel() равен единице, как у скаляра, а данных нет вовсе.
+  //
+  // Печать обязана это пережить, и не ради красоты: debug_string вызывается
+  // из сообщений о непрошедших проверках, то есть когда что-то уже не так.
+  // Падение здесь превращает разбираемую ошибку в segmentation fault без
+  // единой строки отчёта — это и происходило.
+  const llm::Tensor undefined;
+  LLM_CHECK(!undefined.defined());
+  LLM_CHECK_EQ(undefined.rank(), 0);
+  LLM_CHECK_EQ(undefined.numel(), static_cast<std::int64_t>(1));
+
+  const std::string text = undefined.debug_string();
+  LLM_CHECK(text.find("не определён") != std::string::npos);
+
+  std::ostringstream stream;
+  stream << undefined;
+  LLM_CHECK_EQ(stream.str(), text);
+}
+
+LLM_TEST(Tensor, UndefinedTensorRefusesDataAccess) {
+  // Остальные пути к данным должны называть себя, а не читать нулевой
+  // указатель.
+  llm::Tensor undefined;
+  LLM_EXPECT_THROWS(undefined.fill(1.0f));
+  LLM_EXPECT_THROWS(undefined.zero());
+  LLM_EXPECT_THROWS(undefined.flat());
+  LLM_EXPECT_THROWS(undefined.at(std::vector<std::int64_t>()));
+
+  const llm::Tensor& as_const = undefined;
+  LLM_EXPECT_THROWS(as_const.flat());
+
+  // А копия «ничего» — это «ничего», и это не ошибка.
+  const llm::Tensor copy = undefined.clone();
+  LLM_CHECK(!copy.defined());
+  // contiguous() у неопределённого возвращает его же.
+  LLM_CHECK(!undefined.contiguous().defined());
+}
+
+LLM_TEST(Tensor, ContiguityIgnoresAxesOfSizeOne) {
+  // Плотность — это «элементы лежат подряд», а не «шаги равны
+  // contiguous_strides». Ось размера 1 ничего не ограничивает: индекс по ней
+  // всегда ноль, и её шаг в адрес не входит.
+  const llm::Tensor base = llm::Tensor::from_values(
+      llm::Shape({1, 2, 3}), {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
+  const llm::Tensor swapped = base.transpose(0, 1);
+
+  LLM_CHECK(swapped.shape() == llm::Shape({2, 1, 3}));
+  LLM_CHECK_EQ(swapped.stride(1), static_cast<std::int64_t>(6));
+  const llm::Dims dense_strides = llm::contiguous_strides(swapped.shape());
+  LLM_CHECK_NE(swapped.stride(1), dense_strides[1]);
+  LLM_CHECK_MSG(swapped.is_contiguous(), "шаг по оси размера 1 не должен мешать");
+
+  // И раз плотный — значит flat() и reshape() дают верный порядок элементов.
+  const llm::Span<const float> flat = swapped.flat();
+  LLM_CHECK_EQ(flat.size(), static_cast<std::size_t>(6));
+  for (std::size_t i = 0; i < flat.size(); ++i) {
+    LLM_EXPECT_NEAR(flat[i], static_cast<double>(i), 0.0);
+  }
+  const llm::Tensor flattened = swapped.reshape(llm::Shape({6}));
+  for (std::int64_t i = 0; i < 6; ++i) {
+    LLM_EXPECT_NEAR(flattened(i), static_cast<double>(i), 0.0);
+  }
 }

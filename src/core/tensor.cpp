@@ -130,18 +130,23 @@ bool Tensor::is_contiguous() const {
 }
 
 Span<float> Tensor::flat() {
+  LLM_CHECK_MSG(defined(), "flat() у неопределённого тензора");
   LLM_CHECK_MSG(is_contiguous(),
                 "flat() требует плотного размещения; форма " << shape_);
   return Span<float>(data_, static_cast<std::size_t>(numel()));
 }
 
 Span<const float> Tensor::flat() const {
+  LLM_CHECK_MSG(defined(), "flat() у неопределённого тензора");
   LLM_CHECK_MSG(is_contiguous(),
                 "flat() требует плотного размещения; форма " << shape_);
   return Span<const float>(data_, static_cast<std::size_t>(numel()));
 }
 
 int64_t Tensor::flat_offset(const int64_t* index, int count) const {
+  // Неопределённый тензор — это ранг 0, то есть numel() == 1, как у скаляра.
+  // Без этой проверки обращение по индексу читало бы нулевой указатель.
+  LLM_CHECK_MSG(defined(), "обращение по индексу к неопределённому тензору");
   LLM_CHECK_MSG(count == rank(),
                 "индекс ранга " << count << " для тензора формы " << shape_);
   int64_t offset = 0;
@@ -305,6 +310,11 @@ Tensor Tensor::contiguous() const {
 }
 
 Tensor Tensor::clone() const {
+  // Копия «ничего» — это «ничего». Иначе получился бы тензор ранга 0 с одним
+  // элементом, скопированным из нулевого указателя.
+  if (!defined()) {
+    return Tensor();
+  }
   Tensor result = uninitialized(shape_);
   if (numel() == 0) {
     return result;
@@ -314,6 +324,7 @@ Tensor Tensor::clone() const {
 }
 
 void Tensor::fill(float value) {
+  LLM_CHECK_MSG(defined(), "заполнение неопределённого тензора");
   if (numel() == 0) {
     return;
   }
@@ -329,6 +340,14 @@ void Tensor::fill(float value) {
 }
 
 std::string Tensor::debug_string(int64_t max_values) const {
+  // Эта функция вызывается из сообщений о непрошедших проверках, то есть
+  // тогда, когда что-то уже не так. Падать ей нельзя ни при каком состоянии
+  // тензора — иначе разбираемая ошибка превращается в segmentation fault без
+  // единой строки отчёта. У неопределённого тензора ранг 0, значит numel()
+  // равен единице, и обход прочитал бы нулевой указатель.
+  if (!defined()) {
+    return "Tensor(не определён)";
+  }
   std::ostringstream oss;
   oss << "Tensor" << shape_;
   if (!is_contiguous()) {
