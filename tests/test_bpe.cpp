@@ -278,6 +278,27 @@ LLM_TEST(Bpe, LoadRejectsBrokenFile) {
   }
   LLM_EXPECT_THROWS(llm::Bpe::load(path));
   std::remove(path.c_str());
+
+  {
+    // Нечисловое количество слияний. Случай хуже оборванного файла: слияния
+    // в файле есть, а operator>> при отказе оставляет в переменной ноль, и
+    // словарь загружался пустым — не отказ, а тихо другой ответ.
+    std::ofstream file(path.c_str());
+    file << "llmbpe 1\nmerges x\n104 101\n";
+  }
+  LLM_EXPECT_THROWS(llm::Bpe::load(path));
+  std::remove(path.c_str());
+
+  {
+    // Заголовок обещает слияний больше, чем их бывает. Проверяется не только
+    // сам отказ, но и то, что он приходит от проверки, а не из аллокатора:
+    // LLM_EXPECT_THROWS ловит одну лишь CheckFailure, и bad_alloc из
+    // reserve пролетает мимо — тест падает.
+    std::ofstream file(path.c_str());
+    file << "llmbpe 1\nmerges 99999999999999999\n104 101\n";
+  }
+  LLM_EXPECT_THROWS(llm::Bpe::load(path));
+  std::remove(path.c_str());
 }
 
 LLM_TEST(Bpe, LoadAcceptsFileWithoutTrailingNewline) {
