@@ -753,3 +753,85 @@ LLM_TEST(Gemm, TransposePackMatchesTheScalarReference) {
   }
   LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
 }
+
+LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
+  // Порядок сложения по глубине — договор, а не деталь реализации: от него
+  // зависят младшие разряды всех весов, какие проект когда-либо обучит.
+  // Записан он двумя числами: длиной куска и тем, что внутри куска слагаемые
+  // идут последовательно, слитным умножением с накоплением.
+  //
+  // Проверяется это независимым счётом, а не отпечатком: отпечаток сказал бы
+  // «стало иначе», а эталон говорит, чем именно должно быть. Проверено
+  // подменой дважды: при куске 96 вместо 128 расходятся 6630 элементов из
+  // 8000, и при сложении внутри куска без слитного умножения — тоже. Прежде
+  // ни того, ни другого не замечала ни одна проверка проекта.
+  //
+  // Скалярное ядро в сравнение не входит: у него нет слитного умножения, оно
+  // делает умножение и сложение по отдельности, с двумя округлениями вместо
+  // одного — то же исключение, что в VectorKernelsAgreeBitForBit.
+
+  // Длина куска спрашивается у самого gemm — так эталон ниже проверяет
+  // структуру суммы независимо от того, где живёт константа. Но само её
+  // значение закреплено отдельной строкой: без неё тест подстроился бы под
+  // любое новое значение и смены не заметил. Проверено — так и было, пока
+  // этой строки не было.
+  //
+  // Менять 128 можно, но тогда все веса, какие проект обучил, сдвинутся в
+  // младших разрядах, и числа обучения в README придётся мерить заново.
+  const std::int64_t chunk = llm::ops::gemm_depth_block();
+  LLM_CHECK_MSG(chunk == 128,
+                "длина куска по глубине стала "
+                    << chunk
+                    << " вместо 128: все веса сдвинутся в младших разрядах");
+
+  // n не кратно 32, поэтому прямой путь выключен и работает блочный — тот
+  // самый, который режет глубину. Глубина взята больше трёх кусков, с
+  // остатком.
+  llm::Rng rng(11);
+  const std::int64_t m = 40;
+  const std::int64_t n = 200;
+  const std::int64_t k = chunk * 3 + 17;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+
+  std::vector<float> expected(static_cast<std::size_t>(m * n), 0.0f);
+  for (std::int64_t i = 0; i < m; ++i) {
+    for (std::int64_t j = 0; j < n; ++j) {
+      float total = 0.0f;
+      for (std::int64_t begin = 0; begin < k; begin += chunk) {
+        const std::int64_t end = std::min(begin + chunk, k);
+        float part = 0.0f;
+        for (std::int64_t p = begin; p < end; ++p) {
+          part = std::fma(a[static_cast<std::size_t>(i * k + p)],
+                          b[static_cast<std::size_t>(p * n + j)], part);
+        }
+        total += part;
+      }
+      expected[static_cast<std::size_t>(i * n + j)] = total;
+    }
+  }
+
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  int checked = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available || !table[i].kernel.fused) {
+      continue;
+    }
+    llm::ops::force_micro_kernel(&table[i].kernel);
+    std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
+    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                   actual.data(), n);
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      LLM_CHECK_MSG(expected[index] == actual[index],
+                    "ядро '" << table[i].kernel.name << "', элемент " << index
+                             << ": " << actual[index] << " вместо "
+                             << expected[index]
+                             << " — сумма по глубине сложена не кусками по "
+                             << chunk);
+    }
+    ++checked;
+  }
+  llm::ops::force_micro_kernel(nullptr);
+  LLM_CHECK_MSG(checked > 0, "на этой машине нет ни одного слитного ядра");
+}

@@ -658,6 +658,8 @@ void check_arguments(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
 
 }  // namespace
 
+int64_t gemm_depth_block() { return kBlockK; }
+
 void force_direct_max_rows(int64_t rows) {
   g_forced_direct_max_rows = rows;
 }
