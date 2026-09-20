@@ -219,3 +219,36 @@ LLM_TEST(Matmul, IntoRejectsWrongOutputShape) {
   llm::Tensor wrong = llm::Tensor::zeros(llm::Shape({2, 5}));
   LLM_EXPECT_THROWS(llm::ops::matmul_into(a, b, 1.0f, 0.0f, &wrong));
 }
+
+LLM_TEST(Matmul, SharedWeightIgnoresTheBatchAxis) {
+  // Умножение (batch, seq, k) на общую матрицу (k, n) — это не партия
+  // умножений, а одно умножение (batch * seq, k) на (k, n): ось батча здесь
+  // ничего не значит, строки просто идут подряд. Значит и ответ обязан быть
+  // тем же, причём побитово, а не в пределах погрешности.
+  //
+  // Проверка не теоретическая. Пока умножение дробилось по элементам батча, m
+  // равнялось длине последовательности, а не числу строк; от m зависит выбор
+  // пути внутри gemm, и пути делят глубину по-разному. Этот тест и говорит,
+  // что теперь считается одна задача, а не batch мелких.
+  // Размеры подобраны так, чтобы дроблёный и слитый варианты действительно
+  // выбирали разные пути, иначе проверка была бы пустой. Прямой путь требует
+  // кратности n числу 32 и того, чтобы B влезала в кэш; здесь B занимает 512
+  // килобайт, то есть не влезает, и путь решает число строк: пять — прямой,
+  // пятнадцать — блочный.
+  llm::Rng rng(4242);
+  const std::int64_t batch = 3, seq = 5, k = 256, n = 512;
+
+  const llm::Tensor a = random_tensor(&rng, llm::Shape({batch, seq, k}));
+  const llm::Tensor w = random_tensor(&rng, llm::Shape({k, n}));
+
+  const llm::Tensor spread = llm::ops::matmul(a, w);
+  const llm::Tensor flat =
+      llm::ops::matmul(a.reshape(llm::Shape({batch * seq, k})), w);
+
+  LLM_CHECK_EQ(spread.numel(), flat.numel());
+  for (std::int64_t i = 0; i < flat.numel(); ++i) {
+    LLM_CHECK_MSG(spread.data()[i] == flat.data()[i],
+                  "элемент " << i << ": " << spread.data()[i] << " против "
+                             << flat.data()[i]);
+  }
+}
