@@ -349,3 +349,72 @@ LLM_TEST(Lora, BaseCheckpointDoesNotFitLoraModel) {
   LLM_EXPECT_THROWS(llm::serialize::load_checkpoint(path, &adapted));
   std::remove(path.c_str());
 }
+
+LLM_TEST(Lora, ContributionIsScaledByAlphaOverRank) {
+  // Масштаб вклада адаптера — alpha / rank, и в этом весь смысл alpha: смена
+  // ранга не требует заново подбирать скорость обучения. Само это число не
+  // проверялось ничем. Проверено подменой: если убрать деление на ранг, все
+  // проверки проекта проходят — сравнения «с адаптером против слитого» и
+  // «обучилось» одинаково слепы к общему множителю, потому что пользуются им
+  // обе стороны.
+  //
+  // Здесь вклад считается независимо: A задан случайно самим слоем, B
+  // стартует с нуля и заполняется известными числами, а слияние обязано
+  // прибавить к весу ровно A * B * alpha / rank.
+  llm::Rng rng(5);
+  const std::int64_t in_features = 4;
+  const std::int64_t out_features = 3;
+  const std::int64_t rank = 2;
+  const float alpha = 8.0f;
+
+  llm::nn::Linear layer(in_features, out_features, 0.02f, &rng);
+  layer.enable_lora(rank, alpha, &rng);
+
+  const auto find = [](std::vector<llm::nn::NamedParameter>& all,
+                       const std::string& name) -> llm::Tensor& {
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      if (all[i].name == name) {
+        return all[i].value->value();
+      }
+    }
+    LLM_CHECK_MSG(false, "нет параметра " << name);
+    return all[0].value->value();
+  };
+
+  std::vector<llm::nn::NamedParameter> before_merge;
+  layer.collect("слой", &before_merge);
+  llm::Tensor& a = find(before_merge, "слой.lora_a");
+  llm::Tensor& b = find(before_merge, "слой.lora_b");
+
+  // B при создании нулевая — адаптер до обучения ничего не меняет. Заполняем
+  // её так, чтобы произведение было заметным и разным по столбцам.
+  for (std::int64_t r = 0; r < rank; ++r) {
+    for (std::int64_t j = 0; j < out_features; ++j) {
+      b(r, j) = static_cast<float>(r + 1) * (static_cast<float>(j) + 0.5f);
+    }
+  }
+
+  const llm::Tensor weight_before = find(before_merge, "слой.weight").clone();
+  const llm::Tensor a_copy = a.clone();
+  const llm::Tensor b_copy = b.clone();
+
+  layer.merge_lora();
+
+  std::vector<llm::nn::NamedParameter> after_merge;
+  layer.collect("слой", &after_merge);
+  const llm::Tensor& weight_after = find(after_merge, "слой.weight");
+
+  const double scale = static_cast<double>(alpha) / static_cast<double>(rank);
+  for (std::int64_t i = 0; i < in_features; ++i) {
+    for (std::int64_t j = 0; j < out_features; ++j) {
+      double product = 0.0;
+      for (std::int64_t r = 0; r < rank; ++r) {
+        product += static_cast<double>(a_copy(i, r)) *
+                   static_cast<double>(b_copy(r, j));
+      }
+      const double expected =
+          static_cast<double>(weight_before(i, j)) + scale * product;
+      LLM_EXPECT_NEAR(weight_after(i, j), expected, 1e-6);
+    }
+  }
+}

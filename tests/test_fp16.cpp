@@ -111,3 +111,28 @@ LLM_TEST(Fp16, RoundTripIsIdempotent) {
                   "повторное округление изменило " << once);
   }
 }
+
+LLM_TEST(Fp16, SubnormalTiesRoundToEven) {
+  // Округление к ближайшему чётному проверялось только в нормальной области.
+  // В субнормальной та же развилка написана отдельно — там сдвиг переменный,
+  // и половина считается как 1 << (shift - 1), — а проверена не была.
+  // Проверено подменой: если заменить условие на «ничья всегда вверх», ни
+  // одна проверка проекта этого не замечала.
+  //
+  // Шаг субнормальной сетки — 2^-24. Ровно посередине между узлами
+  // округление обязано идти к чётному числу шагов.
+  const float step = std::ldexp(1.0f, -24);
+  LLM_CHECK_EQ(llm::to_fp16(std::ldexp(1.0f, -25)), static_cast<uint16_t>(0));
+  LLM_CHECK_EQ(llm::to_fp16(1.5f * step), static_cast<uint16_t>(2));
+  LLM_CHECK_EQ(llm::to_fp16(2.5f * step), static_cast<uint16_t>(2));
+  LLM_CHECK_EQ(llm::to_fp16(3.5f * step), static_cast<uint16_t>(4));
+
+  // И не ничьи по обе стороны от них — чтобы видеть, что дело именно в
+  // ничьей, а не в общем сдвиге сетки.
+  LLM_CHECK_EQ(llm::to_fp16(1.4f * step), static_cast<uint16_t>(1));
+  LLM_CHECK_EQ(llm::to_fp16(1.6f * step), static_cast<uint16_t>(2));
+  LLM_CHECK_EQ(llm::to_fp16(2.6f * step), static_cast<uint16_t>(3));
+
+  // Знак на выбор чётного не влияет.
+  LLM_CHECK_EQ(llm::to_fp16(-2.5f * step), static_cast<uint16_t>(0x8002u));
+}
