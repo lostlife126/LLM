@@ -1490,7 +1490,20 @@ void neon_kernel_rows_half(int64_t kc, const float* __restrict a,
 #endif  // LLM_HAS_NEON
 
 const MicroKernelChoice* build_table(int* count) {
-  static MicroKernelChoice table[3];
+  // Вместимость считается теми же условиями, что и заполнение, поэтому
+  // добавленное ядро не может незаметно вылезти за край: либо оно попадёт
+  // сюда, либо запись за границу поймает проверка ниже. Раньше здесь стояло
+  // table[3] — ровно по числу ядер x86, — и промах был бы тихой порчей
+  // соседней статической памяти.
+  constexpr int kSlots = 1  // скалярное есть всегда
+#if LLM_HAS_NEON
+                         + 1
+#endif
+#if LLM_HAS_X86_SIMD
+                         + 2
+#endif
+      ;
+  static MicroKernelChoice table[kSlots];
   static int size = 0;
   static bool ready = false;
   if (!ready) {
@@ -1517,6 +1530,7 @@ const MicroKernelChoice* build_table(int* count) {
     // описанный в README, от этого не меняется: ядра с FMA совпадают
     // побитово, скалярное отличается на одно округление. Прибавилось только
     // то, что теперь и скалярные ядра разных машин совпадают между собой.
+    LLM_CHECK(size < kSlots);
     table[size].kernel = MicroKernel{kScalarM,
                                      kScalarN,
                                      &scalar_kernel,
@@ -1531,6 +1545,7 @@ const MicroKernelChoice* build_table(int* count) {
 #if LLM_HAS_NEON
     // Доступно всегда: NEON обязателен в ARMv8-A. Порядок в таблице задаёт
     // выбор по умолчанию — берётся последнее доступное ядро.
+    LLM_CHECK(size < kSlots);
     table[size].kernel = MicroKernel{kNeonM,
                                      kNeonN,
                                      &neon_kernel,
@@ -1544,6 +1559,7 @@ const MicroKernelChoice* build_table(int* count) {
 #endif
 
 #if LLM_HAS_X86_SIMD
+    LLM_CHECK(size < kSlots);
     table[size].kernel = MicroKernel{kAvx2M,
                                      kAvx2N,
                                      &avx2_kernel,
@@ -1563,6 +1579,7 @@ const MicroKernelChoice* build_table(int* count) {
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
+    LLM_CHECK(size < kSlots);
     table[size].kernel = MicroKernel{kAvx512M,
                                      kAvx512N,
                                      &avx512_kernel,
