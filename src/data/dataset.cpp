@@ -54,6 +54,11 @@ std::vector<int32_t> TokenDataset::sample_batch(int64_t batch, int64_t seq,
 }
 
 int64_t TokenDataset::validation_batch_count(int64_t batch, int64_t seq) const {
+  // Проверки обязаны пережить NDEBUG: обе следующие строки делят на аргумент,
+  // а SIGFPE без имени разбирать нечем. Границы те же, что у sample_batch:
+  // окно длины единица не годится, потому что предсказывать в нём нечего.
+  LLM_CHECK_GT(batch, static_cast<int64_t>(0));
+  LLM_CHECK_GT(seq, static_cast<int64_t>(1));
   const int64_t windows = validation_size() / seq;
   return windows / batch;
 }

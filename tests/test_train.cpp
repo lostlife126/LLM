@@ -319,6 +319,30 @@ LLM_TEST(Train, DatasetSplitsValidationFromTheEnd) {
   }
 }
 
+// Нулевой аргумент — падение с именем, а не SIGFPE.
+//
+// validation_batch_count делит на seq и на batch. Обе величины приходят
+// снаружи, и ноль в любой из них обрывал прогон сигналом без единого слова о
+// том, где именно. Условие на seq то же, что у sample_batch: окно длины
+// единица не годится, предсказывать в нём нечего.
+LLM_TEST(Train, ValidationBatchCountChecksItsArguments) {
+  std::vector<int32_t> tokens;
+  for (int i = 0; i < 100; ++i) {
+    tokens.push_back(i);
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.2);
+
+  LLM_EXPECT_THROWS(dataset.validation_batch_count(0, 5));
+  LLM_EXPECT_THROWS(dataset.validation_batch_count(2, 0));
+  LLM_EXPECT_THROWS(dataset.validation_batch_count(2, 1));
+  LLM_EXPECT_THROWS(dataset.validation_batch_count(-1, 5));
+  LLM_EXPECT_THROWS(dataset.validation_batch(2, 0, 0));
+
+  // Законный вызов по-прежнему считает.
+  LLM_CHECK_EQ(dataset.validation_batch_count(2, 5),
+               static_cast<std::int64_t>(2));
+}
+
 LLM_TEST(Train, ValidationBatchesAreDeterministicAndDisjoint) {
   std::vector<int32_t> tokens;
   for (int i = 0; i < 100; ++i) {

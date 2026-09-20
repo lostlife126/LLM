@@ -377,3 +377,71 @@ LLM_TEST(Pretokenize, UnicodeTablesMatchTheDatabaseByCount) {
   LLM_CHECK(!llm::is_unicode_letter(0x0378u));  // не назначена
   LLM_CHECK(!llm::is_unicode_number('x'));
 }
+
+// Пробельный разряд — это свойство Unicode White_Space целиком.
+//
+// Набор был выписан «по тем, что встречаются в текстах», и в нём не хватало
+// одной точки: U+1680, огамического пробела. Библиотека регулярных выражений
+// эталонного токенизатора понимает \s как White_Space, и эта точка туда
+// входит. Пропущенная, она уходила в разряд прочих символов — то есть
+// склеивалась с соседней пунктуацией в один кусок вместо того, чтобы стоять
+// отдельно. Другие куски — другие номера токенов.
+LLM_TEST(Pretokenize, EveryWhiteSpaceCodePointCountsAsSpace) {
+  // Весь White_Space, по одной точке из каждого куска списка.
+  const uint32_t spaces[] = {0x09u,   0x0Au,   0x0Bu,   0x0Cu,   0x0Du,
+                             0x20u,   0x85u,   0xA0u,   0x1680u, 0x2000u,
+                             0x200Au, 0x2028u, 0x2029u, 0x202Fu, 0x205Fu,
+                             0x3000u};
+  // Цепочка из двух пробелов между буквами: первый уходит своим куском, а
+  // второй достаётся следующему слову. «Прочий символ» вместо пробела дал бы
+  // здесь один склеенный кусок из обоих.
+  for (std::size_t i = 0; i < sizeof(spaces) / sizeof(spaces[0]); ++i) {
+    std::string space;
+    llm::append_utf8(spaces[i], &space);
+    const std::string text = "a" + space + space + "b";
+    char name[32];
+    std::snprintf(name, sizeof(name), "U+%04X", spaces[i]);
+
+    // В образце GPT-2 к слову прилипает только ОБЫЧНЫЙ пробел: там в
+    // выражении стоит литеральный ' ', а не пробельный класс. Остальные
+    // пробелы уходят двумя отдельными кусками.
+    const std::vector<std::string> gpt2 = split(text, kGpt2);
+    if (spaces[i] == 0x20u) {
+      LLM_CHECK_MSG(gpt2.size() == 3, name << " в GPT-2 дал " << gpt2.size()
+                                           << " кусков вместо 3");
+      LLM_CHECK_MSG(gpt2[1] == space && gpt2[2] == space + "b",
+                    name << " в GPT-2 разбился не так");
+    } else {
+      LLM_CHECK_MSG(gpt2.size() == 4, name << " в GPT-2 дал " << gpt2.size()
+                                           << " кусков вместо 4");
+      LLM_CHECK_MSG(gpt2[1] == space && gpt2[2] == space,
+                    name << " в GPT-2 склеился с соседями");
+    }
+
+    // В образце GPT-4 второй пробел прилипает к слову: класс перед \p{L}+ там
+    // принимает любой символ, кроме перевода строки, буквы и цифры.
+    const std::vector<std::string> gpt4 = split(text, kGpt4);
+    const bool newline = spaces[i] == 0x0Au || spaces[i] == 0x0Du;
+    if (!newline) {
+      LLM_CHECK_MSG(gpt4.size() == 3, name << " в GPT-4 дал " << gpt4.size()
+                                           << " кусков вместо 3");
+      LLM_CHECK_MSG(gpt4[1] == space && gpt4[2] == space + "b",
+                    name << " в GPT-4 разбился не так: '" << gpt4[1] << "' | '"
+                         << gpt4[2] << "'");
+    } else {
+      // Перевод строки в GPT-4 идёт отдельной ветвью \s*[\r\n]+ и к слову не
+      // прилипает: класс перед \p{L}+ его как раз исключает.
+      LLM_CHECK_MSG(gpt4.size() == 3, name << " в GPT-4 дал " << gpt4.size()
+                                           << " кусков вместо 3");
+      LLM_CHECK_MSG(gpt4[1] == space + space && gpt4[2] == "b",
+                    name << " в GPT-4 разбился не так: '" << gpt4[1] << "' | '"
+                         << gpt4[2] << "'");
+    }
+  }
+
+  // U+200B пробелом не является, что бы ни говорило его название.
+  std::string zero_width;
+  llm::append_utf8(0x200Bu, &zero_width);
+  expect_split("a" + zero_width + "b", kGpt2,
+               {"a", zero_width, "b"});
+}
