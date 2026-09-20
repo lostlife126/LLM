@@ -224,3 +224,50 @@ LLM_TEST(Threads, VaryingTaskCountsDoNotLoseTasks) {
     }
   }
 }
+
+LLM_TEST(Threads, WidthLimitsHowManyThreadsActuallyRun) {
+  // Ширина обязана действовать на сам пул, а не только на тех вызывающих, кто
+  // сам считает число задач от parallel_width(). Раньше parallel_for её не
+  // замечал вовсе: при ширине 1 и четырёх ядрах шестнадцать задач расходились
+  // по четырём потокам. На счёт это не влияло — все боевые вызывающие ширину
+  // спрашивают, — но ручка, действующая не везде, обесценивает замер «на одном
+  // ядре против четырёх», ради которого она и заведена.
+  //
+  // Считаются не задачи, а различные идентификаторы потока: именно это и
+  // означает «сколько ядер занято».
+  struct Counter {
+    static int distinct(int tasks) {
+      std::set<std::thread::id> seen;
+      std::mutex guard;
+      llm::parallel_for(tasks, [&seen, &guard](int) {
+        std::lock_guard<std::mutex> lock(guard);
+        seen.insert(std::this_thread::get_id());
+      });
+      return static_cast<int>(seen.size());
+    }
+  };
+
+  const int automatic = llm::parallel_width();
+  if (automatic < 2) {
+    // Машина одноядерная: проверять нечего, и главное — нечем. Молчаливо
+    // проходящий тест на одном ядре честнее выдуманного.
+    return;
+  }
+
+  // Проверка не пуста: при автоматической ширине потоков заведомо больше
+  // одного, иначе утверждение про единицу ниже ничего не значило бы.
+  LLM_CHECK_MSG(Counter::distinct(64) > 1,
+                "при автоматической ширине работа не разошлась по потокам");
+
+  {
+    const WidthGuard guard(1);
+    LLM_CHECK_MSG(Counter::distinct(64) == 1,
+                  "при ширине 1 работа обязана идти в потоке вызывающего");
+  }
+  {
+    const WidthGuard guard(2);
+    LLM_CHECK_MSG(Counter::distinct(64) <= 2,
+                  "при ширине 2 участников не может быть больше двух");
+  }
+  LLM_CHECK_EQ(llm::parallel_width(), automatic);
+}
