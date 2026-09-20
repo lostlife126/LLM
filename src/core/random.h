@@ -33,6 +33,13 @@ class Rng {
     return static_cast<double>(bits) * (1.0 / 9007199254740992.0);
   }
 
+  // Диапазон здесь ЗАМКНУТ с обоих концов, в отличие от uniform() без
+  // аргументов. Причина — сужение: uniform() может вернуть double, отстоящий
+  // от единицы на 2^-53, а ближайший к нему float и есть ровно 1.0f. Событие
+  // это вероятностью около 3e-8, и все, кто этим пользуется, заполняют
+  // случайными числами испытательные данные, где попадание в самый край
+  // безразлично. Чинить сужением разрядности не стали: это сдвинуло бы поток
+  // случайных чисел, а с ним все измеренные числа обучения.
   float uniform(float low, float high) {
     return low + static_cast<float>(uniform()) * (high - low);
   }
@@ -40,7 +47,9 @@ class Rng {
   // Целое из [0, bound). Отбраковка остатка убирает смещение, которое даёт
   // простое взятие по модулю.
   std::uint64_t index(std::uint64_t bound) {
-    LLM_DCHECK_GT(bound, static_cast<std::uint64_t>(0));
+    // Проверка обязана пережить NDEBUG: при нулевой границе следующая же
+    // строка делит на ноль, а SIGFPE без имени разбирать нечем.
+    LLM_CHECK_GT(bound, static_cast<std::uint64_t>(0));
     const std::uint64_t limit = ~static_cast<std::uint64_t>(0) -
                                 (~static_cast<std::uint64_t>(0) % bound);
     std::uint64_t value = next_bits();

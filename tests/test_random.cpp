@@ -112,3 +112,10 @@ LLM_TEST(Rng, IndexOfOneIsAlwaysZero) {
     LLM_CHECK_EQ(rng.index(1), static_cast<std::uint64_t>(0));
   }
 }
+
+LLM_TEST(Rng, IndexRejectsZeroBound) {
+  // Нулевая граница — деление на ноль в первой же строке index(). Проверка
+  // должна работать и в Release: иначе получается SIGFPE без имени места.
+  llm::Rng rng(5);
+  LLM_EXPECT_THROWS(rng.index(0));
+}

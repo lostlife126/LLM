@@ -1,6 +1,5 @@
 #include "core/cpu.h"
 
-#include <sstream>
 #include <thread>
 
 namespace llm {
@@ -36,29 +35,25 @@ const CpuFeatures& cpu_features() {
 }
 
 std::string CpuFeatures::to_string() const {
-  std::ostringstream out;
-  if (neon) {
-    out << "neon ";
-  }
-  if (avx2) {
-    out << "avx2 ";
-  }
-  if (fma) {
-    out << "fma ";
-  }
-  if (f16c) {
-    out << "f16c ";
-  }
-  if (avx512f) {
-    out << "avx512f ";
-  }
-  if (avx512bw) {
-    out << "avx512bw ";
-  }
-  if (avx512vl) {
-    out << "avx512vl ";
-  }
-  const std::string text = out.str();
+  // Пробел ставится ПЕРЕД очередным признаком, а не после: иначе строка
+  // кончается пробелом, и в шапках измерений получается «avx512vl , ядер 4».
+  std::string text;
+  const auto add = [&text](bool present, const char* name) {
+    if (!present) {
+      return;
+    }
+    if (!text.empty()) {
+      text += ' ';
+    }
+    text += name;
+  };
+  add(neon, "neon");
+  add(avx2, "avx2");
+  add(fma, "fma");
+  add(f16c, "f16c");
+  add(avx512f, "avx512f");
+  add(avx512bw, "avx512bw");
+  add(avx512vl, "avx512vl");
   return text.empty() ? std::string("базовый x86-64") : text;
 }
 
