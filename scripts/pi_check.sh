@@ -111,7 +111,17 @@ echo "  cmake:      $(cmake --version | head -1)"
 echo
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 1
 # Сборка на четырёх ядрах и восьми гигабайтах проходит, но с запасом небольшим.
-cmake --build build-release -j4 2>&1 | grep -iE "error|warning" | head -20
+#
+# Вывод складывается в переменную, а не пропускается через grep напрямую: у
+# конвейера состояние выхода берётся от последней команды, то есть от grep, и
+# неудавшаяся сборка проходила незамеченной. Скрипт шёл дальше и мерил СТАРЫЕ
+# двоичные файлы, а числа при этом выглядели как настоящие.
+build_log=$(cmake --build build-release -j4 2>&1) || {
+  echo "$build_log" | grep -iE "error" | head -20
+  echo "  СБОРКА НЕ УДАЛАСЬ — дальше мерить нечего"
+  exit 1
+}
+echo "$build_log" | grep -iE "error|warning" | head -20
 echo "  сборка закончена"
 
 say "5. Тесты"
