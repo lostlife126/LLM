@@ -1,6 +1,7 @@
 #include "ops/micro_kernel.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "core/check.h"
 #include "core/cpu.h"
@@ -400,11 +401,24 @@ __attribute__((target("avx2,fma"))) void avx2_kernel(
   _mm256_storeu_ps(tile + 4 * kAvx2N + 8, acc41);
   _mm256_storeu_ps(tile + 5 * kAvx2N, acc50);
   _mm256_storeu_ps(tile + 5 * kAvx2N + 8, acc51);
+  // Краевая плитка. std::fma здесь не украшение: полная плитка выше пишется
+  // слитным умножением с накоплением, то есть с одним округлением на элемент,
+  // и хвост обязан делать то же самое. Обычное c += alpha * acc сливает не
+  // код, а компилятор — при -O3 сливает, при -O0 нет.
+  //
+  // Плитки у ядер разной ширины, поэтому полными и краевыми у них выходят
+  // разные куски одной задачи: стоит слиянию пропасть, и ядра разойдутся
+  // побитово. Так и было — проверка KernelsAgreeBitForBitWithScalingToo
+  // падала в отладочной сборке, пока здесь стоял c += alpha * acc. То есть
+  // побитовое совпадение держалось на настроении компилятора, а не на коде.
+  //
+  // На скорость это не влияет: краевых плиток мало. Замер на квадрате 512,
+  // две пары запусков вперемежку: 274.8 -> 281.5 и 277.0 -> 273.9 GFLOPS.
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
     const float* acc = tile + ii * kAvx2N;
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -485,7 +499,7 @@ __attribute__((target("avx2,fma"))) void avx2_kernel_rows(
       continue;
     }
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -578,7 +592,7 @@ __attribute__((target("avx2,fma,f16c"))) void avx2_kernel_rows_half(
       continue;
     }
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -682,7 +696,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel(
     float* c_row = c + ii * ldc;
     const float* acc = tile + ii * kAvx512N;
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -779,7 +793,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
       continue;
     }
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -883,7 +897,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows_hal
       continue;
     }
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * acc[jj];
+      c_row[jj] = std::fma(alpha, acc[jj], c_row[jj]);
     }
   }
 }
@@ -910,7 +924,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows_hal
 // x86, здесь не нужно — это и экономит регистры под A.
 //
 // Порядок арифметики тот же, что у ядер x86: накопление идёт по глубине
-// слитным умножением с накоплением, и в конце c += alpha * acc тоже слитно.
+// слитным умножением с накоплением, и в конце alpha применяется тоже слитно.
 // Значит NEON обязан совпадать с AVX2 побитово, и это проверяется тестом.
 
 // Транспонирование блока 4 x 4 на месте.
@@ -1122,7 +1136,7 @@ void neon_kernel(int64_t kc, const float* __restrict apanel,
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * values[ii][jj];
+      c_row[jj] = std::fma(alpha, values[ii][jj], c_row[jj]);
     }
   }
 }
@@ -1283,7 +1297,7 @@ void neon_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * values[ii][jj];
+      c_row[jj] = std::fma(alpha, values[ii][jj], c_row[jj]);
     }
   }
 }
@@ -1468,7 +1482,7 @@ void neon_kernel_rows_half(int64_t kc, const float* __restrict a,
   for (int64_t ii = 0; ii < rows; ++ii) {
     float* c_row = c + ii * ldc;
     for (int64_t jj = 0; jj < cols; ++jj) {
-      c_row[jj] += alpha * values[ii][jj];
+      c_row[jj] = std::fma(alpha, values[ii][jj], c_row[jj]);
     }
   }
 }
