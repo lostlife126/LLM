@@ -36,6 +36,19 @@ int64_t layer_of(const std::string& name) {
 //
 // Общая норма говорит, велик ли градиент; послойная — где именно он велик.
 // Затухание к первым слоям или взрыв в последних видно только так.
+//
+// Считать это ОБЯЗАТЕЛЬНО до обрезки нормы, и вот почему. Обрезка умножает
+// все градиенты на общий множитель, то есть послойные нормы после неё
+// оказываются в другом масштабе, чем общая норма, которую печатает шапка, —
+// а шапка печатает величину до обрезки. Сравнивать их было нельзя, и это не
+// умозрительно: на восьмом шаге nano общая норма 2.4987, слой 0 до обрезки
+// 1.3516, а в таблице стояло 0.5409.
+//
+// Хуже того, обрезка нормирует сумму, поэтому послойный столбец переставал
+// меняться от шага к шагу (0.89, 0.88, 0.88, 0.88, 0.87, 0.88, 0.83, 0.83)
+// при том, что сам градиент гулял (2.31, 2.21, 2.44, 2.34, 2.54, 2.78, 2.20,
+// 2.08). То есть диагностика прятала ровно то изменение, ради которого
+// заведена.
 std::vector<float> grad_norm_by_layer(
     const std::vector<nn::NamedParameter>& parameters, int64_t layers) {
   std::vector<double> squares(static_cast<std::size_t>(layers), 0.0);
@@ -253,10 +266,15 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
   // переигрывается: генератор создан с тем же зерном, и достаточно прокрутить
   // выборку столько раз, сколько шагов уже сделано. Так порядок совпадает не
   // «примерно», а по построению, и хранить состояние генератора не нужно.
+  RunShape shape;
+  shape.batch_size = config.batch_size;
+  shape.seq_len = seq;
+  shape.seed = config.seed;
+
   int64_t start_step = 0;
   if (!config.resume_path.empty() && resume_exists(config.resume_path)) {
     const ResumeState state =
-        load_resume(config.resume_path, model, &optimizer);
+        load_resume(config.resume_path, model, &optimizer, shape);
     start_step = state.step;
     report.best_validation_loss = state.best_validation_loss;
     report.best_step = state.best_step;
@@ -332,6 +350,14 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
       optimizer.zero_grad();
       loss.backward();
     }
+    // Послойные нормы снимаются ДО обрезки — см. grad_norm_by_layer — и
+    // только на тех шагах, где диагностика будет показана: проход по всем
+    // градиентам стоит заметной доли шага.
+    std::vector<float> layer_grad_norms;
+    if (wants_diagnostics) {
+      layer_grad_norms =
+          grad_norm_by_layer(optimizer.parameters(), model->config().n_layers);
+    }
     const float norm = optimizer.clip_grad_norm(config.grad_clip);
     const float learning_rate = learning_rate_at(schedule, step);
     optimizer.step(learning_rate);
@@ -402,10 +428,7 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
       report.final_stats = shown;
 
       if (config.verbose) {
-        print_diagnostics(shown,
-                          grad_norm_by_layer(optimizer.parameters(),
-                                             model->config().n_layers),
-                          validation, loss_value);
+        print_diagnostics(shown, layer_grad_norms, validation, loss_value);
         std::fflush(stdout);
       }
     }
@@ -427,7 +450,7 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
       state.step = step + 1;
       state.best_validation_loss = report.best_validation_loss;
       state.best_step = report.best_step;
-      save_resume(config.resume_path, model, optimizer, state);
+      save_resume(config.resume_path, model, optimizer, state, shape);
     }
   }
 
