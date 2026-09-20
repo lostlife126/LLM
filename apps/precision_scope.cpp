@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const std::string corpus_path = argv[3];
   const int64_t batches =
-      argc > 4 ? bench::parse_int64(argv[4], "число батчей") : 32;
+      argc > 4 ? bench::parse_positive_int64(argv[4], "число батчей") : 32;
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const std::string text = bench::read_file(corpus_path);

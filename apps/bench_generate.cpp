@@ -58,7 +58,7 @@ double measure(llm::nn::Model* model, const std::vector<int32_t>& prompt,
 int main(int argc, char** argv) {
   const std::string name = argc > 1 ? argv[1] : "tiny";
   const int64_t tokens =
-      argc > 2 ? bench::parse_int64(argv[2], "число токенов") : 100;
+      argc > 2 ? bench::parse_positive_int64(argv[2], "число токенов") : 100;
 
   const llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(name);
   llm::nn::Model model(config, 1234);
@@ -100,6 +100,12 @@ int main(int argc, char** argv) {
 
   std::printf("\nобычная разрядность:   %7.1f токенов/с\n", plain);
   std::printf("половинная разрядность: %7.1f токенов/с\n", half);
+  // Ни одного токена — делить не на что. При нулевом пределе на длину
+  // отношение выводилось как «-nanx»: числа нет, а строка есть.
+  if (plain <= 0.0 || half <= 0.0) {
+    std::printf("отношение: не считалось, токенов не сгенерировано\n");
+    return 0;
+  }
   std::printf("отношение: %.2fx\n", half / plain);
 
   if (plain_traffic.enabled) {

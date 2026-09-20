@@ -259,9 +259,9 @@ int main(int argc, char** argv) {
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
   const int64_t steps =
-      argc > 3 ? bench::parse_int64(argv[3], "число шагов") : 1000;
+      argc > 3 ? bench::parse_positive_int64(argv[3], "число шагов") : 1000;
   const int seeds =
-      argc > 4 ? static_cast<int>(bench::parse_int64(argv[4], "число зёрен"))
+      argc > 4 ? static_cast<int>(bench::parse_positive_int64(argv[4], "число зёрен"))
                : 2;
   // Необязательный фильтр: список подстрок через запятую. Позволяет догнать
   // несколько вариантов, не пересчитывая всю таблицу.

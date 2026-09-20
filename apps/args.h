@@ -49,6 +49,22 @@ inline int64_t parse_int64(const char* text, const char* what) {
   return static_cast<int64_t>(value);
 }
 
+// То же, но величина обязана быть положительной.
+//
+// Ноль в числе зёрен, шагов или элементов батча — не «ничего не делать», а
+// опечатка, и последствия у неё того же рода, что у непонятого числа: ablate
+// с нулём зёрен печатал целую таблицу из четырнадцати строк с потерями 0.0000
+// и перплексией 1.0, то есть выдуманный результат, с виду измеренный.
+inline int64_t parse_positive_int64(const char* text, const char* what) {
+  const int64_t value = parse_int64(text, what);
+  if (value <= 0) {
+    std::fprintf(stderr, "%s: %lld, а нужно больше нуля\n", what,
+                 static_cast<long long>(value));
+    std::exit(1);
+  }
+  return value;
+}
+
 inline double parse_double(const char* text, const char* what) {
   if (text == nullptr || text[0] == '\0') {
     std::fprintf(stderr, "%s: пустое значение, ожидалось число\n", what);

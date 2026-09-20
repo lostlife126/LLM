@@ -43,7 +43,7 @@ std::vector<int32_t> random_ids(int64_t count, int64_t vocab) {
 
 int main(int argc, char** argv) {
   const std::string preset = argc > 1 ? argv[1] : "nano";
-  const int64_t batch = argc > 2 ? bench::parse_int64(argv[2], "батч") : 16;
+  const int64_t batch = argc > 2 ? bench::parse_positive_int64(argv[2], "батч") : 16;
 
   const llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(preset);
   llm::nn::Model model(config, 1234);

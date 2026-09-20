@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const std::string prompt_text = argc > 3 ? argv[3] : "The ";
   const int64_t max_tokens =
-      argc > 4 ? bench::parse_int64(argv[4], "число токенов") : 200;
+      argc > 4 ? bench::parse_positive_int64(argv[4], "число токенов") : 200;
   const float temperature =
       argc > 5 ? static_cast<float>(bench::parse_double(argv[5], "температура"))
                : 0.8f;
@@ -138,6 +138,19 @@ int main(int argc, char** argv) {
     std::printf("[остановлено: модель закончила текст]\n");
   }
   std::printf("--- скорость ---\n");
+
+  // Ни одного токена — мерить нечего, и печатать отношения нельзя.
+  //
+  // Это не выдуманный случай: так выходит при нулевом пределе на длину и при
+  // затравке, после которой модель сразу ставит конец текста. Отношения при
+  // этом считались делением двух почти-нулей и выдавали чистый шум:
+  // «ускорение от кэша: 0.6x» (то есть кэш якобы замедляет) и «половинная
+  // разрядность: 3.42x» — числа, неотличимые с виду от измеренных.
+  if (result.tokens.empty()) {
+    std::printf("не сгенерировано ни одного токена — мерить нечего\n");
+    return 0;
+  }
+
   std::printf("с кэшем:  %.1f токенов/с (%zu токенов за %.2f с)\n",
               static_cast<double>(result.tokens.size()) / result.seconds,
               result.tokens.size(), result.seconds);

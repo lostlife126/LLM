@@ -34,8 +34,8 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const std::string preset = argc > 3 ? argv[3] : "nano";
   const int64_t steps =
-      argc > 4 ? bench::parse_int64(argv[4], "число шагов") : 2000;
-  const int64_t batch = argc > 5 ? bench::parse_int64(argv[5], "батч") : 16;
+      argc > 4 ? bench::parse_positive_int64(argv[4], "число шагов") : 2000;
+  const int64_t batch = argc > 5 ? bench::parse_positive_int64(argv[5], "батч") : 16;
   const float dropout =
       argc > 6 ? static_cast<float>(bench::parse_double(argv[6], "дропаут"))
                : 0.0f;

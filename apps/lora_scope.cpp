@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const std::string target_path = argv[3];
   const int64_t steps =
-      argc > 4 ? bench::parse_int64(argv[4], "число шагов") : 500;
+      argc > 4 ? bench::parse_positive_int64(argv[4], "число шагов") : 500;
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const llm::nn::ModelConfig config =
