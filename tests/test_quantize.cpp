@@ -132,6 +132,30 @@ LLM_TEST(Quantize, ScaleExponentFitsTheFormat) {
                   "после масштаба " << after
                                     << " оставляет больше бинады запаса");
   }
+
+  // Отдельно — случай, которого множитель 0.7 никогда не даёт: наибольшее
+  // значение ровно на краю формата или на его степени двойки. Тогда отношение
+  // к краю — точная степень двойки, frexp возвращает мантиссу ровно 1/2, и без
+  // поправки показатель выходил на единицу больше нужного. Тензор с
+  // наибольшим значением 448 масштабировался до 224, то есть целая бинада
+  // пропадала впустую, а все малые элементы уезжали на бинаду ближе к
+  // субнормальному дну формата.
+  const float exact[] = {448.0f, 224.0f, 896.0f, std::ldexp(448.0f, -20)};
+  for (std::size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); ++i) {
+    std::vector<float> values;
+    values.push_back(exact[i]);
+    values.push_back(-exact[i] / 4.0f);
+    const llm::Tensor tensor = tensor_from(values);
+    const int exponent = llm::scale_exponent(tensor, llm::Precision::kFp8E4M3);
+    const double after = std::ldexp(static_cast<double>(exact[i]), -exponent);
+    LLM_CHECK_MSG(after == 448.0,
+                  "наибольшее " << exact[i] << " обязано лечь ровно на край "
+                                << "формата, а легло на " << after);
+  }
+
+  // То же у E5M2, у которого другой край.
+  const llm::Tensor wide = tensor_from({57344.0f, -1.0f});
+  LLM_CHECK_EQ(llm::scale_exponent(wide, llm::Precision::kFp8E5M2), 0);
 }
 
 // Ноль и тензор из одних нулей не должны ломать выбор масштаба.

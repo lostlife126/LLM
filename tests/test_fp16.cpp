@@ -136,3 +136,52 @@ LLM_TEST(Fp16, SubnormalTiesRoundToEven) {
   // Знак на выбор чётного не влияет.
   LLM_CHECK_EQ(llm::to_fp16(-2.5f * step), static_cast<uint16_t>(0x8002u));
 }
+
+LLM_TEST(Fp16, TheThresholdToInfinityIsTheTieAt65520) {
+  // Между 65504 и бесконечностью нет представимого узла, поэтому граница
+  // проходит не по 65504, а по середине до следующего шага сетки — 65520.
+  // Проверялись 65505 (вниз) и 70000 (вверх), а сама ничья — нет, хотя
+  // именно она решается кодом, который заодно переносит показатель.
+  LLM_CHECK_EQ(to_fp16(65504.0f), static_cast<uint16_t>(0x7BFFu));
+  LLM_CHECK_EQ(to_fp16(65519.0f), static_cast<uint16_t>(0x7BFFu));
+  // Ничья: соседи — мантисса 1023 (нечётная) и 1024 (чётная, но уже
+  // бесконечность). К чётному значит вверх.
+  LLM_CHECK_EQ(to_fp16(65520.0f), static_cast<uint16_t>(0x7C00u));
+  LLM_CHECK_EQ(to_fp16(-65520.0f), static_cast<uint16_t>(0xFC00u));
+  LLM_CHECK(std::isinf(round_to_fp16(65520.0f)));
+  LLM_CHECK(round_to_fp16(65519.0f) == 65504.0f);
+}
+
+LLM_TEST(Fp16, SubnormalRoundsUpIntoTheSmallestNormal) {
+  // Верхний край субнормальной области переходит в нижний край нормальной
+  // молча, самой разрядной арифметикой: мантисса 1023 плюс единица даёт 1024,
+  // то есть 0x400, а это уже поле показателя. Отдельной ветки для этого нет,
+  // и именно поэтому переход стоит закрепить — иначе правка кода вокруг
+  // сломает его незаметно.
+  const float step = std::ldexp(1.0f, -24);  // шаг субнормальной сетки
+
+  // Наибольшее субнормальное.
+  LLM_CHECK_EQ(to_fp16(1023.0f * step), static_cast<uint16_t>(0x03FFu));
+  // Ниже середины — остаётся субнормальным.
+  LLM_CHECK_EQ(to_fp16(1023.25f * step), static_cast<uint16_t>(0x03FFu));
+  // Ровно середина: 1023 нечётно, значит вверх — и это уже нормальное число.
+  LLM_CHECK_EQ(to_fp16(1023.5f * step), static_cast<uint16_t>(0x0400u));
+  LLM_CHECK(round_to_fp16(1023.5f * step) == std::ldexp(1.0f, -14));
+  LLM_CHECK(from_fp16(0x0400u) == std::ldexp(1.0f, -14));
+}
+
+LLM_TEST(Fp16, ZeroKeepsItsSignAndFloatSubnormalsVanish) {
+  // Знак нуля переживает преобразование: иначе -0 превратился бы в +0, а
+  // это разные биты, и сверка «побитово то же» на них разошлась бы.
+  LLM_CHECK_EQ(to_fp16(0.0f), static_cast<uint16_t>(0x0000u));
+  LLM_CHECK_EQ(to_fp16(-0.0f), static_cast<uint16_t>(0x8000u));
+
+  // Субнормальные float (около 1e-38) лежат на двадцать порядков ниже всего
+  // представимого в половинной разрядности. Ветка для них отдельная — та же,
+  // что для обычного обнуления, — и важно, что она не пытается приписать им
+  // неявную единицу.
+  const float tiny = std::ldexp(1.0f, -140);
+  LLM_CHECK(tiny != 0.0f);  // проверка не пуста: число действительно есть
+  LLM_CHECK_EQ(to_fp16(tiny), static_cast<uint16_t>(0x0000u));
+  LLM_CHECK_EQ(to_fp16(-tiny), static_cast<uint16_t>(0x8000u));
+}

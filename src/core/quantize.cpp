@@ -115,7 +115,18 @@ int scale_exponent(const Tensor& tensor, Precision precision) {
   // frexp даёт largest/maximum = m * 2^e при m из [0.5, 1). Значит 2^e уже не
   // меньше отношения, и после деления на него ничего не вылезет за край.
   int exponent = 0;
-  std::frexp(largest / format_maximum(precision), &exponent);
+  const float ratio = largest / format_maximum(precision);
+  const float mantissa = std::frexp(ratio, &exponent);
+
+  // Но при m ровно 1/2 отношение — точная степень двойки, и показателя на
+  // единицу меньше уже достаточно: наибольшее значение ложится тогда РОВНО на
+  // верхний край формата, а он представим точно и вверх не округляется.
+  // Без этой поправки целая бинада пропадала впустую: тензор с наибольшим
+  // значением 448 масштабировался до 224, и все малые элементы уезжали на
+  // бинаду ближе к субнормальному дну формата — ни за что.
+  if (mantissa == 0.5f) {
+    --exponent;
+  }
   return exponent;
 }
 

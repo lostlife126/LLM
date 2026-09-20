@@ -224,3 +224,61 @@ LLM_TEST(Fp8, InfinityFollowsWhetherTheFormatHasOne) {
   LLM_CHECK(std::isinf(
       llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E5M2), llm::kFp8E5M2)));
 }
+
+LLM_TEST(Fp8, SaturationHappensBeforeTheCodeReservedForNan) {
+  // У E4M3 наибольшее конечное — 448, а не 480, потому что код с верхним
+  // порядком и верхней мантиссой занят NaN. Значит у насыщения две разные
+  // причины, и вторая до сих пор не проверялась ничем: порядок ещё в пределах
+  // формата, а мантисса после округления вылезла за наибольшую допустимую.
+  // Проверялось только 1e30, то есть первая причина.
+  //
+  // 464 — ровно середина между 448 (мантисса 6) и несуществующим 480
+  // (мантисса 7). Шестёрка чётная, значит ничья идёт вниз, и насыщение тут ни
+  // при чём.
+  LLM_CHECK_EQ(to_fp8(464.0f, kFp8E4M3), static_cast<uint8_t>(0x7Eu));
+  LLM_CHECK(round_to_fp8(464.0f, kFp8E4M3) == 448.0f);
+  // А выше середины округление даёт мантиссу 7 — и вот её-то и перехватывает
+  // насыщение, иначе получился бы код NaN.
+  LLM_CHECK_EQ(to_fp8(465.0f, kFp8E4M3), static_cast<uint8_t>(0x7Eu));
+  LLM_CHECK_EQ(to_fp8(480.0f, kFp8E4M3), static_cast<uint8_t>(0x7Eu));
+  LLM_CHECK_EQ(to_fp8(511.0f, kFp8E4M3), static_cast<uint8_t>(0x7Eu));
+  LLM_CHECK(!std::isnan(round_to_fp8(480.0f, kFp8E4M3)));
+  LLM_CHECK(round_to_fp8(480.0f, kFp8E4M3) == 448.0f);
+  LLM_CHECK(round_to_fp8(-480.0f, kFp8E4M3) == -448.0f);
+
+  // У E5M2 верхний порядок занят бесконечностью, и переполнение мантиссы
+  // переносится в него же — а насыщение обязано это перехватить.
+  LLM_CHECK(round_to_fp8(60000.0f, kFp8E5M2) == 57344.0f);
+  LLM_CHECK(round_to_fp8(61440.0f, kFp8E5M2) == 57344.0f);
+  LLM_CHECK(!std::isinf(round_to_fp8(61440.0f, kFp8E5M2)));
+}
+
+LLM_TEST(Fp8, SubnormalRoundsUpIntoTheSmallestNormal) {
+  // Верхний край субнормальной области переходит в нижний край нормальной сам
+  // собой: мантисса, переполнившись, становится единицей в поле порядка.
+  // Отдельной ветки для этого нет, и потому переход стоит закрепить.
+  const float step = std::ldexp(1.0f, -9);  // шаг субнормальной сетки E4M3
+
+  LLM_CHECK_EQ(to_fp8(7.0f * step, kFp8E4M3), static_cast<uint8_t>(0x07u));
+  LLM_CHECK_EQ(to_fp8(7.25f * step, kFp8E4M3), static_cast<uint8_t>(0x07u));
+  // Ровно середина: 7 нечётно, значит вверх — и это уже нормальное число.
+  LLM_CHECK_EQ(to_fp8(7.5f * step, kFp8E4M3), static_cast<uint8_t>(0x08u));
+  LLM_CHECK(round_to_fp8(7.5f * step, kFp8E4M3) == std::ldexp(1.0f, -6));
+
+  // То же у E5M2: шаг 2^-16, наибольшее субнормальное 3 шага, дальше 2^-14.
+  const float wide_step = std::ldexp(1.0f, -16);
+  LLM_CHECK_EQ(to_fp8(3.0f * wide_step, kFp8E5M2), static_cast<uint8_t>(0x03u));
+  LLM_CHECK_EQ(to_fp8(3.5f * wide_step, kFp8E5M2), static_cast<uint8_t>(0x04u));
+  LLM_CHECK(round_to_fp8(3.5f * wide_step, kFp8E5M2) == std::ldexp(1.0f, -14));
+}
+
+LLM_TEST(Fp8, ZeroKeepsItsSign) {
+  for (int which = 0; which < 2; ++which) {
+    LLM_CHECK_EQ(to_fp8(0.0f, kBoth[which]), static_cast<uint8_t>(0x00u));
+    LLM_CHECK_MSG(to_fp8(-0.0f, kBoth[which]) == static_cast<uint8_t>(0x80u),
+                  kNames[which] << ": знак нуля потерялся");
+    // И обратно: минус-нуль разворачивается в минус-нуль, а не в плюс-нуль.
+    LLM_CHECK(std::signbit(from_fp8(0x80u, kBoth[which])));
+    LLM_CHECK(!std::signbit(from_fp8(0x00u, kBoth[which])));
+  }
+}
