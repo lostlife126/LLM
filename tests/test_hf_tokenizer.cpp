@@ -6,6 +6,7 @@
 // ничем себя не выдаёт.
 
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -415,4 +416,109 @@ LLM_TEST(HfTokenizer, MergeTakesTheLeftmostOfEqualRank) {
                 "«aaa» разобралось в " << ids.size()
                                        << " токенов вместо одного");
   LLM_CHECK_EQ(tokenizer.decode(ids), std::string("aaa"));
+}
+
+LLM_TEST(HfTokenizer, LongChunkIsNotQuadratic) {
+  // Правило \s+ длинный пробельный участок не режет: строка из одних пробелов
+  // даёт ОДИН кусок, какой бы длины она ни была. То же и с длинным словом, и
+  // с длинной строкой знаков препинания. Значит разбор одного куска обязан
+  // быть по силам на любом входе, а не только на словах из пяти букв.
+  //
+  // Проверять приходится по часам, и это здесь единственный способ: замена
+  // выбранной пары везде за один проход и замена её же по одному вхождению
+  // дают ПОБИТОВО один и тот же ответ — отличается только работа.
+  //
+  // Но не абсолютным временем, а его РОСТОМ, и это существенно. Первая
+  // попытка ставила предел в полсекунды на кусок из 8000 пробелов: на x86
+  // исправленный разбор укладывался в 0.002 с, а сломанный занимал 1.45 с, и
+  // запас казался семисоткратным. Под qemu тот же исправленный разбор занял
+  // 1.32 с — эмуляция здесь медленнее натуральной машины в тысячу раз, — и
+  // тест упал на правильном коде. Отношение времён от скорости машины не
+  // зависит вовсе: вчетверо длиннее кусок — вчетверо дольше линейный разбор и
+  // вшестнадцатеро квадратичный.
+  //
+  // Измерено, а не выведено: x86 дал 4.47, 4.31, 4.45 на исправленном и
+  // 15.95, 16.22, 15.91 на замене по одному вхождению; aarch64 под qemu —
+  // 4.01 трижды. Предел 8 лежит ровно посередине, с запасом почти вдвое в обе
+  // стороны.
+  //
+  // Словарь: Ġ (пробел в байтовом алфавите) и его удвоения. Слияния устроены
+  // так, что каждый проход укорачивает кусок вдвое, — то есть проходов
+  // логарифм, и линейное время достижимо.
+  std::string vocab = "\"\\u0120\": 0";
+  std::string merges;
+  std::string symbol = "\\u0120";
+  for (int i = 1; i <= 12; ++i) {
+    merges += (merges.empty() ? "" : ", ");
+    merges += "\"" + symbol + " " + symbol + "\"";
+    symbol += symbol;
+    vocab += ", \"" + symbol + "\": " + std::to_string(i);
+  }
+
+  const std::string text =
+      "{\"version\": \"1.0\", \"added_tokens\": [], \"normalizer\": null,"
+      " \"pre_tokenizer\": {\"type\": \"ByteLevel\","
+      " \"add_prefix_space\": false, \"use_regex\": true},"
+      " \"decoder\": {\"type\": \"ByteLevel\"},"
+      " \"model\": {\"type\": \"BPE\", \"dropout\": null,"
+      " \"unk_token\": null, \"continuing_subword_prefix\": null,"
+      " \"end_of_word_suffix\": null, \"vocab\": {" + vocab + "},"
+      " \"merges\": [" + merges + "]}}";
+
+  const llm::HfTokenizer tokenizer = llm::HfTokenizer::parse(text, "проба");
+
+  // Наименьшее из трёх, а не среднее: посторонняя нагрузка может добавить
+  // времени, но не убавить. Без этого отношение прыгало бы от того, что
+  // творится на машине, а не от того, что написано в коде.
+  const auto best_seconds = [&tokenizer](std::size_t spaces,
+                                         std::vector<int32_t>* ids) {
+    const std::string text_spaces(spaces, ' ');
+    double best = 0.0;
+    for (int round = 0; round < 3; ++round) {
+      const std::clock_t start = std::clock();
+      *ids = tokenizer.encode(text_spaces);
+      const double seconds =
+          static_cast<double>(std::clock() - start) / CLOCKS_PER_SEC;
+      if (round == 0 || seconds < best) {
+        best = seconds;
+      }
+    }
+    return best;
+  };
+
+  std::vector<int32_t> short_ids;
+  std::vector<int32_t> long_ids;
+  const double short_seconds = best_seconds(1000, &short_ids);
+  const double long_seconds = best_seconds(4000, &long_ids);
+
+  // Сначала ответ, и только потом время: тест, проверяющий одну лишь
+  // скорость, проходил бы и на разборе, который ничего не разбирает.
+  //
+  // Наибольшее удвоение в словаре — 4096, поэтому сборка даёт по одному
+  // токену на каждую единицу в двоичной записи длины, от старшей к младшей:
+  // 1000 = 512 + 256 + 128 + 64 + 32 + 8, 4000 = 2048 + 1024 + 512 + 256 +
+  // 128 + 32. Номер токена — это степень двойки: Ġ это 0, ĠĠ это 1 и так
+  // далее.
+  const std::vector<int32_t> short_expected = {9, 8, 7, 6, 5, 3};
+  const std::vector<int32_t> long_expected = {11, 10, 9, 8, 7, 5};
+  LLM_CHECK_MSG(short_ids == short_expected,
+                "1000 пробелов разобрались в " << short_ids.size()
+                                               << " токенов вместо шести");
+  LLM_CHECK_MSG(long_ids == long_expected,
+                "4000 пробелов разобрались в " << long_ids.size()
+                                               << " токенов вместо шести");
+  LLM_CHECK_EQ(tokenizer.decode(long_ids), std::string(4000, ' '));
+
+  // Деление на ноль исключено: самый быстрый замер — это разбор тысячи
+  // пробелов, и в ноль тактов он не уложится ни на какой машине. Но если
+  // часы вдруг окажутся грубее, молчать об этом нельзя: отношение станет
+  // бесконечностью или нулём, и тест либо упадёт без причины, либо пройдёт
+  // без проверки.
+  LLM_CHECK_MSG(short_seconds > 0.0,
+                "часы не различили разбор тысячи пробелов — проверять нечем");
+  const double growth = long_seconds / short_seconds;
+  LLM_CHECK_MSG(growth < 8.0,
+                "кусок вчетверо длиннее разбирался в " << growth
+                    << " раз дольше (" << short_seconds << " с против "
+                    << long_seconds << " с) — похоже, снова квадрат от длины");
 }
