@@ -707,3 +707,237 @@ LLM_TEST(Linear, MergingLoraInvalidatesTheHalfCopy) {
                              << " вместо " << results[1][i]);
   }
 }
+
+namespace {
+
+// Независимый эталон одного слоя: то же вычисление, написанное заново и по
+// формулам, а не по коду модели.
+//
+// Зачем он нужен именно здесь. Масштаб внимания 1/sqrt(head_dim) не проверялся
+// ничем: подменённый на 1/head_dim, он оставлял все проверки проекта зелёными.
+// Модель при этом обучается и говорит связно — просто не то, и с чужими весами
+// расходится молча. Тем же приёмом (поменять одно место и посмотреть, заметит
+// ли суд) выяснилось, что заодно не проверены ни eps нормировки, ни порядок
+// сомножителей в SwiGLU, ни то, что остаток складывается до нормировки.
+//
+// Конфигурация подобрана под краткость эталона, а не под реализм: один слой,
+// одна голова, позиции выключены (RoPE проверяется отдельно). Всё остальное —
+// настоящее.
+std::vector<double> rms_norm_row(const std::vector<double>& x,
+                                 const llm::Tensor& weight, double eps) {
+  double squares = 0.0;
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    squares += x[i] * x[i];
+  }
+  const double scale = 1.0 / std::sqrt(squares / static_cast<double>(x.size()) + eps);
+  std::vector<double> out(x.size());
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    out[i] = x[i] * scale * static_cast<double>(weight(static_cast<int64_t>(i)));
+  }
+  return out;
+}
+
+// row * matrix, где matrix хранится как (вход, выход).
+std::vector<double> project(const std::vector<double>& row,
+                            const llm::Tensor& matrix) {
+  const int64_t out_features = matrix.dim(1);
+  std::vector<double> out(static_cast<std::size_t>(out_features), 0.0);
+  for (int64_t j = 0; j < out_features; ++j) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      sum += row[i] * static_cast<double>(matrix(static_cast<int64_t>(i), j));
+    }
+    out[static_cast<std::size_t>(j)] = sum;
+  }
+  return out;
+}
+
+// Возвращается по значению, а не по ссылке: тензор — это вид на общий буфер,
+// копия его не копирует, а ссылка на элемент вектора заставляет компилятор
+// подозревать висячую ссылку.
+llm::Tensor by_name(const std::vector<llm::nn::NamedParameter>& all,
+                    const std::string& name) {
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    if (all[i].name == name) {
+      return all[i].value->value();
+    }
+  }
+  LLM_CHECK_MSG(false, "в модели нет параметра " << name);
+  return all[0].value->value();
+}
+
+}  // namespace
+
+LLM_TEST(Model, OneLayerMatchesAnIndependentReference) {
+  ModelConfig config;
+  config.vocab_size = 11;
+  config.d_model = 8;
+  config.n_layers = 1;
+  config.n_heads = 1;
+  config.n_kv_heads = 1;
+  config.max_seq_len = 6;
+  config.ffn_hidden = 12;
+  config.position = llm::nn::PositionKind::kNone;
+  config.tie_embeddings = true;
+  config.validate();
+
+  Model model(config, 123);
+  const std::vector<llm::nn::NamedParameter> all = model.parameters();
+  const llm::Tensor table = by_name(all, "token_embedding");
+  const llm::Tensor attention_norm = by_name(all, "block.0.attention_norm.weight");
+  llm::Tensor wq = by_name(all, "block.0.attention.query.weight");
+  llm::Tensor wk = by_name(all, "block.0.attention.key.weight");
+  llm::Tensor wv = by_name(all, "block.0.attention.value.weight");
+  llm::Tensor wo = by_name(all, "block.0.attention.output.weight");
+  const llm::Tensor mlp_norm = by_name(all, "block.0.mlp_norm.weight");
+  llm::Tensor wgate = by_name(all, "block.0.mlp.gate.weight");
+  llm::Tensor wup = by_name(all, "block.0.mlp.up.weight");
+  const llm::Tensor wdown = by_name(all, "block.0.mlp.down.weight");
+  const llm::Tensor final_norm = by_name(all, "final_norm.weight");
+
+  // Веса запросов и ключей усиливаются, и это не украшение. У свежей модели
+  // они малы, скалярные произведения близки к нулю, и softmax выходит почти
+  // равномерным при любом масштабе — то есть тест не различал бы 1/sqrt(d) и
+  // 1/d вовсе. Проверено: с исходными весами подмена масштаба этот тест
+  // проходила. Усиление делает оценки величиной в единицы, и softmax
+  // становится к масштабу чувствителен.
+  for (int64_t i = 0; i < wq.numel(); ++i) {
+    wq.data()[i] *= 20.0f;
+    wk.data()[i] *= 20.0f;
+    // Значения и выходную проекцию тоже: иначе вклад внимания в логиты
+    // тонет рядом с путём остатка, и разница масштабов до них не доходит.
+    wv.data()[i] *= 20.0f;
+    wo.data()[i] *= 20.0f;
+  }
+  // И веса FFN — по той же причине, но про другую нелинейность. При малых
+  // аргументах silu(x) ~ x/2, поэтому silu(вентиль) * up и вентиль * silu(up)
+  // совпадают с точностью до второго порядка, и перестановка их местами
+  // осталась бы незамеченной. Проверено: без этого усиления эталон такую
+  // перестановку пропускал.
+  for (int64_t i = 0; i < wgate.numel(); ++i) {
+    wgate.data()[i] *= 20.0f;
+    wup.data()[i] *= 20.0f;
+  }
+
+  const int64_t seq = 5;
+  const std::vector<int32_t> ids = random_ids(seq, config.vocab_size, 77);
+  const Var actual = model.forward(ids, 1, seq);
+
+  const double eps = static_cast<double>(config.norm_eps);
+  const std::size_t width = static_cast<std::size_t>(config.d_model);
+
+  // 1. Эмбеддинги.
+  std::vector<std::vector<double>> x(static_cast<std::size_t>(seq));
+  for (int64_t t = 0; t < seq; ++t) {
+    x[static_cast<std::size_t>(t)].resize(width);
+    for (std::size_t i = 0; i < width; ++i) {
+      x[static_cast<std::size_t>(t)][i] =
+          static_cast<double>(table(ids[static_cast<std::size_t>(t)],
+                                    static_cast<int64_t>(i)));
+    }
+  }
+
+  // 2. Внимание: нормировка, проекции, оценки с масштабом 1/sqrt(head_dim),
+  //    каузальная маска, softmax, взвешенная сумма, выходная проекция.
+  std::vector<std::vector<double>> q(static_cast<std::size_t>(seq));
+  std::vector<std::vector<double>> k(static_cast<std::size_t>(seq));
+  std::vector<std::vector<double>> v(static_cast<std::size_t>(seq));
+  for (int64_t t = 0; t < seq; ++t) {
+    const std::vector<double> h =
+        rms_norm_row(x[static_cast<std::size_t>(t)], attention_norm, eps);
+    q[static_cast<std::size_t>(t)] = project(h, wq);
+    k[static_cast<std::size_t>(t)] = project(h, wk);
+    v[static_cast<std::size_t>(t)] = project(h, wv);
+  }
+
+  // Эталон считается как функция масштаба: сначала с правильным, потом с
+  // заведомо неправильным. Второй прогон — проверка самой проверки: если бы
+  // данные масштаба не различали, оба совпали бы с моделью одинаково хорошо,
+  // и тест ничего не значил бы.
+  const auto reference = [&](double scale) {
+  std::vector<std::vector<double>> after(static_cast<std::size_t>(seq));
+  for (int64_t t = 0; t < seq; ++t) {
+    std::vector<double> scores(static_cast<std::size_t>(t + 1));
+    double largest = -1e300;
+    for (int64_t u = 0; u <= t; ++u) {
+      double dot = 0.0;
+      for (std::size_t i = 0; i < width; ++i) {
+        dot += q[static_cast<std::size_t>(t)][i] * k[static_cast<std::size_t>(u)][i];
+      }
+      scores[static_cast<std::size_t>(u)] = dot * scale;
+      largest = std::max(largest, scores[static_cast<std::size_t>(u)]);
+    }
+    double total = 0.0;
+    for (std::size_t u = 0; u < scores.size(); ++u) {
+      scores[u] = std::exp(scores[u] - largest);
+      total += scores[u];
+    }
+    std::vector<double> mixed(width, 0.0);
+    for (std::size_t u = 0; u < scores.size(); ++u) {
+      const double weight = scores[u] / total;
+      for (std::size_t i = 0; i < width; ++i) {
+        mixed[i] += weight * v[u][i];
+      }
+    }
+    const std::vector<double> projected = project(mixed, wo);
+    after[static_cast<std::size_t>(t)].resize(width);
+    for (std::size_t i = 0; i < width; ++i) {
+      // Остаток складывается с выходом подслоя, а не с нормированным входом.
+      after[static_cast<std::size_t>(t)][i] =
+          x[static_cast<std::size_t>(t)][i] + projected[i];
+    }
+  }
+
+  // 3. SwiGLU: silu на вентиле, произведение с up, затем down.
+  std::vector<std::vector<double>> y(static_cast<std::size_t>(seq));
+  for (int64_t t = 0; t < seq; ++t) {
+    const std::vector<double> h =
+        rms_norm_row(after[static_cast<std::size_t>(t)], mlp_norm, eps);
+    const std::vector<double> gate = project(h, wgate);
+    const std::vector<double> up = project(h, wup);
+    std::vector<double> hidden(gate.size());
+    for (std::size_t j = 0; j < gate.size(); ++j) {
+      hidden[j] = gate[j] / (1.0 + std::exp(-gate[j])) * up[j];
+    }
+    const std::vector<double> down = project(hidden, wdown);
+    std::vector<double> sum(width);
+    for (std::size_t i = 0; i < width; ++i) {
+      sum[i] = after[static_cast<std::size_t>(t)][i] + down[i];
+    }
+    y[static_cast<std::size_t>(t)] = rms_norm_row(sum, final_norm, eps);
+  }
+
+  // 4. Логиты: те же эмбеддинги, только транспонированные.
+  double worst = 0.0;
+  for (int64_t t = 0; t < seq; ++t) {
+    for (int64_t token = 0; token < config.vocab_size; ++token) {
+      double logit = 0.0;
+      for (std::size_t i = 0; i < width; ++i) {
+        logit += y[static_cast<std::size_t>(t)][i] *
+                 static_cast<double>(table(token, static_cast<int64_t>(i)));
+      }
+      worst = std::max(worst, std::fabs(logit - static_cast<double>(
+                                                   actual.value()(0, t, token))));
+    }
+  }
+  return worst;
+  };
+
+  const double head_dim = static_cast<double>(config.head_dim());
+  const double worst = reference(1.0 / std::sqrt(head_dim));
+  const double with_wrong_scale = reference(1.0 / head_dim);
+  // Проверка самой проверки. Замерено: с верным масштабом эталон расходится с
+  // моделью на 2.4e-08, с масштабом 1/d — на 2.7e-02, то есть в миллион раз
+  // сильнее. Порог поставлен на 1e-3: до него от неверного масштаба двадцать
+  // семь крат, а от верного — пять порядков.
+  LLM_CHECK_MSG(with_wrong_scale > 1e-3,
+                "данные не различают масштаб внимания, проверка пуста: с "
+                "масштабом 1/d эталон расходится с моделью лишь на "
+                    << with_wrong_scale);
+  // Допуск замерен, а не взят с запасом на глаз: расхождение эталона в
+  // двойной точности с моделью на float составляет 2.4e-08 — одинаково под
+  // gcc и под clang. Взято на три порядка больше, чтобы пережить другой
+  // порядок сложений на другой машине; до того, что тест обязан ловить, всё
+  // равно остаётся три порядка.
+  LLM_CHECK_MSG(worst < 1e-5, "эталон разошёлся с моделью на " << worst);
+}
