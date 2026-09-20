@@ -138,6 +138,29 @@ int main(int argc, char** argv) {
               static_cast<double>(result.tokens.size()) / result.seconds,
               result.tokens.size(), result.seconds);
 
+  // Тот же прогон без кэша — чтобы разница была видна, а не заявлена. На
+  // большой модели он занял бы вдвое больше самой генерации и показал бы ровно
+  // то же самое, поэтому считается только на малых.
+  //
+  // Считается он здесь, до pack_half, и иначе нельзя: сравнивать его не с чем,
+  // кроме прогона с кэшем выше, а тот шёл на обычных весах. Стоял он ниже —
+  // и «ускорение от кэша» выходило поделённым ещё и на ускорение от половинной
+  // разрядности, то есть заниженным во столько же раз.
+  const int64_t kSlowRunLimit = 5000000;
+  if (model.parameter_count() <= kSlowRunLimit) {
+    llm::infer::GenerateConfig without_cache = generate_config;
+    without_cache.use_cache = false;
+    const llm::infer::GenerateResult slow =
+        llm::infer::generate(&model, prompt, without_cache);
+    std::printf("без кэша: %.1f токенов/с (%zu токенов за %.2f с)\n",
+                static_cast<double>(slow.tokens.size()) / slow.seconds,
+                slow.tokens.size(), slow.seconds);
+    std::printf("ускорение от кэша: %.1fx\n", slow.seconds / result.seconds);
+  } else {
+    std::printf("без кэша: не считалось (модель крупнее %lld параметров)\n",
+                static_cast<long long>(kSlowRunLimit));
+  }
+
   // Тот же прогон на весах половинной разрядности. Считается здесь же, а не
   // отдельной программой, потому что сравнивать надо на одной модели, одной
   // затравке и одном зерне выборки — иначе разница потеряется в разбросе.
@@ -163,22 +186,5 @@ int main(int argc, char** argv) {
   std::printf("совпало токенов подряд: %zu из %zu\n", common,
               result.tokens.size());
 
-  // Тот же прогон без кэша — чтобы разница была видна, а не заявлена. На
-  // большой модели он занял бы вдвое больше самой генерации и показал бы ровно
-  // то же самое, поэтому считается только на малых.
-  const int64_t kSlowRunLimit = 5000000;
-  if (model.parameter_count() > kSlowRunLimit) {
-    std::printf("без кэша: не считалось (модель крупнее %lld параметров)\n",
-                static_cast<long long>(kSlowRunLimit));
-    return 0;
-  }
-  llm::infer::GenerateConfig without_cache = generate_config;
-  without_cache.use_cache = false;
-  const llm::infer::GenerateResult slow =
-      llm::infer::generate(&model, prompt, without_cache);
-  std::printf("без кэша: %.1f токенов/с (%zu токенов за %.2f с)\n",
-              static_cast<double>(slow.tokens.size()) / slow.seconds,
-              slow.tokens.size(), slow.seconds);
-  std::printf("ускорение: %.1fx\n", slow.seconds / result.seconds);
   return 0;
 }
