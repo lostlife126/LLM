@@ -81,6 +81,10 @@ int main(int argc, char** argv) {
   // на каждый токен, а половинная разрядность получает её уже переложенной и
   // выигрывала бы не тем, чем заявлено.
   model.prepare_inference();
+  // Счётчик сбрасывается перед каждым из двух замеров, а не только перед
+  // вторым. Иначе в первый попадает всё, что умножалось до него, и две доли,
+  // которые дальше сравниваются, считались бы за разные отрезки работы.
+  llm::ops::reset_traffic();
   const double plain = measure(&model, prompt, tokens);
   const llm::ops::GemmTraffic plain_traffic = llm::ops::traffic();
 
