@@ -26,28 +26,36 @@ std::vector<std::string> chunk_strings(llm::StrView text) {
 // мало, обучение упирается в потолок (сливать больше нечего) раньше, чем
 // достигнет запрошенного размера, и тесты начинают проверять не то, что
 // написано в их названии.
-std::string sample_corpus() {
-  const char* lines[] = {
-      "the quick brown fox jumps over the lazy dog\n",
-      "the dog barks and the fox runs away quickly\n",
-      "a wandering merchant sells silver rings and copper cups\n",
-      "the river carries autumn leaves toward the distant ocean\n",
-      "children gather stones along the quiet mountain path\n",
-      "the old library keeps forgotten letters in wooden drawers\n",
-      "morning light touches the frozen windows of the tower\n",
-      "travelers exchange stories about storms and hidden harbors\n",
-      "the gardener plants seeds before the heavy rains arrive\n",
-      "silent horses wait beside the broken stone bridge\n",
-  };
-  const std::size_t count = sizeof(lines) / sizeof(lines[0]);
+const char* const kCorpusLines[] = {
+    "the quick brown fox jumps over the lazy dog\n",
+    "the dog barks and the fox runs away quickly\n",
+    "a wandering merchant sells silver rings and copper cups\n",
+    "the river carries autumn leaves toward the distant ocean\n",
+    "children gather stones along the quiet mountain path\n",
+    "the old library keeps forgotten letters in wooden drawers\n",
+    "morning light touches the frozen windows of the tower\n",
+    "travelers exchange stories about storms and hidden harbors\n",
+    "the gardener plants seeds before the heavy rains arrive\n",
+    "silent horses wait beside the broken stone bridge\n",
+};
+
+const std::size_t kCorpusLineCount =
+    sizeof(kCorpusLines) / sizeof(kCorpusLines[0]);
+
+// Тот же корпус, но строки в обратном порядке. Набор кусков и их частоты от
+// этого не меняются — меняется лишь порядок, в котором они попадают в
+// хеш-таблицы обучения.
+std::string corpus_in_order(bool reversed) {
   std::string text;
   for (int repeat = 0; repeat < 40; ++repeat) {
-    for (std::size_t i = 0; i < count; ++i) {
-      text += lines[i];
+    for (std::size_t i = 0; i < kCorpusLineCount; ++i) {
+      text += kCorpusLines[reversed ? kCorpusLineCount - 1 - i : i];
     }
   }
   return text;
 }
+
+std::string sample_corpus() { return corpus_in_order(false); }
 
 }  // namespace
 
@@ -202,15 +210,40 @@ LLM_TEST(Bpe, RoundtripOnEmptyInput) {
 LLM_TEST(Bpe, EncodingIsDeterministic) {
   const llm::Bpe first = llm::Bpe::train(sample_corpus(), 400, false);
   const llm::Bpe second = llm::Bpe::train(sample_corpus(), 400, false);
-  // Обучение на одном корпусе обязано давать один и тот же словарь: без
-  // явного правила разрешения ничьих порядок обхода хеш-таблицы сделал бы
-  // результат случайным.
   LLM_CHECK_EQ(first.merge_count(), second.merge_count());
   for (int32_t id = llm::Bpe::kFirstMergeToken; id < first.vocab_size(); ++id) {
     LLM_CHECK_MSG(first.token_bytes(id) == second.token_bytes(id),
                   "словари разошлись на токене " << id);
   }
   LLM_CHECK(first.encode("the dog") == second.encode("the dog"));
+}
+
+LLM_TEST(Bpe, TrainingDoesNotDependOnTheOrderOfTheCorpus) {
+  // Вот настоящая проверка воспроизводимости обучения, а проверка выше —
+  // только на то, что обучение не пользуется ничем изменчивым вроде времени
+  // или адреса. Два обучения на одном и том же тексте в одном процессе
+  // обходят хеш-таблицы одинаково по построению, поэтому снятие правила
+  // разрешения ничьих они не заметят: проверено, все проверки Bpe проходят и
+  // без него.
+  //
+  // Различить порядки можно, переставив строки корпуса. Набор кусков и их
+  // частоты от этого не меняются, то есть частоты пар совпадают до единицы, а
+  // вот порядок, в котором пары ложатся в unordered_map, — нет. Если
+  // побеждает первая попавшаяся из равных по частоте, словари разойдутся.
+  //
+  // Замерено на снятом правиле: расходятся 128 токенов из 141, начиная с
+  // номера 265 — там, где ' s' встаёт против 'or'.
+  const llm::Bpe forward = llm::Bpe::train(corpus_in_order(false), 400, false);
+  const llm::Bpe backward = llm::Bpe::train(corpus_in_order(true), 400, false);
+
+  LLM_CHECK_EQ(forward.merge_count(), backward.merge_count());
+  for (int32_t id = llm::Bpe::kFirstMergeToken; id < forward.vocab_size();
+       ++id) {
+    LLM_CHECK_MSG(forward.token_bytes(id) == backward.token_bytes(id),
+                  "перестановка строк корпуса изменила токен "
+                      << id << ": " << forward.token_debug_string(id)
+                      << " против " << backward.token_debug_string(id));
+  }
 }
 
 LLM_TEST(Bpe, SaveAndLoadPreserveVocabulary) {
