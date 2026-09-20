@@ -15,6 +15,24 @@ namespace train {
 AdamW::AdamW(std::vector<nn::NamedParameter> parameters,
              const AdamWConfig& config)
     : parameters_(std::move(parameters)), config_(config), step_(0) {
+  // Настройки проверяются здесь: дальше они попадают в арифметику шага, где
+  // неверное значение не падает, а выдаёт NaN или бесконечность.
+  //
+  // Единица в любом из бета даёт нулевую поправку на смещение — деление на
+  // нуль на каждом шаге. Отрицательный beta2 умеет сделать оценку второго
+  // момента отрицательной, а корень из неё — NaN. Нулевой eps оставляет
+  // деление на корень без нижней границы: параметр с нулевым градиентом даёт
+  // 0/0.
+  LLM_CHECK_MSG(config_.beta1 >= 0.0f && config_.beta1 < 1.0f,
+                "beta1 " << config_.beta1 << " вне [0, 1)");
+  LLM_CHECK_MSG(config_.beta2 >= 0.0f && config_.beta2 < 1.0f,
+                "beta2 " << config_.beta2 << " вне [0, 1)");
+  LLM_CHECK_MSG(config_.eps > 0.0f,
+                "eps " << config_.eps << " должен быть положительным");
+  LLM_CHECK_MSG(config_.weight_decay >= 0.0f,
+                "распад веса " << config_.weight_decay
+                               << " отрицателен: он стал бы раздуванием");
+
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
     // Обучаемость проверяется здесь, а не там, где она понадобится.
     // У замороженного параметра нет узла графа, и обрезка нормы обратилась бы
@@ -52,6 +70,12 @@ void AdamW::restore(std::vector<Tensor> first, std::vector<Tensor> second,
     LLM_CHECK_MSG(
         first[i].shape() == expected && second[i].shape() == expected,
         "у параметра " << parameters_[i].name << " момент другой формы");
+    // Шаг читает моменты как numel() значений подряд. Снимок отдаёт плотные,
+    // но restore объявлен в заголовке, и вид на чужой буфер здесь означал бы
+    // чтение мимо.
+    LLM_CHECK_MSG(
+        first[i].is_contiguous() && second[i].is_contiguous(),
+        "у параметра " << parameters_[i].name << " момент размещён неплотно");
   }
   LLM_CHECK_GE(step, static_cast<int64_t>(0));
   first_moment_ = std::move(first);
@@ -93,6 +117,13 @@ double AdamW::sum_squares(const Tensor& tensor) {
 }
 
 float AdamW::clip_grad_norm(float max_norm) {
+  // Отрицательный предел давал бы отрицательный множитель, то есть разворот
+  // всех градиентов: шаг пошёл бы ВВЕРХ по функции потерь. Нулевой обнулял бы
+  // их целиком, и обучение молча вставало бы. Ни то, ни другое не «обрезка
+  // выключена» — выключают её большим пределом.
+  LLM_CHECK_MSG(max_norm > 0.0f,
+                "предел нормы градиента " << max_norm
+                                          << " должен быть положительным");
   double sum_squares = 0.0;
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
     const Tensor& grad = parameters_[i].value->grad();

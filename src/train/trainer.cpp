@@ -242,6 +242,14 @@ TrainReport train(nn::Model* model, const data::TokenDataset& dataset,
   const int64_t seq =
       config.seq_len > 0 ? config.seq_len : model->config().max_seq_len;
   LLM_CHECK_LE(seq, model->config().max_seq_len);
+  // Снимок пишется по расписанию чекпоинта и только по нему. Путь без
+  // расписания — настройка, которая ничего не делает: прогон выглядел бы
+  // возобновляемым, а после обрыва оказалось бы, что сохранять было нечем.
+  LLM_CHECK_MSG(config.resume_path.empty() || config.checkpoint_every > 0,
+                "задан путь снимка, но checkpoint_every равен "
+                    << config.checkpoint_every
+                    << ": снимок пишется по расписанию чекпоинта, и при нуле "
+                       "не писался бы никогда");
 
   AdamWConfig optimizer_config;
   optimizer_config.weight_decay = config.weight_decay;

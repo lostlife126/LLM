@@ -12,6 +12,16 @@ float learning_rate_at(const ScheduleConfig& config, int64_t step) {
   LLM_CHECK_GT(config.total_steps, static_cast<int64_t>(0));
   LLM_CHECK_GE(config.warmup_steps, static_cast<int64_t>(0));
   LLM_CHECK_LE(config.warmup_steps, config.total_steps);
+  // Нижняя граница — доля от максимума, и доля эта обязана лежать в [0, 1].
+  // Отрицательная дала бы отрицательную скорость к концу прогона, то есть
+  // подъём по градиенту вместо спуска, — тихо, без падения и без единого
+  // NaN. Больше единицы превратила бы затухание в разгон.
+  LLM_CHECK_MSG(config.min_ratio >= 0.0f && config.min_ratio <= 1.0f,
+                "нижняя доля скорости " << config.min_ratio
+                                        << " вне [0, 1]");
+  LLM_CHECK_MSG(config.max_learning_rate >= 0.0f,
+                "скорость обучения " << config.max_learning_rate
+                                     << " отрицательна");
 
   const float minimum = config.max_learning_rate * config.min_ratio;
 

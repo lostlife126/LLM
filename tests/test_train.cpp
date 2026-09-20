@@ -1100,3 +1100,126 @@ LLM_TEST(Train, ResumeRefusesAnotherRunShape) {
 
   std::remove(snapshot.c_str());
 }
+
+// Настройки расписания и оптимизатора проверяются там, где их принимают.
+//
+// Все перечисленные ниже значения не падали и не давали видимого признака —
+// они меняли то, ЧТО делает обучение. Отрицательная нижняя доля скорости к
+// концу прогона разворачивает шаг вверх по функции потерь. Единица в бете
+// обнуляет поправку на смещение, и каждый шаг делится на нуль. Отрицательный
+// предел нормы градиента разворачивает все градиенты сразу.
+LLM_TEST(Train, ScheduleChecksItsConfig) {
+  llm::train::ScheduleConfig config;
+  config.max_learning_rate = 1.0f;
+  config.warmup_steps = 0;
+  config.total_steps = 100;
+
+  // Что именно ломала отрицательная доля: последний шаг шёл бы с
+  // отрицательной скоростью.
+  {
+    llm::train::ScheduleConfig broken = config;
+    broken.min_ratio = -0.1f;
+    LLM_EXPECT_THROWS(llm::train::learning_rate_at(broken, 99));
+    LLM_EXPECT_THROWS(llm::train::learning_rate_at(broken, 0));
+  }
+  {
+    llm::train::ScheduleConfig broken = config;
+    broken.min_ratio = 1.5f;
+    LLM_EXPECT_THROWS(llm::train::learning_rate_at(broken, 50));
+  }
+  {
+    llm::train::ScheduleConfig broken = config;
+    broken.max_learning_rate = -1.0f;
+    LLM_EXPECT_THROWS(llm::train::learning_rate_at(broken, 50));
+  }
+
+  // Края диапазона законны: ноль — затухание до самого нуля, единица —
+  // постоянная скорость.
+  config.min_ratio = 0.0f;
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 99), 0.000246, 1e-5);
+  config.min_ratio = 1.0f;
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 99), 1.0, 1e-6);
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 0), 1.0, 1e-6);
+}
+
+LLM_TEST(Train, OptimizerChecksItsConfig) {
+  ScalarProblem problem(1.0f);
+
+  const float bad_betas[] = {1.0f, -0.1f, 1.5f};
+  for (std::size_t i = 0; i < sizeof(bad_betas) / sizeof(bad_betas[0]); ++i) {
+    {
+      llm::train::AdamWConfig config;
+      config.beta1 = bad_betas[i];
+      LLM_EXPECT_THROWS(llm::train::AdamW(problem.handles, config));
+    }
+    {
+      llm::train::AdamWConfig config;
+      config.beta2 = bad_betas[i];
+      LLM_EXPECT_THROWS(llm::train::AdamW(problem.handles, config));
+    }
+  }
+  {
+    llm::train::AdamWConfig config;
+    config.eps = 0.0f;
+    LLM_EXPECT_THROWS(llm::train::AdamW(problem.handles, config));
+  }
+  {
+    llm::train::AdamWConfig config;
+    config.weight_decay = -0.1f;
+    LLM_EXPECT_THROWS(llm::train::AdamW(problem.handles, config));
+  }
+
+  // Ноль в бете — вырожденный, но осмысленный случай: момент равен градиенту.
+  llm::train::AdamWConfig degenerate;
+  degenerate.beta1 = 0.0f;
+  degenerate.beta2 = 0.0f;
+  degenerate.weight_decay = 0.0f;
+  llm::train::AdamW optimizer(problem.handles, degenerate);
+  LLM_CHECK_EQ(optimizer.step_count(), static_cast<std::int64_t>(0));
+}
+
+LLM_TEST(Train, ClipChecksItsLimit) {
+  ScalarProblem problem(1.0f);
+  llm::train::AdamW optimizer(problem.handles, llm::train::AdamWConfig());
+
+  Var loss = llm::autograd::mul(problem.parameter, problem.parameter);
+  loss = llm::autograd::sum_all(loss);
+  loss.backward();
+
+  LLM_EXPECT_THROWS(optimizer.clip_grad_norm(0.0f));
+  LLM_EXPECT_THROWS(optimizer.clip_grad_norm(-1.0f));
+
+  // Градиент d(x^2)/dx при x = 1 равен двум, и обрезка до единицы его
+  // уполовинивает — то есть множитель положителен, а не развёрнут.
+  const float norm = optimizer.clip_grad_norm(1.0f);
+  LLM_EXPECT_NEAR(norm, 2.0, 1e-6);
+  LLM_EXPECT_NEAR(*problem.parameter.grad().data(), 1.0, 1e-6);
+}
+
+LLM_TEST(Train, ResumePathWithoutScheduleIsRefused) {
+  // Снимок пишется по расписанию чекпоинта и только по нему. Путь без
+  // расписания выглядел бы возобновляемым прогоном, а после обрыва
+  // оказалось бы, что сохранять было нечем.
+  ModelConfig model_config = test_config();
+  Model model(model_config, 4242);
+  const llm::data::TokenDataset dataset(
+      random_ids(400, model_config.vocab_size, 1), 0.2);
+
+  llm::train::TrainConfig config;
+  config.steps = 1;
+  config.warmup_steps = 0;
+  config.batch_size = 2;
+  config.seq_len = 8;
+  config.verbose = false;
+  config.resume_path = "test_resume_never_written.snap";
+  config.checkpoint_every = 0;
+  LLM_EXPECT_THROWS(llm::train::train(&model, dataset, config));
+
+  // С расписанием тот же прогон проходит.
+  config.checkpoint_every = 1;
+  config.checkpoint_path = std::string();
+  config.resume_path = std::string();
+  const llm::train::TrainReport report =
+      llm::train::train(&model, dataset, config);
+  LLM_CHECK_EQ(report.train_loss.size(), static_cast<std::size_t>(1));
+}
