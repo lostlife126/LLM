@@ -62,15 +62,54 @@ LLM_TEST(Rng, NormalMeanAndVariance) {
   const int count = 200000;
   double sum = 0.0;
   double sum_squares = 0.0;
+  double sum_fourth = 0.0;
+  int far = 0;
+  int repeats = 0;
+  float previous = 0.0f;
   for (int i = 0; i < count; ++i) {
-    const double value = rng.normal();
+    const float value = rng.normal();
     sum += value;
-    sum_squares += value * value;
+    sum_squares += static_cast<double>(value) * value;
+    sum_fourth += static_cast<double>(value) * value * value * value;
+    if (std::fabs(value) > 2.0f) {
+      ++far;
+    }
+    if (i > 0 && value == previous) {
+      ++repeats;
+    }
+    previous = value;
   }
   const double mean = sum / count;
   const double variance = sum_squares / count - mean * mean;
   LLM_EXPECT_NEAR(mean, 0.0, 0.02);
   LLM_EXPECT_NEAR(variance, 1.0, 0.02);
+
+  // Двух моментов мало: равномерное распределение на отрезке той же
+  // дисперсии даёт ровно те же ноль и единицу. Форму задаёт четвёртый
+  // момент: у нормального он равен трём, у равномерного — 1.8. Измерено на
+  // четырёх зёрнах: 3.027, 2.997, 2.986, 2.994.
+  const double kurtosis = sum_fourth / count / (variance * variance);
+  LLM_EXPECT_NEAR(kurtosis, 3.0, 0.15);
+
+  // И хвост: доля значений дальше двух сигм у нормального 0.0455, у
+  // равномерного нулевая. Измерено: 0.0457, 0.0463, 0.0452, 0.0462.
+  LLM_EXPECT_NEAR(static_cast<double>(far) / count, 0.0455, 0.005);
+
+  // Полярный метод считает два числа сразу и второе придерживает до
+  // следующего вызова. Если придержать не то — скажем, оставить в запасе x
+  // вместо y, — каждое значение выйдет дважды подряд. Проверено мутацией:
+  // среднее, дисперсия, эксцесс и хвост при этом остаются в норме все
+  // четыре, а повторов становится 100000 из 199999 пар. То есть без этой
+  // строки тест проходит на генераторе, который выдаёт половину чисел
+  // дважды, — а это половина весов модели, совпадающих попарно.
+  //
+  // Порог не ноль, а сотня: два независимых значения могут совпасть и
+  // законно, вероятность этого около 2^-24 на пару, то есть примерно одно
+  // совпадение на десять таких прогонов. Измерено: ни одного на четырёх
+  // зёрнах.
+  LLM_CHECK_MSG(repeats < 100,
+                "подряд идущих одинаковых значений " << repeats
+                    << " — похоже, запасное число берётся не то");
 }
 
 LLM_TEST(Rng, NormalWithParameters) {
