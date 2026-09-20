@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
+
 #include "core/check.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
@@ -77,7 +79,8 @@ int run(int argc, char** argv) {
   }
   const std::string directory = argv[1];
   const std::string output = argv[2];
-  const int64_t max_seq_len = argc > 3 ? std::atoll(argv[3]) : 512;
+  const int64_t max_seq_len =
+      argc > 3 ? bench::parse_int64(argv[3], "длина контекста") : 512;
 
   const std::string config_path = join(directory, "config.json");
   LLM_CHECK_MSG(exists(config_path), "в "

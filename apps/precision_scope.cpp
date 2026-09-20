@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
 #include "read_file.h"
 
 #include "core/check.h"
@@ -76,7 +77,8 @@ int main(int argc, char** argv) {
   const std::string checkpoint_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string corpus_path = argv[3];
-  const int64_t batches = argc > 4 ? std::atoll(argv[4]) : 32;
+  const int64_t batches =
+      argc > 4 ? bench::parse_int64(argv[4], "число батчей") : 32;
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const std::string text = bench::read_file(corpus_path);

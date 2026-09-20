@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "core/util.h"
+#include "args.h"
 #include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
@@ -50,7 +51,8 @@ int main(int argc, char** argv) {
   const std::string checkpoint_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string target_path = argv[3];
-  const int64_t steps = argc > 4 ? std::atoll(argv[4]) : 500;
+  const int64_t steps =
+      argc > 4 ? bench::parse_int64(argv[4], "число шагов") : 500;
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);
   const llm::nn::ModelConfig config =

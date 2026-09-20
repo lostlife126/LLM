@@ -13,6 +13,7 @@
 #include <string>
 
 #include "core/check.h"
+#include "args.h"
 #include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
@@ -32,12 +33,15 @@ int main(int argc, char** argv) {
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string preset = argc > 3 ? argv[3] : "nano";
-  const int64_t steps = argc > 4 ? std::atoll(argv[4]) : 2000;
-  const int64_t batch = argc > 5 ? std::atoll(argv[5]) : 16;
+  const int64_t steps =
+      argc > 4 ? bench::parse_int64(argv[4], "число шагов") : 2000;
+  const int64_t batch = argc > 5 ? bench::parse_int64(argv[5], "батч") : 16;
   const float dropout =
-      argc > 6 ? static_cast<float>(std::atof(argv[6])) : 0.0f;
+      argc > 6 ? static_cast<float>(bench::parse_double(argv[6], "дропаут"))
+               : 0.0f;
   const uint64_t seed =
-      argc > 7 ? static_cast<uint64_t>(std::atoll(argv[7])) : 1234;
+      argc > 7 ? static_cast<uint64_t>(bench::parse_int64(argv[7], "зерно"))
+               : 1234;
   const std::string output = argc > 8 ? argv[8] : std::string();
 
   const llm::Bpe tokenizer = llm::Bpe::load(vocab_path);

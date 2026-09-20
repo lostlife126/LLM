@@ -22,6 +22,7 @@
 
 #include "core/check.h"
 #include "core/util.h"
+#include "args.h"
 #include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
@@ -257,8 +258,11 @@ int main(int argc, char** argv) {
   }
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
-  const int64_t steps = argc > 3 ? std::atoll(argv[3]) : 1000;
-  const int seeds = argc > 4 ? std::atoi(argv[4]) : 2;
+  const int64_t steps =
+      argc > 3 ? bench::parse_int64(argv[3], "число шагов") : 1000;
+  const int seeds =
+      argc > 4 ? static_cast<int>(bench::parse_int64(argv[4], "число зёрен"))
+               : 2;
   // Необязательный фильтр: список подстрок через запятую. Позволяет догнать
   // несколько вариантов, не пересчитывая всю таблицу.
   const std::string filter = argc > 5 ? argv[5] : std::string();

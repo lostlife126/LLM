@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
+
 #include "core/check.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"
@@ -45,9 +47,11 @@ int main(int argc, char** argv) {
   const std::string checkpoint_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string prompt_text = argc > 3 ? argv[3] : "The ";
-  const int64_t max_tokens = argc > 4 ? std::atoll(argv[4]) : 200;
+  const int64_t max_tokens =
+      argc > 4 ? bench::parse_int64(argv[4], "число токенов") : 200;
   const float temperature =
-      argc > 5 ? static_cast<float>(std::atof(argv[5])) : 0.8f;
+      argc > 5 ? static_cast<float>(bench::parse_double(argv[5], "температура"))
+               : 0.8f;
 
   const bool foreign = ends_with(vocab_path, ".json");
 

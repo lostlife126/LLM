@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
+
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "infer/generate.h"
@@ -55,7 +57,8 @@ double measure(llm::nn::Model* model, const std::vector<int32_t>& prompt,
 
 int main(int argc, char** argv) {
   const std::string name = argc > 1 ? argv[1] : "tiny";
-  const int64_t tokens = argc > 2 ? std::atoll(argv[2]) : 100;
+  const int64_t tokens =
+      argc > 2 ? bench::parse_int64(argv[2], "число токенов") : 100;
 
   const llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(name);
   llm::nn::Model model(config, 1234);
