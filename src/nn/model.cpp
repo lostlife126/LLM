@@ -172,7 +172,7 @@ void Linear::merge_lora() {
 }
 
 void Linear::collect(const std::string& prefix,
-                     std::vector<NamedParameter>* out) {
+                     std::vector<NamedParameter>* out, Prepared prepared) {
   // Копия половинной разрядности сбрасывается здесь, и это не перестраховка.
   // Наружу отдаются ИЗМЕНЯЕМЫЕ ссылки на вес: так их берёт и оптимизатор, и
   // загрузка чекпоинта, и импорт чужой модели. После этого копия может
@@ -183,7 +183,13 @@ void Linear::collect(const std::string& prefix,
   // адаптер, вплавить его» включала половинную разрядность обратно — вплавление
   // ставит has_lora_ в ложь, и признак uses_half снова становился истиной, — но
   // уже на копии, снятой до вплавления.
-  drop_half();
+  //
+  // Исключение ровно одно, и оно объявляется вызывающим: подсчёт параметров
+  // ссылки только читает, менять ими нечего, и сбрасывать из-за подсчёта
+  // рабочую копию значило бы замедлять модель фактом печати её размера.
+  if (prepared == Prepared::kRelease) {
+    drop_half();
+  }
 
   NamedParameter parameter;
   parameter.name = prefix + ".weight";
@@ -381,7 +387,7 @@ void Attention::pack_half() {
 }
 
 void Attention::collect(const std::string& prefix,
-                        std::vector<NamedParameter>* out) {
+                        std::vector<NamedParameter>* out, Prepared prepared) {
   if (config_.qk_norm) {
     NamedParameter query_norm;
     query_norm.name = prefix + ".query_norm";
@@ -393,10 +399,10 @@ void Attention::collect(const std::string& prefix,
     key_norm.value = &key_norm_;
     out->push_back(key_norm);
   }
-  query_.collect(prefix + ".query", out);
-  key_.collect(prefix + ".key", out);
-  value_.collect(prefix + ".value", out);
-  output_.collect(prefix + ".output", out);
+  query_.collect(prefix + ".query", out, prepared);
+  key_.collect(prefix + ".key", out, prepared);
+  value_.collect(prefix + ".value", out, prepared);
+  output_.collect(prefix + ".output", out, prepared);
 }
 
 Mlp::Mlp(const ModelConfig& config, Rng* rng) : kind_(config.ffn) {
@@ -463,12 +469,13 @@ void Mlp::pack_half() {
   down_.pack_half();
 }
 
-void Mlp::collect(const std::string& prefix, std::vector<NamedParameter>* out) {
+void Mlp::collect(const std::string& prefix, std::vector<NamedParameter>* out,
+                  Prepared prepared) {
   if (kind_ == FfnKind::kSwiGlu) {
-    gate_.collect(prefix + ".gate", out);
+    gate_.collect(prefix + ".gate", out, prepared);
   }
-  up_.collect(prefix + ".up", out);
-  down_.collect(prefix + ".down", out);
+  up_.collect(prefix + ".up", out, prepared);
+  down_.collect(prefix + ".down", out, prepared);
 }
 
 Block::Block(const ModelConfig& config, Rng* rng)
@@ -540,11 +547,11 @@ void Block::pack_half() {
 }
 
 void Block::collect(const std::string& prefix,
-                    std::vector<NamedParameter>* out) {
+                    std::vector<NamedParameter>* out, Prepared prepared) {
   attention_norm_.collect(prefix + ".attention_norm", out);
-  attention_.collect(prefix + ".attention", out);
+  attention_.collect(prefix + ".attention", out, prepared);
   mlp_norm_.collect(prefix + ".mlp_norm", out);
-  mlp_.collect(prefix + ".mlp", out);
+  mlp_.collect(prefix + ".mlp", out, prepared);
 }
 
 Model::Model(const ModelConfig& config, uint64_t seed) : config_(config) {
@@ -767,10 +774,10 @@ std::vector<NamedParameter> Model::parameters() {
   // линейных слоёв — внутри их collect.
   embedding_transposed_ = autograd::Var();
   std::vector<Half>().swap(half_embedding_transposed_);
-  return collect_parameters();
+  return collect_parameters(Prepared::kRelease);
 }
 
-std::vector<NamedParameter> Model::collect_parameters() {
+std::vector<NamedParameter> Model::collect_parameters(Prepared prepared) {
   std::vector<NamedParameter> result;
 
   NamedParameter embedding;
@@ -788,13 +795,13 @@ std::vector<NamedParameter> Model::collect_parameters() {
   for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
     std::ostringstream prefix;
     prefix << "block." << layer;
-    blocks_[layer].collect(prefix.str(), &result);
+    blocks_[layer].collect(prefix.str(), &result, prepared);
   }
 
   final_norm_.collect("final_norm", &result);
 
   if (!config_.tie_embeddings) {
-    lm_head_.collect("lm_head", &result);
+    lm_head_.collect("lm_head", &result, prepared);
   }
   return result;
 }
@@ -840,19 +847,23 @@ std::vector<NamedParameter> Model::trainable_parameters() {
 
 int64_t Model::trainable_parameter_count() {
   int64_t total = 0;
-  const std::vector<NamedParameter> all = trainable_parameters();
+  // Не через trainable_parameters: подсчёт ничего не меняет, а тот обход
+  // отдаёт ссылки на изменение и потому отзывает подготовленные копии.
+  const std::vector<NamedParameter> all = collect_parameters(Prepared::kKeep);
   for (std::size_t i = 0; i < all.size(); ++i) {
-    total += all[i].value->numel();
+    if (all[i].value->requires_grad()) {
+      total += all[i].value->numel();
+    }
   }
   return total;
 }
 
 int64_t Model::parameter_count() {
   int64_t total = 0;
-  // collect_parameters, а не parameters: подсчёт ничего не меняет, и сбрасывать
-  // из-за него подготовленные копии было бы неверно. apps/generate печатает
-  // размер модели уже после подготовки.
-  const std::vector<NamedParameter> all = collect_parameters();
+  // kKeep: подсчёт складывает размеры и больше ничего не делает, а значит не
+  // имеет права отзывать подготовленные копии. apps/generate печатает размер
+  // модели прямо посреди замера скорости.
+  const std::vector<NamedParameter> all = collect_parameters(Prepared::kKeep);
   for (std::size_t i = 0; i < all.size(); ++i) {
     total += all[i].value->numel();
   }

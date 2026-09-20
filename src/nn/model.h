@@ -34,6 +34,23 @@ struct NamedParameter {
   autograd::Var* value;
 };
 
+// Что делать при обходе параметров с копиями, подготовленными для инференса.
+//
+// Обход отдаёт наружу ИЗМЕНЯЕМЫЕ ссылки на веса, и получивший их волен вес
+// поменять — так работают и оптимизатор, и загрузка чекпоинта, и импорт чужой
+// модели. После этого подготовленная копия молча расходится с весом, поэтому
+// обход по умолчанию объявляет её недействительной.
+//
+// Но не всякий обход что-то меняет: подсчёт параметров складывает их размеры и
+// больше ничего с ними не делает. Отзывать копию из-за подсчёта значило бы,
+// что печать размера модели незаметно возвращает её в обычную разрядность, —
+// а печатается размер как раз рядом с замером скорости, то есть замер мерил бы
+// не то, что показывает.
+enum class Prepared {
+  kRelease,  // копия может разойтись с весом — объявить её недействительной
+  kKeep,     // обход только читает — копия остаётся в силе
+};
+
 // Нормировка, скрывающая выбор между RMSNorm и LayerNorm.
 //
 // Вынесена в отдельный класс именно ради сравнения: слоям всё равно, чем
@@ -77,7 +94,8 @@ class Linear {
   Linear(int64_t in_features, int64_t out_features, float init_std, Rng* rng);
 
   autograd::Var forward(const autograd::Var& input) const;
-  void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+  void collect(const std::string& prefix, std::vector<NamedParameter>* out,
+               Prepared prepared = Prepared::kRelease);
 
   // Замораживает базовый вес: он остаётся значением, но перестаёт быть узлом
   // графа, и градиент до него не доходит.
@@ -178,7 +196,8 @@ class Attention {
   autograd::Var forward(const autograd::Var& input, int64_t position_offset,
                         KvCache* cache = nullptr, int64_t layer = 0,
                         ForwardStats* stats = nullptr) const;
-  void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+  void collect(const std::string& prefix, std::vector<NamedParameter>* out,
+               Prepared prepared = Prepared::kRelease);
 
   void pack_half();
 
@@ -212,7 +231,8 @@ class Mlp {
 
   autograd::Var forward(const autograd::Var& input,
                         ForwardStats* stats = nullptr) const;
-  void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+  void collect(const std::string& prefix, std::vector<NamedParameter>* out,
+               Prepared prepared = Prepared::kRelease);
 
   void enable_lora(const LoraConfig& config, Rng* rng);
   void merge_lora();
@@ -245,7 +265,8 @@ class Block {
   autograd::Var forward(const autograd::Var& input, int64_t position_offset,
                         KvCache* cache = nullptr, int64_t layer = 0,
                         ForwardStats* stats = nullptr) const;
-  void collect(const std::string& prefix, std::vector<NamedParameter>* out);
+  void collect(const std::string& prefix, std::vector<NamedParameter>* out,
+               Prepared prepared = Prepared::kRelease);
 
   void enable_lora(const LoraConfig& config, Rng* rng);
   void merge_lora();
@@ -352,8 +373,10 @@ class Model {
   void prepare_inference();
 
  private:
-  // Сбор без сброса подготовленных копий — для подсчёта и прочих чтений.
-  std::vector<NamedParameter> collect_parameters();
+  // Общий обход параметров. Наружу он уходит двумя дверями: parameters(), где
+  // ссылки отдаются на изменение, и подсчёт, где они только читаются, — отсюда
+  // и признак.
+  std::vector<NamedParameter> collect_parameters(Prepared prepared);
 
   ModelConfig config_;
   autograd::Var token_embedding_;

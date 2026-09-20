@@ -572,6 +572,79 @@ LLM_TEST(Model, HalfWeightsGiveTheSameLogits) {
   check_half_forward_matches(false);
 }
 
+// --- подсчёт параметров ничего не подготавливает обратно ---------------------
+namespace {
+
+void check_logits_equal(const std::vector<float>& expected,
+                        const std::vector<float>& actual, const char* what) {
+  LLM_CHECK_MSG(expected.size() == actual.size(), what << ": формы разошлись");
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    LLM_CHECK_MSG(expected[i] == actual[i],
+                  what << ": логит " << i << " равен " << actual[i]
+                       << " вместо " << expected[i]);
+  }
+}
+
+void check_counting_keeps_prepared_copies(bool tie_embeddings) {
+  ModelConfig config = test_config();
+  config.tie_embeddings = tie_embeddings;
+  config.validate();
+
+  Model model(config, 31337);
+  const int64_t batch = 2;
+  const int64_t seq = 6;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 24680);
+
+  // Веса здесь НЕ округляются заранее — в отличие от проверки побитового
+  // совпадения выше, и именно в этом весь смысл. На округлённых весах оба
+  // прохода дают одно и то же, и отличить работающую копию от сброшенной
+  // стало бы нечем.
+  const std::vector<float> plain = forward_logits(&model, ids, batch, seq);
+  model.pack_half();
+  model.prepare_inference();
+  const std::vector<float> half = forward_logits(&model, ids, batch, seq);
+
+  LLM_CHECK_MSG(plain.size() == half.size(), "формы логитов разошлись");
+  bool differ = false;
+  for (std::size_t i = 0; i < plain.size() && !differ; ++i) {
+    differ = plain[i] != half[i];
+  }
+  LLM_CHECK_MSG(differ,
+                "связанные эмбеддинги = "
+                    << tie_embeddings
+                    << ": округление весов не сдвинуло ни одного логита, и "
+                       "сравнения ниже ничего не проверяют");
+
+  LLM_CHECK_GT(model.parameter_count(), static_cast<int64_t>(0));
+  check_logits_equal(half, forward_logits(&model, ids, batch, seq),
+                     "после parameter_count");
+
+  LLM_CHECK_GT(model.trainable_parameter_count(), static_cast<int64_t>(0));
+  check_logits_equal(half, forward_logits(&model, ids, batch, seq),
+                     "после trainable_parameter_count");
+}
+
+}  // namespace
+
+// Подсчёт параметров — чтение, и подготовку к инференсу он отменять не вправе.
+//
+// Обе функции подсчёта отдают наружу одно число, а параметры обходят лишь
+// затем, чтобы сложить их размеры. Если бы обход при этом отзывал половинную
+// разрядность и переложенную таблицу, вышла бы ровно та ошибка, ради которой
+// весь этот проект и мерит: печать размера модели молча переводила бы её
+// обратно в обычную разрядность, а замер скорости рядом показывал бы цифру не
+// от того прохода, который заявлен. Ни падения, ни расхождения — только вдвое
+// меньшая скорость, объяснимая чем угодно.
+//
+// Проверяется на обеих раскладках выходной проекции: при связанных
+// эмбеддингах подготовлены копии уровня модели, при раздельных — ещё и
+// половинный вес самой lm_head.
+LLM_TEST(Model, CountingParametersKeepsThePreparedCopies) {
+  check_counting_keeps_prepared_copies(true);
+  check_counting_keeps_prepared_copies(false);
+}
+
 // Обучение после упаковки идёт как прежде. Это не мелочь: половинная
 // разрядность здесь именно копия рядом, а не замена, и если бы прямой проход с
 // градиентом случайно пошёл по ней, обучение молча потеряло бы точность весов
