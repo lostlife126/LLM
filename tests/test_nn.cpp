@@ -134,13 +134,13 @@ LLM_TEST(Nn, SiluAndGeluValues) {
   const llm::Tensor silu_result = llm::ops::silu(input);
   // silu(0) = 0, silu(1) = sigmoid(1) = 0.73106
   LLM_EXPECT_NEAR(silu_result(1), 0.0, 1e-6);
-  LLM_EXPECT_NEAR(silu_result(2), 0.7310586, 1e-5);
+  LLM_EXPECT_NEAR(silu_result(2), 0.7310586, 1e-7);
   // Слева silu уходит в ноль снизу, но не монотонно — у неё есть минимум.
   LLM_CHECK(silu_result(0) < 0.0f);
 
   const llm::Tensor gelu_result = llm::ops::gelu(input);
   LLM_EXPECT_NEAR(gelu_result(1), 0.0, 1e-6);
-  LLM_EXPECT_NEAR(gelu_result(2), 0.8411920, 1e-4);
+  LLM_EXPECT_NEAR(gelu_result(2), 0.8411920, 1e-6);
 }
 
 LLM_TEST(Nn, CausalMaskBlocksFuture) {
@@ -203,8 +203,8 @@ LLM_TEST(Nn, RopeEncodesRelativePosition) {
 
   // Разность позиций 2 — произведение обязано быть одним и тем же.
   const double reference = dot_at(2, 0);
-  LLM_EXPECT_NEAR(dot_at(5, 3), reference, 1e-4);
-  LLM_EXPECT_NEAR(dot_at(12, 10), reference, 1e-4);
+  LLM_EXPECT_NEAR(dot_at(5, 3), reference, 1e-5);
+  LLM_EXPECT_NEAR(dot_at(12, 10), reference, 1e-5);
   // А при другой разности — уже другим.
   LLM_CHECK(std::fabs(dot_at(3, 0) - reference) > 1e-3);
 }
@@ -235,7 +235,7 @@ LLM_TEST(Nn, RopePreservesLength) {
       before += static_cast<double>(input(row, i)) * input(row, i);
       after += static_cast<double>(rotated(row, i)) * rotated(row, i);
     }
-    LLM_EXPECT_NEAR(after, before, 1e-4);
+    LLM_EXPECT_NEAR(after, before, 1e-5);
   }
 }
 
@@ -299,7 +299,7 @@ LLM_TEST(Nn, CrossEntropyKnownValues) {
   // Одинаковые логиты — равномерное распределение, потери log(vocab).
   const llm::Tensor uniform = llm::Tensor::zeros(llm::Shape({1, 4}));
   LLM_EXPECT_NEAR(*llm::ops::cross_entropy(uniform, {0}).data(), std::log(4.0),
-                  1e-5);
+                  1e-6);
 
   // Уверенное правильное предсказание — потери около нуля.
   const llm::Tensor confident =
@@ -331,13 +331,13 @@ LLM_TEST(Nn, LogZTracksShiftOfAllLogits) {
   // нужна ровно за этим: увидеть дрейф, которого не видно по потерям.
   const llm::Tensor uniform = llm::Tensor::zeros(llm::Shape({1, 4}));
   LLM_EXPECT_NEAR(llm::ops::prediction_stats(uniform, {0}).log_z, std::log(4.0),
-                  1e-5);
+                  1e-6);
 
   // Сдвиг всех логитов строки на c двигает log Z ровно на c.
   const llm::Tensor shifted =
       llm::Tensor::from_values(llm::Shape({1, 4}), {7.0f, 7.0f, 7.0f, 7.0f});
   LLM_EXPECT_NEAR(llm::ops::prediction_stats(shifted, {0}).log_z,
-                  std::log(4.0) + 7.0, 1e-5);
+                  std::log(4.0) + 7.0, 1e-6);
 
   // При этом ни потери, ни энтропия от сдвига не меняются: softmax его не
   // видит. Без телеметрии дрейф был бы невидим целиком.

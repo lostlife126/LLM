@@ -442,7 +442,7 @@ LLM_TEST(Variants, LayerNormCentersAndScales) {
       sum += result(row, i);
       sum_squares += static_cast<double>(result(row, i)) * result(row, i);
     }
-    LLM_EXPECT_NEAR(sum / 16.0, 0.0, 1e-5);
-    LLM_EXPECT_NEAR(sum_squares / 16.0, 1.0, 1e-4);
+    LLM_EXPECT_NEAR(sum / 16.0, 0.0, 1e-6);
+    LLM_EXPECT_NEAR(sum_squares / 16.0, 1.0, 1e-5);
   }
 }

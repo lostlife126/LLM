@@ -92,9 +92,9 @@ LLM_TEST(Train, ScheduleWarmsUpThenDecays) {
     LLM_CHECK_MSG(value < previous, "затухание не убывает на шаге " << step);
     previous = value;
   }
-  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 100), 0.1, 1e-5);
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 100), 0.1, 1e-7);
   // За пределами расписания скорость остаётся на нижней границе.
-  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 500), 0.1, 1e-5);
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 500), 0.1, 1e-7);
 }
 
 LLM_TEST(Train, ScheduleWithoutWarmup) {
@@ -196,7 +196,7 @@ LLM_TEST(Train, WeightDecayPullsTowardZero) {
 
   LLM_CHECK_MSG(after < before, "распад веса не уменьшил вес");
   // Шаг распада — ровно lr * wd * w.
-  LLM_EXPECT_NEAR(before - after, 0.1 * 0.5 * 1.0, 1e-5);
+  LLM_EXPECT_NEAR(before - after, 0.1 * 0.5 * 1.0, 1e-6);
 }
 
 LLM_TEST(Train, WeightDecaySkipsOneDimensionalParameters) {
@@ -267,8 +267,8 @@ LLM_TEST(Train, ClipGradNormIsGlobal) {
   const float norm = optimizer.clip_grad_norm(1.0f);
   LLM_EXPECT_NEAR(norm, 5.0, 1e-5);
   // Соотношение 3:4 обязано сохраниться.
-  LLM_EXPECT_NEAR(first.grad()(0, 0), 0.6, 1e-5);
-  LLM_EXPECT_NEAR(second.grad()(0, 0), 0.8, 1e-5);
+  LLM_EXPECT_NEAR(first.grad()(0, 0), 0.6, 1e-6);
+  LLM_EXPECT_NEAR(second.grad()(0, 0), 0.8, 1e-6);
 }
 
 LLM_TEST(Train, DatasetSplitsValidationFromTheEnd) {
