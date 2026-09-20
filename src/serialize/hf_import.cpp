@@ -1,7 +1,9 @@
 #include "serialize/hf_import.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 
 #include "core/check.h"
@@ -337,6 +339,36 @@ std::vector<NamedTensor> export_hf_weights(nn::Model* model) {
   return out;
 }
 
+namespace {
+
+// Запись float, которая читается обратно тем же числом.
+//
+// По умолчанию ostream печатает шесть значащих цифр, и для 1e-5 или 10000
+// этого хватает с запасом. Но hf_config_json — половина круговой проверки:
+// модель записывается в чужом формате, читается обратно и обязана дать те же
+// логиты до последнего бита. Значение вроде theta = 1234567 напечаталось бы
+// как 1.23457e+06 и вернулось бы другим числом — а расхождение в theta даёт
+// работающую модель с неправильными ответами, о чём сказано в заголовке.
+//
+// Цифры добавляются по одной, пока число не начнёт читаться обратно точно.
+// Девяти хватает любому float, но обычно хватает и шести, так что привычная
+// запись остаётся привычной: «1e-05», а не «1.00000001e-05».
+std::string exact_float(float value) {
+  for (int digits = 6; digits <= 9; ++digits) {
+    std::ostringstream out;
+    out << std::setprecision(digits) << value;
+    const std::string text = out.str();
+    if (static_cast<float>(std::strtod(text.c_str(), nullptr)) == value) {
+      return text;
+    }
+  }
+  std::ostringstream out;
+  out << std::setprecision(9) << value;
+  return out.str();
+}
+
+}  // namespace
+
 std::string hf_config_json(const nn::ModelConfig& config) {
   std::ostringstream out;
   out << "{\n";
@@ -351,8 +383,8 @@ std::string hf_config_json(const nn::ModelConfig& config) {
   out << "  \"num_attention_heads\": " << config.n_heads << ",\n";
   out << "  \"num_hidden_layers\": " << config.n_layers << ",\n";
   out << "  \"num_key_value_heads\": " << config.n_kv_heads << ",\n";
-  out << "  \"rms_norm_eps\": " << config.norm_eps << ",\n";
-  out << "  \"rope_theta\": " << config.rope_theta << ",\n";
+  out << "  \"rms_norm_eps\": " << exact_float(config.norm_eps) << ",\n";
+  out << "  \"rope_theta\": " << exact_float(config.rope_theta) << ",\n";
   out << "  \"tie_word_embeddings\": "
       << (config.tie_embeddings ? "true" : "false") << ",\n";
   out << "  \"vocab_size\": " << config.vocab_size << "\n";

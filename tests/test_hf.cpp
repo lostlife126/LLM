@@ -257,6 +257,18 @@ LLM_TEST(Hf, GeneratedConfigIsReadBack) {
   LLM_CHECK_EQ(parsed.model.n_kv_heads, source.n_kv_heads);
   LLM_CHECK_EQ(parsed.model.ffn_hidden, source.ffn_hidden);
   LLM_CHECK(parsed.model == source);
+
+  // Дробные поля обязаны возвращаться тем же числом, а не похожим. Шести
+  // значащих цифр — точности ostream по умолчанию — для theta = 1234567 уже
+  // не хватает: получилось бы 1.23457e+06, то есть 1234570. Расхождение в
+  // theta даёт работающую модель с неправильными ответами.
+  llm::nn::ModelConfig awkward = source;
+  awkward.rope_theta = 1234567.0f;
+  awkward.norm_eps = 1.2345678e-5f;
+  const HfConfig read_back = llm::serialize::parse_hf_config(
+      llm::serialize::hf_config_json(awkward), "своё", awkward.max_seq_len);
+  LLM_CHECK(read_back.model.rope_theta == awkward.rope_theta);
+  LLM_CHECK(read_back.model.norm_eps == awkward.norm_eps);
 }
 
 LLM_TEST(Hf, WeightsSurviveRoundTripThroughForeignLayout) {
