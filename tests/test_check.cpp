@@ -1,4 +1,7 @@
+#include <cstddef>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "core/check.h"
 #include "testing.h"
@@ -41,4 +44,28 @@ LLM_TEST(Check, EvaluatesArgumentsOnce) {
   const auto bump = [&calls]() { return ++calls; };
   LLM_CHECK_EQ(bump(), 1);
   LLM_CHECK_EQ(calls, 1);
+}
+
+LLM_TEST(Check, EveryRegisteredTestHasAUniqueName) {
+  // Проверка про саму оснастку. LLM_TEST заводит функцию со статической
+  // связностью, поэтому два теста с одинаковым набором и именем в разных
+  // файлах спокойно собираются и оба попадают в список. Оба и выполнятся, но
+  // в отчёте они неразличимы: читающий увидит одно имя и решит, что тест
+  // один. Так теряется копия, в которую вносили правку.
+  //
+  // Заодно ловится пустое имя — оно получилось бы при неудачной макроподстановке.
+  const std::vector<llm::testing::TestCase>& tests = llm::testing::registry();
+  LLM_CHECK_GT(tests.size(), static_cast<std::size_t>(100));
+
+  std::set<std::string> seen;
+  for (std::size_t i = 0; i < tests.size(); ++i) {
+    LLM_CHECK_MSG(!tests[i].suite.empty(), "у теста " << i << " пустой набор");
+    LLM_CHECK_MSG(!tests[i].name.empty(), "у теста " << i << " пустое имя");
+    LLM_CHECK_MSG(tests[i].fn != nullptr, "у теста " << i << " нет тела");
+
+    const std::string full = tests[i].suite + "." + tests[i].name;
+    LLM_CHECK_MSG(seen.insert(full).second,
+                  "имя " << full << " зарегистрировано дважды");
+  }
+  LLM_CHECK_EQ(seen.size(), tests.size());
 }

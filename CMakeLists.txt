@@ -199,10 +199,17 @@ target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 # Отдельная запись ctest на каждый набор: при падении сразу видно, какой
 # компонент сломан, без чтения общего лога.
+#
+# Список выписан руками, и это его слабое место: набор, забытый здесь, ctest
+# молча не запускает, тогда как ./llm_tests без фильтра его прогоняет. Так и
+# вышло с Cpu и Iterate — 34 набора из 36. Поэтому ниже добавлена ещё одна
+# запись, прогоняющая двоичный файл целиком: список остался ради
+# гранулярности отчёта, но правильность на нём больше не держится.
 set(LLM_TEST_SUITES
   Autograd
   Bpe
   Check
+  Cpu
   Dropout
   Elementwise
   FastExp
@@ -213,6 +220,7 @@ set(LLM_TEST_SUITES
   Hf
   HfTokenizer
   Infer
+  Iterate
   Json
   Linear
   Lora
@@ -238,3 +246,7 @@ set(LLM_TEST_SUITES
 foreach(suite ${LLM_TEST_SUITES})
   add_test(NAME ${suite} COMMAND llm_tests ${suite})
 endforeach()
+
+# Прогон целиком — страховка от забытого набора. Запускает ровно то же, что
+# разработчик запускает руками, и стоит те же три секунды.
+add_test(NAME ВСЕ COMMAND llm_tests)
