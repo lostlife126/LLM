@@ -80,6 +80,13 @@ autograd::Var* find_parameter(std::vector<nn::NamedParameter>* parameters,
 Tensor halves_to_pairs(const Tensor& input, int64_t heads, int64_t head_dim) {
   LLM_CHECK_EQ(input.rank(), 2);
   LLM_CHECK_EQ(input.dim(0), heads * head_dim);
+  // Нечётная размерность головы — не «почти то же самое». Половина при делении
+  // округлится вниз, последний канал не запишется ни разу, и в результате
+  // останется мусор из неинициализированной памяти: перестановка молча выдаст
+  // правдоподобные веса с одной испорченной строкой на голову.
+  LLM_CHECK_MSG(head_dim > 0 && head_dim % 2 == 0,
+                "размерность головы " << head_dim
+                                      << " должна быть чётной и положительной");
   const int64_t width = input.dim(1);
   const int64_t half = head_dim / 2;
 
@@ -101,6 +108,9 @@ Tensor halves_to_pairs(const Tensor& input, int64_t heads, int64_t head_dim) {
 Tensor pairs_to_halves(const Tensor& input, int64_t heads, int64_t head_dim) {
   LLM_CHECK_EQ(input.rank(), 2);
   LLM_CHECK_EQ(input.dim(0), heads * head_dim);
+  LLM_CHECK_MSG(head_dim > 0 && head_dim % 2 == 0,
+                "размерность головы " << head_dim
+                                      << " должна быть чётной и положительной");
   const int64_t width = input.dim(1);
   const int64_t half = head_dim / 2;
 
@@ -121,6 +131,17 @@ HfImportReport import_hf_weights(const SafeTensors& file,
                                  const HfConfig& config, nn::Model* model) {
   LLM_CHECK(model != nullptr);
   const nn::ModelConfig& shape = model->config();
+  // То же условие, что и у записи. Раскладка Llama описывает ровно один набор
+  // развилок, и перестановка каналов ниже осмысленна только при RoPE: модели с
+  // обучаемыми позициями она переставила бы запросы и ключи ни за чем, а
+  // таблицу позиций оставила бы случайной — и ни одна проверка размеров этого
+  // бы не заметила.
+  LLM_CHECK_MSG(shape.norm == nn::NormKind::kRmsNorm &&
+                    shape.position == nn::PositionKind::kRope &&
+                    shape.ffn == nn::FfnKind::kSwiGlu && !shape.post_norm &&
+                    !shape.qk_norm,
+                "из раскладки Llama читаются только модели без наших "
+                "дополнительных развилок");
   LLM_CHECK_MSG(shape.vocab_size == config.model.vocab_size &&
                     shape.d_model == config.model.d_model &&
                     shape.n_layers == config.model.n_layers &&
@@ -412,7 +433,15 @@ void write_safetensors(const std::string& path,
   }
   header << "}";
 
-  const std::string header_text = header.str();
+  // Заголовок дополняется пробелами так, чтобы данные начинались с адреса,
+  // кратного восьми. Наш читатель к этому безразличен — он берёт данные по
+  // смещению, — но эталонная реализация формата дополняет именно так, а
+  // читатели, отображающие файл в память, на невыровненном float спотыкаются.
+  // Файл, который мы называем safetensors, должен читаться не только нами.
+  std::string header_text = header.str();
+  const std::size_t padding = (8 - ((header_text.size() + 8) % 8)) % 8;
+  header_text.append(padding, ' ');
+
   std::ofstream file(path.c_str(), std::ios::binary);
   LLM_CHECK_MSG(file.good(), "не удалось создать " << path);
 

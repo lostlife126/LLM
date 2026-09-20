@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -363,5 +364,111 @@ LLM_TEST(Hf, RoundTripCatchesForgottenTransposition) {
   LLM_CHECK_MSG(differs,
                 "подменённая матрица не изменила логиты — значит сквозная "
                 "проверка ничего не проверяет");
+  std::remove(path.c_str());
+}
+
+// Заголовок выровнен так же, как его выравнивает эталонная реализация.
+//
+// Наш читатель к этому безразличен: он берёт данные по смещению от конца
+// заголовка. Но файл, который мы называем safetensors, читают и другие, а те,
+// кто отображает его в память, ждут, что массив float начинается с адреса,
+// кратного восьми. Эталонная реализация дополняет заголовок пробелами именно
+// до этого; не дополнять — значит выкладывать файл, который у половины
+// читателей не откроется.
+LLM_TEST(Hf, WrittenSafetensorsHeaderIsAligned) {
+  const llm::nn::ModelConfig config = small_llama();
+  llm::nn::Model model(config, 77);
+  const std::vector<NamedTensor> exported =
+      llm::serialize::export_hf_weights(&model);
+
+  const std::string path = "test_hf_alignment.safetensors";
+  llm::serialize::write_safetensors(path, exported);
+
+  std::ifstream file(path.c_str(), std::ios::binary);
+  LLM_CHECK(file.good());
+  unsigned char length_bytes[8];
+  file.read(reinterpret_cast<char*>(length_bytes), 8);
+  LLM_CHECK_EQ(file.gcount(), static_cast<std::streamsize>(8));
+  std::uint64_t header_length = 0;
+  for (int i = 7; i >= 0; --i) {
+    header_length = (header_length << 8) | length_bytes[i];
+  }
+  LLM_CHECK_MSG((8 + header_length) % 8 == 0,
+                "данные начинаются с байта " << 8 + header_length
+                                             << " — не кратно восьми");
+
+  // Дополнение — пробелы, и заголовок после них остаётся разбираемым.
+  std::string header(static_cast<std::size_t>(header_length), '\0');
+  file.read(&header[0], static_cast<std::streamsize>(header_length));
+  LLM_CHECK_EQ(header.front(), '{');
+  std::size_t last = header.size();
+  while (last > 0 && header[last - 1] == ' ') {
+    --last;
+  }
+  LLM_CHECK_EQ(header[last - 1], '}');
+  LLM_CHECK_MSG(header.size() - last < 8, "дополнение длиннее семи байт");
+  file.close();
+
+  // И файл по-прежнему читается нами целиком.
+  const SafeTensors reread = SafeTensors::load(path);
+  LLM_CHECK_EQ(reread.size(), exported.size());
+  std::remove(path.c_str());
+}
+
+// Перестановка каналов требует чётной размерности головы.
+//
+// При нечётной половина округляется вниз, последний канал головы не
+// записывается ни разу, и в результате остаётся неинициализированная память:
+// веса выглядят правдоподобно, а одна строка на голову — мусор.
+LLM_TEST(Hf, ChannelPermutationRefusesOddHeadDim) {
+  llm::Tensor input = llm::Tensor::zeros(llm::Shape({6, 2}));
+  LLM_EXPECT_THROWS(llm::serialize::halves_to_pairs(input, 2, 3));
+  LLM_EXPECT_THROWS(llm::serialize::pairs_to_halves(input, 2, 3));
+  LLM_EXPECT_THROWS(llm::serialize::halves_to_pairs(input, 6, 1));
+
+  // Чётная проходит и остаётся обратимой.
+  for (int64_t i = 0; i < input.numel(); ++i) {
+    input.data()[i] = static_cast<float>(i);
+  }
+  const llm::Tensor there = llm::serialize::halves_to_pairs(input, 3, 2);
+  const llm::Tensor back = llm::serialize::pairs_to_halves(there, 3, 2);
+  for (int64_t i = 0; i < input.numel(); ++i) {
+    LLM_CHECK_EQ(back.data()[i], input.data()[i]);
+  }
+}
+
+// Чтение чужой раскладки отказывается от наших развилок так же, как запись.
+//
+// Перестановка каналов запросов и ключей осмысленна только при RoPE. Модель с
+// обучаемыми позициями прочиталась бы: все имена весов на месте, все размеры
+// сходятся, — и получила бы переставленные ни за чем запросы с ключами и
+// случайную таблицу позиций. Ни одна проверка размеров этого не заметит.
+LLM_TEST(Hf, ImportRefusesModelsWithOurOwnBranches) {
+  const llm::nn::ModelConfig plain = small_llama();
+  llm::nn::Model source(plain, 4242);
+  const std::string path = "test_hf_branches.safetensors";
+  llm::serialize::write_safetensors(path,
+                                    llm::serialize::export_hf_weights(&source));
+  const SafeTensors file = SafeTensors::load(path);
+  const HfConfig read = llm::serialize::parse_hf_config(
+      llm::serialize::hf_config_json(plain), "своё", plain.max_seq_len);
+
+  llm::nn::ModelConfig learned = plain;
+  learned.position = llm::nn::PositionKind::kLearned;
+  learned.validate();
+  llm::nn::Model other(learned, 1);
+  LLM_EXPECT_THROWS(llm::serialize::import_hf_weights(file, read, &other));
+
+  llm::nn::ModelConfig post = plain;
+  post.post_norm = true;
+  post.validate();
+  llm::nn::Model third(post, 1);
+  LLM_EXPECT_THROWS(llm::serialize::import_hf_weights(file, read, &third));
+
+  // А обычная по-прежнему читается.
+  llm::nn::Model restored(read.model, 1);
+  const llm::serialize::HfImportReport report =
+      llm::serialize::import_hf_weights(file, read, &restored);
+  LLM_CHECK(report.unused.empty());
   std::remove(path.c_str());
 }
