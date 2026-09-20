@@ -27,6 +27,7 @@
 #include "measure.h"
 
 #include "core/cpu.h"
+#include "core/util.h"
 #include "core/thread_pool.h"
 #include "ops/gemm.h"
 
@@ -189,7 +190,9 @@ int main() {
       {"tiny  Q*K^T", 16 * 8 * 4, 128, 128, 32},
       {"small Q*K^T", 16 * 6 * 6, 256, 256, 64},
   };
-  std::printf("%-12s %10s %10s %8s\n", "форма", "упаковка", "скалярн.", "отн.");
+  std::printf("%s %s %s %8s\n", llm::pad_utf8("форма", 12).c_str(),
+              llm::pad_utf8_right("упаковка", 10).c_str(),
+              llm::pad_utf8_right("скалярн.", 10).c_str(), "отн.");
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     const Case& c = cases[i];
     std::vector<float> a(c.heads * c.m * c.k, 0.5f);

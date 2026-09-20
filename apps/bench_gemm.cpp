@@ -15,6 +15,7 @@
 #include "measure.h"
 
 #include "core/cpu.h"
+#include "core/util.h"
 #include "core/random.h"
 #include "core/thread_pool.h"
 #include "ops/gemm.h"
@@ -94,7 +95,7 @@ void run_case(const std::string& label, std::int64_t m, std::int64_t n,
         flops, 0.3);
   }
 
-  std::printf("%-22s %6lld %6lld %6lld  %9.2f", label.c_str(),
+  std::printf("%s %6lld %6lld %6lld  %9.2f", llm::pad_utf8(label, 22).c_str(),
               static_cast<long long>(m), static_cast<long long>(n),
               static_cast<long long>(k), blocked.gflops);
   if (include_naive) {
@@ -123,7 +124,8 @@ void compare_kernels() {
               llm::cpu_features().to_string().c_str(),
               llm::detect_core_count());
   std::printf("\nмикроядра на одном потоке, квадрат 512\n");
-  std::printf("%-18s %10s %10s\n", "микроядро", "GFLOPS", "доступно");
+  std::printf("%s %10s %s\n", llm::pad_utf8("микроядро", 18).c_str(),
+              "GFLOPS", llm::pad_utf8_right("доступно", 10).c_str());
   std::printf("----------------------------------------\n");
 
   // Ядра сравниваются на одном потоке. Иначе в цифру попадает ещё и то, как
@@ -132,12 +134,18 @@ void compare_kernels() {
   const std::int64_t size = 512;
   for (int i = 0; i < count; ++i) {
     if (!table[i].available) {
-      std::printf("%-18s %10s %10s\n", table[i].kernel.name, "-", "нет");
+      // Имя ядра тоже бывает кириллическим («скалярное 4x32»), так что и
+      // оно через pad_utf8.
+      std::printf("%s %10s %s\n",
+                  llm::pad_utf8(table[i].kernel.name, 18).c_str(), "-",
+                  llm::pad_utf8_right("нет", 10).c_str());
       continue;
     }
     llm::ops::force_micro_kernel(&table[i].kernel);
     const double gflops = measure_blocked(size, size, size);
-    std::printf("%-18s %10.1f %10s\n", table[i].kernel.name, gflops, "да");
+    std::printf("%s %10.1f %s\n",
+                llm::pad_utf8(table[i].kernel.name, 18).c_str(), gflops,
+                llm::pad_utf8_right("да", 10).c_str());
   }
   llm::ops::force_micro_kernel(nullptr);
   llm::set_parallel_width(0);
@@ -171,16 +179,16 @@ void compare_threads() {
   const int max_width = llm::parallel_width();
 
   std::printf("\nмасштабируемость по потокам (GFLOPS)\n");
-  std::printf("%-22s", "задача");
+  std::printf("%s", llm::pad_utf8("задача", 22).c_str());
   for (int width = 1; width <= max_width; ++width) {
     std::printf(" %8d", width);
   }
-  std::printf("  %8s\n", "ускор.");
+  std::printf("  %s\n", llm::pad_utf8_right("ускор.", 8).c_str());
   std::printf(
       "-------------------------------------------------------------------\n");
 
   for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
-    std::printf("%-22s", cases[i].label);
+    std::printf("%s", llm::pad_utf8(cases[i].label, 22).c_str());
     double first = 0.0;
     double last = 0.0;
     for (int width = 1; width <= max_width; ++width) {
@@ -224,8 +232,10 @@ void compare_paths() {
   };
 
   std::printf("\nпрямой путь против блочного (мс, меньше — лучше)\n");
-  std::printf("%-22s %10s %10s %10s\n", "форма", "прямой", "блочный",
-              "прямой к блочному");
+  std::printf("%s %s %s %s\n", llm::pad_utf8("форма", 22).c_str(),
+              llm::pad_utf8_right("прямой", 11).c_str(),
+              llm::pad_utf8_right("блочный", 11).c_str(),
+              llm::pad_utf8_right("прямой к блочному", 15).c_str());
   std::printf(
       "-----------------------------------------------------------------\n");
 
@@ -282,8 +292,11 @@ int main() {
   compare_kernels();
   compare_threads();
   compare_paths();
-  std::printf("%-22s %6s %6s %6s  %9s  %9s  %8s\n", "задача", "m", "n", "k",
-              "блочный", "наивный", "ускор.");
+  std::printf("%s %6s %6s %6s  %s  %s  %s\n",
+              llm::pad_utf8("задача", 22).c_str(), "m", "n", "k",
+              llm::pad_utf8_right("блочный", 9).c_str(),
+              llm::pad_utf8_right("наивный", 9).c_str(),
+              llm::pad_utf8_right("ускор.", 8).c_str());
   std::printf(
       "-------------------------------------------------------------------"
       "----------\n");

@@ -22,6 +22,7 @@
 #include "measure.h"
 
 #include "core/cpu.h"
+#include "core/util.h"
 #include "core/random.h"
 #include "ops/fast_exp.h"
 
@@ -78,12 +79,14 @@ void run_case(std::int64_t count) {
 int main() {
   std::printf("процессор: %s\n\n", llm::cpu_features().to_string().c_str());
   std::printf("миллионов значений в секунду, один поток\n");
-  std::printf("%10s", "длина");
+  std::printf("%s", llm::pad_utf8_right("длина", 10).c_str());
 
   int kernels = 0;
   const llm::ops::ExpKernelChoice* table = llm::ops::all_exp_kernels(&kernels);
   for (int i = 0; i < kernels; ++i) {
-    std::printf("  %12s", table[i].kernel.name);
+    // Имя ядра бывает кириллическим («эталонная»), а числа под ним
+    // печатаются с шириной в байтах — шапка уезжала на три позиции.
+    std::printf("  %s", llm::pad_utf8_right(table[i].kernel.name, 12).c_str());
   }
   std::printf("  %8s\n", "к libm");
   std::printf(

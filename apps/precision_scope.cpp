@@ -28,6 +28,7 @@
 #include "read_file.h"
 
 #include "core/check.h"
+#include "core/util.h"
 #include "core/quantize.h"
 #include "data/dataset.h"
 #include "nn/model.h"
@@ -145,14 +146,20 @@ int main(int argc, char** argv) {
     results.push_back(result);
   }
 
-  std::printf("%-10s %10s %10s %10s %12s %8s\n", "разрядность", "потери",
-              "перплекс.", "к fp32", "сдвиг весов", "масштаб");
+  std::printf("%s %s %s %10s %s %s\n",
+              llm::pad_utf8("разрядность", 10).c_str(),
+              llm::pad_utf8_right("потери", 10).c_str(),
+              llm::pad_utf8_right("перплекс.", 10).c_str(), "к fp32",
+              llm::pad_utf8_right("сдвиг весов", 12).c_str(),
+              llm::pad_utf8_right("масштаб", 8).c_str());
   std::printf(
       "-----------------------------------------------------------------\n");
   const double base = results[0].loss;
   for (std::size_t i = 0; i < results.size(); ++i) {
-    std::printf("%-10s %10.4f %10.1f %+10.4f %11.2f%% %8d\n",
-                llm::precision_name(results[i].precision), results[i].loss,
+    std::printf("%s %10.4f %10.1f %+10.4f %11.2f%% %8d\n",
+                llm::pad_utf8(llm::precision_name(results[i].precision), 10)
+                    .c_str(),
+                results[i].loss,
                 std::exp(static_cast<double>(results[i].loss)),
                 results[i].loss - base,
                 100.0 * results[i].weight_rms_change,

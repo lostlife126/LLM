@@ -33,6 +33,7 @@
 #include "measure.h"
 
 #include "core/cpu.h"
+#include "core/util.h"
 #include "core/fp8.h"
 #include "core/half.h"
 
@@ -124,7 +125,8 @@ void measure_bulk() {
   // заметно ниже, чем у копии, — упёрлось в команды, и узкий формат сам по
   // себе не спасёт.
   const auto line = [&](const char* name, double seconds, double bytes) {
-    std::printf("  %-14s %6.3f нс  %4.0f байт  %6.2f ГБ/с\n", name,
+    std::printf("  %s %6.3f нс  %4.0f байт  %6.2f ГБ/с\n",
+              llm::pad_utf8(name, 14).c_str(),
                 seconds * per, bytes, bytes * elements / seconds / 1.0e9);
   };
   std::printf("пакетная распаковка, на элемент\n");
@@ -202,7 +204,8 @@ void measure_kernel() {
       {256, 256}, {256, 4096}, {512, 4096}, {384, 8192},
   };
   std::printf("распаковка внутри ядра, m = 1 (форма генерации по токену)\n");
-  std::printf("%-20s %10s %10s %10s\n", "форма", "fp16", "e4m3", "отношение");
+  std::printf("%s %10s %10s %s\n", llm::pad_utf8("форма", 20).c_str(), "fp16",
+              "e4m3", llm::pad_utf8_right("отношение", 10).c_str());
   for (std::size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); ++s) {
     const int64_t k = shapes[s][0];
     const int64_t n = shapes[s][1];
