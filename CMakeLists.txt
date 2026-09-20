@@ -154,6 +154,7 @@ add_executable(llm_tests
   tests/test_hf.cpp
   tests/test_hf_tokenizer.cpp
   tests/test_infer.cpp
+  tests/test_iterate.cpp
   tests/test_json.cpp
   tests/test_lora.cpp
   tests/test_pretokenize.cpp
