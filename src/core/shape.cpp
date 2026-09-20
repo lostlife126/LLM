@@ -78,7 +78,12 @@ bool try_broadcast(const Shape& lhs, const Shape& rhs, Shape* out) {
     if (left != right && left != 1 && right != 1) {
       return false;
     }
-    dims[axis] = std::max(left, right);
+    // Растягивается ВСЕГДА единица, и берётся размер соседа — а не больший из
+    // двух. Разница видна ровно там, где ось пуста: 0 и 1 совместимы, и numpy
+    // даёт 0, потому что единственная строка растягивается в ноль строк.
+    // max(0, 1) дал бы 1, то есть форму с элементом, которого нет ни в одном
+    // из аргументов.
+    dims[axis] = left == 1 ? right : left;
   }
   if (out != nullptr) {
     *out = Shape(dims);

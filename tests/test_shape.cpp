@@ -2,6 +2,8 @@
 #include <vector>
 
 #include "core/shape.h"
+#include "core/tensor.h"
+#include "ops/elementwise.h"
 #include "testing.h"
 
 LLM_TEST(Shape, Basics) {
@@ -88,4 +90,34 @@ LLM_TEST(Shape, RejectsTooHighRank) {
   const llm::Shape widest{1, 1, 1, 1, 1, 1, 1, 1};
   LLM_CHECK_EQ(widest.rank(), 8);
   LLM_EXPECT_THROWS(llm::Shape({1, 1, 1, 1, 1, 1, 1, 1, 1}));
+}
+
+LLM_TEST(Shape, EmptyAxisWinsOverStretchedOne) {
+  // Совместимость 0 и 1 — не случай «взять больший». Единица растягивается до
+  // соседа, а сосед пуст, значит пуст и результат: ровно так считает numpy.
+  // Если бы бралось max, получалась бы форма с элементом, которого нет ни в
+  // одном из аргументов, и растягивание пустой оси падало бы с невнятным
+  // «ось 0 размера 0 нельзя растянуть до 1».
+  LLM_CHECK(llm::broadcast_shapes(llm::Shape({0}), llm::Shape({1})) ==
+            llm::Shape({0}));
+  LLM_CHECK(llm::broadcast_shapes(llm::Shape({1}), llm::Shape({0})) ==
+            llm::Shape({0}));
+  LLM_CHECK(llm::broadcast_shapes(llm::Shape({2, 0, 3}),
+                                  llm::Shape({1, 1, 3})) ==
+            llm::Shape({2, 0, 3}));
+  // Недостающая слева ось тоже считается единицей и тоже растягивается в ноль.
+  LLM_CHECK(llm::broadcast_shapes(llm::Shape({0, 3}), llm::Shape({3})) ==
+            llm::Shape({0, 3}));
+  // Ноль с размером больше единицы по-прежнему несовместим.
+  LLM_CHECK(!llm::try_broadcast(llm::Shape({0}), llm::Shape({2}), nullptr));
+}
+
+LLM_TEST(Shape, ElementwiseOnEmptyOperandStaysEmpty) {
+  // Смысл предыдущего теста, доведённый до операции: сложение пустого тензора
+  // с одной строкой даёт пустой тензор, а не исключение.
+  const llm::Tensor empty = llm::Tensor::zeros(llm::Shape({0, 3}));
+  const llm::Tensor row = llm::Tensor::zeros(llm::Shape({1, 3}));
+  const llm::Tensor sum = llm::ops::add(empty, row);
+  LLM_CHECK(sum.shape() == llm::Shape({0, 3}));
+  LLM_CHECK_EQ(sum.numel(), static_cast<int64_t>(0));
 }

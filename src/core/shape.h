@@ -33,7 +33,7 @@ class Shape {
   const Dims& dims() const { return dims_; }
 
   // Отрицательная ось отсчитывается с конца, как в numpy: dim(-1) — последняя.
-  // Внутри операций это избавляет от постоянного writing rank() - 1.
+  // Внутри операций это избавляет от постоянного rank() - 1.
   int normalize_axis(int axis) const {
     const int normalized = axis < 0 ? axis + rank() : axis;
     // to_string(), а не operator<<: он объявлен ниже класса.
