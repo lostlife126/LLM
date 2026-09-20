@@ -6,9 +6,12 @@
 // довольно причудливым регулярным выражением с откатами, и именно его
 // причуды надо воспроизвести.
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
+#include "serialize/json.h"
 #include "testing.h"
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/unicode_tables.h"
@@ -242,4 +245,88 @@ LLM_TEST(Pretokenize, BrokenUtf8GoesToOtherSymbols) {
   // образце GPT-2 к слову прилипает только обычный пробел, поэтому он уходит
   // отдельным куском.
   expect_split("а\xC2\xA0\xD0\xB1", kGpt2, {"а", "\xC2\xA0", "б"});
+}
+
+LLM_TEST(Pretokenize, Utf8RoundTripsForEveryCodePoint) {
+  // append_utf8 не проверялся ни одним тестом, хотя через него проходит вся
+  // побайтовая азбука токенизатора: hf_tokenizer собирает ею символы из
+  // байтов, и ошибка там сдвинула бы токенизацию целиком.
+  //
+  // Перебор здесь возможен, а значит обязателен — как у fp16 и fp8. Все
+  // кодовые точки от нуля до 0x10FFFF, кроме суррогатов: записать и прочитать
+  // обратно, сверив и саму точку, и длину записи.
+  int64_t checked = 0;
+  int64_t skipped = 0;
+  for (uint32_t code = 0; code <= 0x10FFFFu; ++code) {
+    if (code >= 0xD800u && code <= 0xDFFFu) {
+      ++skipped;  // суррогаты в UTF-8 не записываются
+      continue;
+    }
+    std::string encoded;
+    llm::append_utf8(code, &encoded);
+
+    const int expected_bytes = code < 0x80u
+                                   ? 1
+                                   : (code < 0x800u ? 2
+                                                    : (code < 0x10000u ? 3 : 4));
+    LLM_CHECK_MSG(static_cast<int>(encoded.size()) == expected_bytes,
+                  "точка " << code << " записана в " << encoded.size()
+                           << " байт вместо " << expected_bytes);
+
+    const llm::Utf8Char back = llm::decode_utf8(encoded.data(), encoded.size());
+    LLM_CHECK_MSG(back.valid, "точка " << code << " не прочиталась обратно");
+    LLM_CHECK_MSG(back.code == code, "точка " << code << " вернулась как "
+                                              << back.code);
+    LLM_CHECK_MSG(back.bytes == expected_bytes,
+                  "точка " << code << ": прочитано " << back.bytes
+                           << " байт вместо " << expected_bytes);
+    ++checked;
+  }
+  // Проверка самой проверки: суррогатов ровно 2048, остальное пройдено.
+  LLM_CHECK_EQ(skipped, static_cast<int64_t>(2048));
+  LLM_CHECK_EQ(checked, static_cast<int64_t>(0x110000 - 2048));
+}
+
+LLM_TEST(Pretokenize, JsonEscapeDecodingAgreesWithAppendUtf8) {
+  // В json.cpp лежит своя копия append_utf8 — та же логика, записанная второй
+  // раз. Пока они совпадают, но совпадение это ничем не закреплено, и
+  // расхождение проявилось бы не падением, а разными байтами в именах токенов
+  // при чтении чужого токенизатора.
+  //
+  // Точки подобраны по границам длины записи и вокруг них, плюс пара из
+  // дополнительных плоскостей, которые в JSON приходят суррогатной парой.
+  const uint32_t codes[] = {0x00u,   0x41u,   0x7Fu,    0x80u,
+                            0x7FFu,  0x800u,  0x0416u,  0xFFFFu,
+                            0x10000u, 0x1F600u, 0x10FFFFu};
+
+  for (std::size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
+    const uint32_t code = codes[i];
+    std::string expected;
+    llm::append_utf8(code, &expected);
+
+    // Собираем JSON-строку с \u-экранированием. Вне основной плоскости это
+    // суррогатная пара — так устроен сам формат.
+    std::string escaped = "\"";
+    char buffer[16];
+    if (code < 0x10000u) {
+      std::snprintf(buffer, sizeof(buffer), "\\u%04X", code);
+      escaped += buffer;
+    } else {
+      const uint32_t rest = code - 0x10000u;
+      std::snprintf(buffer, sizeof(buffer), "\\u%04X",
+                    0xD800u + (rest >> 10));
+      escaped += buffer;
+      std::snprintf(buffer, sizeof(buffer), "\\u%04X",
+                    0xDC00u + (rest & 0x3FFu));
+      escaped += buffer;
+    }
+    escaped += "\"";
+
+    const llm::serialize::JsonDocument document =
+        llm::serialize::JsonDocument::parse(escaped);
+    LLM_CHECK(document.root().is_string());
+    LLM_CHECK_MSG(document.root().text() == expected,
+                  "точка " << code
+                           << ": разбор JSON и append_utf8 дали разные байты");
+  }
 }

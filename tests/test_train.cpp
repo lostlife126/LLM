@@ -953,3 +953,69 @@ LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
                          << " и " << four.first.data()[i]);
   }
 }
+
+LLM_TEST(Train, ScheduleHandlesWarmupEqualToTotal) {
+  // Разогрев во всю длину прогона — не выдумка: так выглядит прерванный
+  // прогон, у которого total_steps выставлен по уже пройденному. При этом
+  // косинусная ветка делит на total - warmup, то есть на ноль, и спасает её
+  // только то, что обе предыдущие ветки перехватывают все достижимые шаги.
+  //
+  // Честно про силу этой проверки: она закрепляет свойство, которое раньше не
+  // утверждалось нигде, но построить правдоподобную поломку, которую ловила
+  // бы ТОЛЬКО она, не удалось. Две пробовались. Перестановка веток местами
+  // NaN наружу не выпускает — ранний возврат стоит раньше использования. А
+  // замена ранней ветки на зажим progress до единицы даёт NaN, но сравнение
+  // с NaN ложно, и зажим случайно возвращает ту же единицу. Проверка поэтому
+  // сторожевая, а не доказательная.
+  llm::train::ScheduleConfig config;
+  config.max_learning_rate = 1.0f;
+  config.min_ratio = 0.1f;
+  config.total_steps = 10;
+  config.warmup_steps = 10;
+
+  for (int64_t step = 0; step < 10; ++step) {
+    const float value = llm::train::learning_rate_at(config, step);
+    LLM_CHECK_MSG(value == value, "скорость обучения на шаге " << step
+                                                              << " оказалась NaN");
+    LLM_CHECK_GT(value, 0.0f);
+    LLM_CHECK_LE(value, 1.0f);
+  }
+  // Последний шаг разогрева — это и есть максимум.
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 9), 1.0, 1e-6);
+  // За концом прогона — нижняя граница, и тоже без деления на ноль.
+  const float after = llm::train::learning_rate_at(config, 10);
+  LLM_CHECK_MSG(after == after, "за концом прогона скорость оказалась NaN");
+  LLM_EXPECT_NEAR(after, 0.1, 1e-7);
+
+  // И вырожденный случай наоборот: разогрева нет вовсе.
+  config.warmup_steps = 0;
+  const float first = llm::train::learning_rate_at(config, 0);
+  LLM_CHECK_MSG(first == first, "без разогрева первый шаг оказался NaN");
+  LLM_EXPECT_NEAR(first, 1.0, 1e-6);
+}
+
+LLM_TEST(Train, EvaluateWithNothingToMeasureReturnsZeroNotNan) {
+  // «Считать нечего» — один случай, а не два. Пустая проверочная часть давала
+  // нуль, а max_batches == 0 доходил до деления на число батчей и возвращал
+  // NaN: цикл не выполнялся, а делить всё равно приходилось. Тренер сюда с
+  // нулём не приходит, но функция объявлена в заголовке, и NaN в проверочных
+  // потерях пошёл бы дальше — в выбор лучшего снимка.
+  llm::nn::ModelConfig config = test_config();
+  llm::nn::Model model(config, 7);
+
+  std::vector<std::int32_t> tokens;
+  for (int i = 0; i < 400; ++i) {
+    tokens.push_back(static_cast<std::int32_t>(i % config.vocab_size));
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.5);
+  LLM_CHECK_GT(dataset.validation_batch_count(2, 8), static_cast<std::int64_t>(0));
+
+  const float nothing = llm::train::evaluate(&model, dataset, 2, 8, 0, nullptr);
+  LLM_CHECK_MSG(nothing == nothing, "проверочные потери оказались NaN");
+  LLM_EXPECT_NEAR(nothing, 0.0, 0.0);
+
+  // А при непустом запросе величина настоящая и конечная.
+  const float real = llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr);
+  LLM_CHECK_MSG(real == real, "проверочные потери оказались NaN");
+  LLM_CHECK_GT(real, 0.0f);
+}

@@ -161,10 +161,16 @@ float evaluate(nn::Model* model, const data::TokenDataset& dataset,
                nn::ForwardStats* stats) {
   LLM_CHECK(model != nullptr);
   const int64_t available = dataset.validation_batch_count(batch, seq);
-  if (available == 0) {
+  const int64_t count = available < max_batches ? available : max_batches;
+  // Считать нечего — это один случай, а не два. Раньше пустая проверочная
+  // часть давала нуль, а max_batches == 0 доходил до деления на count и
+  // возвращал NaN: цикл не выполнялся, а делить всё равно приходилось.
+  // Тренер сюда с нулём не приходит — он спрашивает eval_batches > 0, — но
+  // функция объявлена в заголовке, и молчаливый NaN в проверочных потерях
+  // разбирать пришлось бы долго: он пошёл бы дальше в выбор лучшего снимка.
+  if (count <= 0) {
     return 0.0f;
   }
-  const int64_t count = available < max_batches ? available : max_batches;
 
   // Лента не нужна: считается только значение, и без неё не расходуется
   // память на промежуточные величины.
