@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 #include "core/check.h"
@@ -13,7 +14,10 @@ namespace {
 
 const uint32_t kMagic =
     0x5253554du;  // "MURS" в little-endian: MU Resume Snapshot
-const uint32_t kVersion = 1;
+// Версия 2: в снимок добавлены параметры прогона (батч, окно, зерно). Старые
+// снимки отвергаются с внятным сообщением — это лучше, чем продолжать их
+// молча не тем порядком данных.
+const uint32_t kVersion = 2;
 
 // Те же метки, что и у чекпоинта: файл, прочитанный на машине с другим
 // порядком байт, должен честно отказаться, а не выдать правдоподобный мусор.
@@ -77,6 +81,12 @@ Tensor read_tensor(std::ifstream* file, const std::string& path) {
 
 }  // namespace
 
+std::string RunShape::to_string() const {
+  std::ostringstream out;
+  out << "батч " << batch_size << " окно " << seq_len << " зерно " << seed;
+  return out.str();
+}
+
 bool resume_exists(const std::string& path) {
   if (path.empty()) {
     return false;
@@ -86,7 +96,8 @@ bool resume_exists(const std::string& path) {
 }
 
 void save_resume(const std::string& path, nn::Model* model,
-                 const AdamW& optimizer, const ResumeState& state) {
+                 const AdamW& optimizer, const ResumeState& state,
+                 const RunShape& shape) {
   LLM_CHECK(model != nullptr);
   std::ofstream file(path.c_str(), std::ios::binary);
   LLM_CHECK_MSG(file.good(), "не удалось создать " << path);
@@ -96,6 +107,7 @@ void save_resume(const std::string& path, nn::Model* model,
   write_pod<uint32_t>(&file, kEndianMarker);
   write_pod<float>(&file, kFloatMarker);
   write_string(&file, model->config().to_string());
+  write_string(&file, shape.to_string());
 
   write_pod<int64_t>(&file, state.step);
   write_pod<float>(&file, state.best_validation_loss);
@@ -127,7 +139,7 @@ void save_resume(const std::string& path, nn::Model* model,
 }
 
 ResumeState load_resume(const std::string& path, nn::Model* model,
-                        AdamW* optimizer) {
+                        AdamW* optimizer, const RunShape& shape) {
   LLM_CHECK(model != nullptr);
   LLM_CHECK(optimizer != nullptr);
   std::ifstream file(path.c_str(), std::ios::binary);
@@ -148,6 +160,12 @@ ResumeState load_resume(const std::string& path, nn::Model* model,
                 "снимок описывает другую модель:\n  в файле: "
                     << described
                     << "\n  в памяти: " << model->config().to_string());
+
+  const std::string described_run = read_string(&file, path);
+  LLM_CHECK_MSG(described_run == shape.to_string(),
+                "снимок сделан с другими параметрами прогона, и порядок "
+                "данных не совпадёт:\n  в файле: "
+                    << described_run << "\n  сейчас:  " << shape.to_string());
 
   ResumeState state;
   state.step = read_pod<int64_t>(&file, path);

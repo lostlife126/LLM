@@ -823,20 +823,24 @@ LLM_TEST(Train, ResumeRefusesAnotherModel) {
 
   llm::train::ResumeState state;
   state.step = 7;
-  llm::train::save_resume(snapshot, &model, optimizer, state);
+  llm::train::RunShape shape;
+  shape.batch_size = 4;
+  shape.seq_len = 8;
+  shape.seed = 1234;
+  llm::train::save_resume(snapshot, &model, optimizer, state, shape);
 
   ModelConfig other = config;
   other.n_layers = 3;
   Model different(other, 5);
   llm::train::AdamW other_optimizer(different.trainable_parameters(), adam);
   LLM_EXPECT_THROWS(
-      llm::train::load_resume(snapshot, &different, &other_optimizer));
+      llm::train::load_resume(snapshot, &different, &other_optimizer, shape));
 
   // Тот же снимок в ту же модель читается и возвращает записанное.
   Model same(config, 999);
   llm::train::AdamW same_optimizer(same.trainable_parameters(), adam);
   const llm::train::ResumeState back =
-      llm::train::load_resume(snapshot, &same, &same_optimizer);
+      llm::train::load_resume(snapshot, &same, &same_optimizer, shape);
   LLM_CHECK_EQ(back.step, static_cast<std::int64_t>(7));
   LLM_CHECK_EQ(same_optimizer.step_count(), static_cast<std::int64_t>(7));
 
@@ -1018,4 +1022,57 @@ LLM_TEST(Train, EvaluateWithNothingToMeasureReturnsZeroNotNan) {
   const float real = llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr);
   LLM_CHECK_MSG(real == real, "проверочные потери оказались NaN");
   LLM_CHECK_GT(real, 0.0f);
+}
+
+LLM_TEST(Train, ResumeRefusesAnotherRunShape) {
+  // Порядок батчей при возобновлении не хранится, а переигрывается: генератор
+  // создаётся с тем же зерном и прокручивается столько раз, сколько шагов уже
+  // сделано. Приём верен ровно при одном условии — прокрутка обязана повторить
+  // те же вызовы, а вызов зависит от размера батча, длины окна и зерна.
+  //
+  // Пока этого не проверялось, возобновление другим батчем принималось молча
+  // и давало другую траекторию: те же сорок шагов, продолженные батчем 8
+  // вместо 4, дали 6.4041 -> 6.1647 против 6.3417 -> 6.2065. Модель в снимке
+  // сверялась, а самое главное для воспроизводимости — нет.
+  const std::string snapshot = "test_resume_shape.bin";
+  std::remove(snapshot.c_str());
+
+  ModelConfig config = test_config();
+  Model model(config, 5);
+  llm::train::AdamWConfig adam;
+  llm::train::AdamW optimizer(model.trainable_parameters(), adam);
+
+  llm::train::ResumeState state;
+  state.step = 3;
+  llm::train::RunShape shape;
+  shape.batch_size = 4;
+  shape.seq_len = 8;
+  shape.seed = 1234;
+  llm::train::save_resume(snapshot, &model, optimizer, state, shape);
+
+  Model same(config, 999);
+  llm::train::AdamW same_optimizer(same.trainable_parameters(), adam);
+
+  // Каждый из трёх параметров по отдельности обязан отвергаться.
+  llm::train::RunShape other_batch = shape;
+  other_batch.batch_size = 8;
+  LLM_EXPECT_THROWS(
+      llm::train::load_resume(snapshot, &same, &same_optimizer, other_batch));
+
+  llm::train::RunShape other_window = shape;
+  other_window.seq_len = 16;
+  LLM_EXPECT_THROWS(
+      llm::train::load_resume(snapshot, &same, &same_optimizer, other_window));
+
+  llm::train::RunShape other_seed = shape;
+  other_seed.seed = 4321;
+  LLM_EXPECT_THROWS(
+      llm::train::load_resume(snapshot, &same, &same_optimizer, other_seed));
+
+  // А совпадающие — принимаются.
+  const llm::train::ResumeState back =
+      llm::train::load_resume(snapshot, &same, &same_optimizer, shape);
+  LLM_CHECK_EQ(back.step, static_cast<std::int64_t>(3));
+
+  std::remove(snapshot.c_str());
 }
