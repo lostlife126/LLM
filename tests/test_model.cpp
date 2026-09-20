@@ -379,6 +379,34 @@ LLM_TEST(Model, TiedEmbeddingGetsGradientFromBothPaths) {
   LLM_CHECK_EQ(untied_parameters.size(), tied_parameters.size() + 1);
 }
 
+namespace {
+
+// Масштаб градиента по всему тензору параметра.
+//
+// По всему, а не по отдельному элементу: у отдельного градиент бывает близок
+// к нулю, и деление на него превратило бы шум численной оценки в «ошибку».
+// Так же устроено сравнение в tests/gradcheck.h.
+double gradient_scale_of(const llm::nn::NamedParameter& parameter) {
+  const llm::Tensor gradient = parameter.value->grad().contiguous();
+  double largest = 0.0;
+  for (int64_t i = 0; i < gradient.numel(); ++i) {
+    largest = std::max(largest,
+                       std::fabs(static_cast<double>(gradient.data()[i])));
+  }
+  return largest;
+}
+
+// Разрешение самой центральной разности: она вычитает два близких значения
+// функции и делит на 2h, поэтому её собственный шум — порядка eps * |f| / h
+// при машинной точности float.
+double method_resolution(double plus, double minus, float step) {
+  const double kFloatEpsilon = 1.1920929e-7;
+  return kFloatEpsilon * std::max(std::fabs(plus), std::fabs(minus)) /
+         static_cast<double>(step);
+}
+
+}  // namespace
+
 LLM_TEST(Model, GradientsMatchNumericDifference) {
   // Сквозная численная проверка всей модели: возмущаем отдельные элементы
   // настоящих параметров и сравниваем изменение потерь с тем, что выдал
@@ -421,20 +449,51 @@ LLM_TEST(Model, GradientsMatchNumericDifference) {
     values.data()[index] = original;
 
     const double numeric = (plus - minus) / (2.0 * static_cast<double>(step));
+
+    // Нижняя граница масштаба — не единица, а то, что метод вообще способен
+    // различить.
+    //
+    // Единица стояла здесь раньше и выглядела безобидно, а на деле подменяла
+    // относительное сравнение абсолютным везде, где градиенты меньше её, —
+    // то есть почти везде. Ту же ошибку в tests/gradcheck.h уже нашли и
+    // исправили, а здесь она осталась: масштаб нормировки собирает градиент
+    // величиной 1.5e-4, и допуск 5e-3 означал для него не «полпроцента», а
+    // «в тридцать раз больше самого градиента».
+    //
+    // Граница записана как resolution / kTolerance, а не как resolution:
+    // допустимая абсолютная ошибка должна равняться разрешению метода, а не
+    // быть в двести раз меньше него. У gradcheck эта ветвь не срабатывает ни
+    // разу (там градиенты крупнее), поэтому разницы между двумя записями там
+    // не видно; здесь она видна сразу.
+    const double kTolerance = 5e-3;
     const double scale =
-        std::max(1.0, std::fabs(static_cast<double>(analytic)));
+        std::max(gradient_scale_of(parameter),
+                 method_resolution(plus, minus, step) / kTolerance);
     const double error =
         std::fabs(numeric - static_cast<double>(analytic)) / scale;
 
     worst = std::max(worst, error);
     ++checked;
-    LLM_CHECK_MSG(error < 5e-3, "параметр " << parameter.name << ", элемент "
-                                            << index << ": обратный проход дал "
-                                            << analytic << ", численная оценка "
-                                            << numeric << ", расхождение "
-                                            << error);
+    LLM_CHECK_MSG(error < kTolerance,
+                  "параметр " << parameter.name << ", элемент " << index
+                              << ": обратный проход дал " << analytic
+                              << ", численная оценка " << numeric
+                              << ", расхождение " << error);
   }
   LLM_CHECK_EQ(checked, 60);
+  // Допуск не взят с потолка: наибольшее расхождение по этой выборке —
+  // 1.154e-3, и оно одинаково на всех четырёх сборках проекта, включая
+  // aarch64 под эмуляцией. Запас вчетверо.
+  //
+  // Что проверка теперь ловит, проверено подменой: множитель 1.01 в обратном
+  // проходе matmul по второму аргументу роняет её на выходной проекции
+  // внимания (расхождение 6.2e-3 при градиенте 0.0375). С прежней границей в
+  // единицу та же подмена проходила насквозь: абсолютное расхождение выходило
+  // 3.9e-4, то есть в тринадцать раз меньше допуска. Ошибку в 0.2% этот тест
+  // по-прежнему не видит — множитель меняет градиент пропорционально, и
+  // относительное расхождение равно самому множителю минус единица; за такой
+  // мелочью идут численные проверки отдельных операций, где допуск 1e-3.
+  LLM_CHECK_MSG(worst < 5e-3, "наибольшее расхождение " << worst);
 }
 
 // --- половинная разрядность весов --------------------------------------------

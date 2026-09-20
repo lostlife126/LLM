@@ -489,10 +489,7 @@ LLM_TEST(Nn, GradThroughAttentionShapedChain) {
 // способами, и первый важнее.
 namespace {
 
-struct WidthGuard {
-  explicit WidthGuard(int width) { llm::set_parallel_width(width); }
-  ~WidthGuard() { llm::set_parallel_width(0); }
-};
+using llm::testing::WidthGuard;
 
 void expect_bitwise_equal(const char* what, const llm::Tensor& lhs,
                          const llm::Tensor& rhs) {

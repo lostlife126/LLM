@@ -897,9 +897,12 @@ LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
     serial += static_cast<double>(gradient.data()[i]) * gradient.data()[i];
   }
 
-  llm::set_parallel_width(1);
-  const double one = llm::train::AdamW::sum_squares(gradient);
-  llm::set_parallel_width(4);
+  double one = 0.0;
+  {
+    const llm::testing::WidthGuard guard(1);
+    one = llm::train::AdamW::sum_squares(gradient);
+  }
+  const llm::testing::WidthGuard guard(4);
   // Проверка самой проверки — но только наполовину, и это стоит сказать
   // прямо. Она стережёт одноядерную машину: там смена ширины ни к чему не
   // приведёт, и сравнивать будет нечего. А вот того, что ширину соблюдает сам
@@ -915,7 +918,6 @@ LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
                                    << " при " << llm::detect_core_count()
                                    << " ядрах: сравнивать нечего");
   const double four = llm::train::AdamW::sum_squares(gradient);
-  llm::set_parallel_width(0);
 
   // Печатать эти суммы обычным способом бесполезно: они отличаются в
   // четырнадцатом знаке, а поток по умолчанию показывает шесть. Разница
@@ -949,7 +951,7 @@ LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
   }
 
   const auto run = [&](int width) {
-    llm::set_parallel_width(width);
+    const llm::testing::WidthGuard guard(width);
     Var parameter = Var::leaf(start.clone(), true);
     std::vector<llm::nn::NamedParameter> handles;
     llm::nn::NamedParameter handle;
@@ -965,7 +967,6 @@ LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
       optimizer.step(1e-3f);
       optimizer.zero_grad();
     }
-    llm::set_parallel_width(0);
     return std::make_pair(parameter.value().clone(), norm);
   };
 

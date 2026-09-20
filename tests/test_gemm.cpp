@@ -12,6 +12,10 @@
 
 namespace {
 
+// Тот же сторож, что и у ширины параллелизма, и по той же причине — см.
+// llm::testing::WidthGuard в testing.h.
+using llm::testing::WidthGuard;
+
 // Возвращает автоматический выбор ядра при любом выходе из области
 // видимости — в том числе через исключение.
 //
@@ -255,12 +259,13 @@ LLM_TEST(Gemm, ThreadCountDoesNotChangeResultBitForBit) {
     const std::vector<float> a = random_matrix(&rng, m, k);
     const std::vector<float> b = random_matrix(&rng, k, n);
 
-    llm::set_parallel_width(1);
     std::vector<float> serial(static_cast<std::size_t>(m * n), 0.0f);
-    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
-                   serial.data(), n);
+    {
+      const WidthGuard guard(1);
+      llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n,
+                     0.0f, serial.data(), n);
+    }
 
-    llm::set_parallel_width(0);
     const int width = llm::parallel_width();
     std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.0f);
     llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
@@ -278,7 +283,7 @@ LLM_TEST(Gemm, ThreadCountDoesNotChangeResultBitForBit) {
 LLM_TEST(Gemm, ThreadedResultMatchesNaive) {
   // Отдельно от побитовой проверки: та сравнивает многопоточный путь с
   // однопоточным, и если оба ошибаются одинаково, она этого не заметит.
-  llm::set_parallel_width(0);
+  const WidthGuard guard(0);
   llm::Rng rng(7);
   // Формы выбраны так, чтобы задеть оба способа деления: по строкам, когда их
   // больше, и по столбцам, когда больше столбцов.
@@ -420,12 +425,13 @@ LLM_TEST(Gemm, DirectPathDoesNotDependOnThreadCount) {
   const std::vector<float> a = random_matrix(&rng, m, k);
   const std::vector<float> b = random_matrix(&rng, k, n);
 
-  llm::set_parallel_width(1);
   std::vector<float> serial(static_cast<std::size_t>(m * n), 0.0f);
-  llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
-                 serial.data(), n);
+  {
+    const WidthGuard guard(1);
+    llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                   serial.data(), n);
+  }
 
-  llm::set_parallel_width(0);
   std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.0f);
   llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
                  threaded.data(), n);
@@ -451,12 +457,16 @@ LLM_TEST(Gemm, DirectPathSplitByColumnsDoesNotDependOnThreadCount) {
   const std::vector<float> a = random_matrix(&rng, m, k);
   const std::vector<float> b = random_matrix(&rng, k, n);
 
-  llm::set_parallel_width(1);
+  // beta здесь не единица нарочно. Каждый поток применяет beta к своей полосе
+  // столбцов, и если бы полосы пересеклись или какая-то осталась без beta,
+  // видно было бы именно по этому.
   std::vector<float> serial(static_cast<std::size_t>(m * n), 0.25f);
-  llm::ops::gemm(false, false, m, n, k, 1.5f, a.data(), k, b.data(), n, 0.5f,
-                 serial.data(), n);
+  {
+    const WidthGuard guard(1);
+    llm::ops::gemm(false, false, m, n, k, 1.5f, a.data(), k, b.data(), n, 0.5f,
+                   serial.data(), n);
+  }
 
-  llm::set_parallel_width(0);
   std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.25f);
   llm::ops::gemm(false, false, m, n, k, 1.5f, a.data(), k, b.data(), n, 0.5f,
                  threaded.data(), n);
@@ -466,11 +476,6 @@ LLM_TEST(Gemm, DirectPathSplitByColumnsDoesNotDependOnThreadCount) {
                   "элемент " << index << ": " << threaded[index] << " вместо "
                              << serial[index]);
   }
-
-  // beta здесь не единица нарочно. Каждый поток применяет beta к своей полосе
-  // столбцов, и если бы полосы пересеклись или какая-то осталась без beta,
-  // видно было бы именно по этому.
-  llm::set_parallel_width(0);
 }
 
 // То же для весов половинной разрядности: деление по столбцам у них общее с
@@ -486,12 +491,13 @@ LLM_TEST(Gemm, HalfSplitByColumnsDoesNotDependOnThreadCount) {
   llm::floats_to_half(b.data(), packed.data(),
                       static_cast<std::int64_t>(b.size()));
 
-  llm::set_parallel_width(1);
   std::vector<float> serial(static_cast<std::size_t>(m * n), 0.25f);
-  llm::ops::gemm_half_b(false, m, n, k, 1.5f, a.data(), k, packed.data(), n,
-                        0.5f, serial.data(), n);
+  {
+    const WidthGuard guard(1);
+    llm::ops::gemm_half_b(false, m, n, k, 1.5f, a.data(), k, packed.data(), n,
+                          0.5f, serial.data(), n);
+  }
 
-  llm::set_parallel_width(0);
   std::vector<float> threaded(static_cast<std::size_t>(m * n), 0.25f);
   llm::ops::gemm_half_b(false, m, n, k, 1.5f, a.data(), k, packed.data(), n,
                         0.5f, threaded.data(), n);

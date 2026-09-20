@@ -25,15 +25,7 @@
 
 namespace {
 
-// Возвращает ширину, какой она была, чтобы один тест не влиял на другой.
-class WidthGuard {
- public:
-  explicit WidthGuard(int width) { llm::set_parallel_width(width); }
-  ~WidthGuard() { llm::set_parallel_width(0); }
-
-  WidthGuard(const WidthGuard&) = delete;
-  WidthGuard& operator=(const WidthGuard&) = delete;
-};
+using llm::testing::WidthGuard;
 
 }  // namespace
 
