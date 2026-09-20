@@ -59,6 +59,11 @@ LLM_TEST(Json, SurrogatePairBecomesOneCharacter) {
   LLM_EXPECT_THROWS(JsonDocument::parse("\"\\ud83d\""));
   LLM_EXPECT_THROWS(JsonDocument::parse("\"\\ude00\""));
   LLM_EXPECT_THROWS(JsonDocument::parse("\"\\ud83d\\u0041\""));
+  // Сама ветка «нижний суррогат без пары» проверена строкой выше, а вот её
+  // границы — нет. Это не придирка: при условии со строгими неравенствами
+  // 0xDE00 по-прежнему отвергался бы, а края диапазона проходили бы насквозь.
+  LLM_EXPECT_THROWS(JsonDocument::parse("\"\\udc00\""));
+  LLM_EXPECT_THROWS(JsonDocument::parse("\"\\udfff\""));
 }
 
 LLM_TEST(Json, ArrayAndObject) {
