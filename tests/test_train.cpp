@@ -10,6 +10,7 @@
 
 #include "autograd/ops.h"
 #include "core/random.h"
+#include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "serialize/checkpoint.h"
 #include "testing.h"
@@ -871,6 +872,20 @@ LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
   llm::set_parallel_width(1);
   const double one = llm::train::AdamW::sum_squares(gradient);
   llm::set_parallel_width(4);
+  // Проверка самой проверки — но только наполовину, и это стоит сказать
+  // прямо. Она стережёт одноядерную машину: там смена ширины ни к чему не
+  // приведёт, и сравнивать будет нечего. А вот того, что ширину соблюдает сам
+  // обход, она не проверяет — это свойство for_row_parts, и снаружи его видно
+  // только счётом занятых потоков, чего тест делать не станет.
+  //
+  // Различать эти два случая приходится не зря: ручка ширины для этого пути
+  // однажды не работала вовсе. for_row_parts звал parallel_for на все восемь
+  // частей, не спрашивая, сколько потоков разрешено занимать, и при ширине
+  // один обход занимал два потока.
+  LLM_CHECK_MSG(llm::parallel_width() > 1 || llm::detect_core_count() < 2,
+                "ширина осталась " << llm::parallel_width()
+                                   << " при " << llm::detect_core_count()
+                                   << " ядрах: сравнивать нечего");
   const double four = llm::train::AdamW::sum_squares(gradient);
   llm::set_parallel_width(0);
 

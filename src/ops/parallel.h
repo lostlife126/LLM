@@ -67,6 +67,17 @@ void for_rows(int64_t rows, int64_t width, Fn fn) {
 //
 // Границы частей зависят только от числа строк, поэтому и результат
 // суммирования не зависит от числа потоков — см. заголовок файла.
+//
+// Части и задачи — разные вещи, и путать их нельзя. Частей всегда восемь,
+// потому что от их числа зависит результат. Задач — столько, сколько потоков
+// разрешено занимать, потому что от их числа не зависит ничего.
+//
+// Раньше здесь стояло parallel_for(parts, ...), то есть восемь задач
+// независимо от запрошенной ширины. Замерено: при set_parallel_width(1) обход
+// занимал два потока вместо одного, и сколько именно — менялось от запуска к
+// запуску, потому что задачи разбирает тот, кто освободился. На числа это не
+// влияло (часть считается по своему номеру и складывается по номеру), а вот
+// ручка ширины для этого пути не работала вовсе.
 template <typename Fn>
 void for_row_parts(int64_t rows, int64_t width, Fn fn) {
   const int64_t parts =
@@ -74,14 +85,24 @@ void for_row_parts(int64_t rows, int64_t width, Fn fn) {
   const auto body = [&](int64_t part) {
     fn(part, rows * part / parts, rows * (part + 1) / parts);
   };
-  if (parts == 1 || rows * width < kMinParallelWork) {
+  const int64_t threads = static_cast<int64_t>(parallel_width());
+  if (parts == 1 || threads <= 1 || rows * width < kMinParallelWork) {
     for (int64_t part = 0; part < parts; ++part) {
       body(part);
     }
     return;
   }
-  parallel_for(static_cast<int>(parts),
-               [&](int task) { body(static_cast<int64_t>(task)); });
+  const int64_t tasks = std::min<int64_t>(parts, threads);
+  parallel_for(static_cast<int>(tasks), [&](int task) {
+    // Части раздаются подряд кусками. Какой задаче какие части достались, на
+    // результат не влияет: часть считается по своему номеру, а складываются
+    // они у вызывающего тоже по номерам.
+    const int64_t first = parts * static_cast<int64_t>(task) / tasks;
+    const int64_t last = parts * (static_cast<int64_t>(task) + 1) / tasks;
+    for (int64_t part = first; part < last; ++part) {
+      body(part);
+    }
+  });
 }
 
 }  // namespace ops
