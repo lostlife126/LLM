@@ -330,3 +330,50 @@ LLM_TEST(Pretokenize, JsonEscapeDecodingAgreesWithAppendUtf8) {
                            << ": разбор JSON и append_utf8 дали разные байты");
   }
 }
+
+LLM_TEST(Pretokenize, UnicodeTablesMatchTheDatabaseByCount) {
+  // Таблицы букв и цифр ищутся двоичным поиском, а он верен ровно при одном
+  // условии: диапазоны отсортированы и не пересекаются. Условие записано в
+  // комментарии и не проверялось ничем. Нарушь его — поиск начнёт молча
+  // возвращать «не буква» на настоящих буквах, а это сдвинет границы кусков,
+  // то есть номера всех токенов.
+  //
+  // Проверено внешней сверкой: перебор всех кодовых точек до 0x10FFFF против
+  // unicodedata из Python версии 14.0.0 — той же базы, из которой таблицы
+  // сгенерированы, — дал ноль расхождений и по буквам, и по цифрам.
+  //
+  // Постоянной проверкой оставлен счёт: Python в тестах нет, а число точек
+  // ловит почти любую порчу таблицы — выпавший диапазон, переставленные
+  // границы, съехавшую сортировку. Перебор идёт за доли секунды.
+  int64_t letters = 0;
+  int64_t numbers = 0;
+  for (uint32_t code = 0; code <= 0x10FFFFu; ++code) {
+    if (llm::is_unicode_letter(code)) {
+      ++letters;
+    }
+    if (llm::is_unicode_number(code)) {
+      ++numbers;
+    }
+  }
+  LLM_CHECK_MSG(letters == 131756,
+                "букв в таблице " << letters << " вместо 131756");
+  LLM_CHECK_MSG(numbers == 1791,
+                "цифр в таблице " << numbers << " вместо 1791");
+
+  // И несколько точек по именам, чтобы при расхождении было видно не только
+  // «число не то», но и где искать: по одной из каждой части таблицы.
+  LLM_CHECK(llm::is_unicode_letter('A'));       // латиница, начало таблицы
+  LLM_CHECK(llm::is_unicode_letter(0x0416u));   // кириллица Ж
+  LLM_CHECK(llm::is_unicode_letter(0x4E2Du));   // китайский 中, середина
+  LLM_CHECK(llm::is_unicode_letter(0x1E921u));  // адлам, конец таблицы
+  LLM_CHECK(llm::is_unicode_number('7'));
+  LLM_CHECK(llm::is_unicode_number(0x0669u));   // арабо-индийская девятка
+  LLM_CHECK(llm::is_unicode_number(0x1FBF9u));  // сегментная девятка, конец
+
+  // И отрицательные: пробел, знак, эмодзи и незанятая точка буквами не бывают.
+  LLM_CHECK(!llm::is_unicode_letter(' '));
+  LLM_CHECK(!llm::is_unicode_letter('!'));
+  LLM_CHECK(!llm::is_unicode_letter(0x1F600u));
+  LLM_CHECK(!llm::is_unicode_letter(0x0378u));  // не назначена
+  LLM_CHECK(!llm::is_unicode_number('x'));
+}
