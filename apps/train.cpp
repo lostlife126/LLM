@@ -120,8 +120,27 @@ int main(int argc, char** argv) {
     std::printf("продолжено с шага %lld\n",
                 static_cast<long long>(report.resumed_from));
   }
-  std::printf("потери: начало %.4f -> конец %.4f\n",
-              report.train_loss.empty() ? 0.0f : report.train_loss.front(),
+
+  // Ни одного шага не сделано — так выглядит запуск поверх снимка, уже
+  // доведённого до конца расписания. Печатать при этом «потери: начало
+  // 0.0000 -> конец 0.0000» нельзя: нули ничем не отличаются от измеренных,
+  // и прогон выглядит так, будто модель обучилась до нуля. Нулями они и были,
+  // потому что мерить было нечего.
+  //
+  // Известное всё же есть: лучшее значение и его шаг пришли из снимка.
+  if (report.train_loss.empty()) {
+    std::printf("шагов не сделано: снимок уже доведён до шага %lld\n",
+                static_cast<long long>(report.resumed_from));
+    if (report.best_step > 0) {
+      std::printf("лучшие проверочные потери из снимка: %.4f на шаге %lld\n",
+                  report.best_validation_loss,
+                  static_cast<long long>(report.best_step));
+    }
+    std::printf("чекпоинт: %s\n", train_config.checkpoint_path.c_str());
+    return 0;
+  }
+
+  std::printf("потери: начало %.4f -> конец %.4f\n", report.train_loss.front(),
               report.final_train_loss);
   std::printf("проверочные потери: %.4f\n", report.final_validation_loss);
 
