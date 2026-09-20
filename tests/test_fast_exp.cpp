@@ -30,6 +30,23 @@
 
 namespace {
 
+// Возвращает автоматический выбор реализации при любом выходе из области
+// видимости — в том числе через исключение. Без этого непрошедшая проверка
+// внутри перебора оставляла бы принудительный выбор включённым, и все
+// последующие тесты двоичного файла считались бы чужим ядром. То же самое
+// уже случилось в test_gemm.cpp и было там исправлено.
+class ForcedExpKernel {
+ public:
+  explicit ForcedExpKernel(const llm::ops::ExpKernel& kernel) {
+    llm::ops::force_exp_kernel(&kernel);
+  }
+  ~ForcedExpKernel() { llm::ops::force_exp_kernel(nullptr); }
+
+  ForcedExpKernel(const ForcedExpKernel&) = delete;
+  ForcedExpKernel& operator=(const ForcedExpKernel&) = delete;
+};
+
+
 // Относительная погрешность против std::exp в двойной точности.
 double relative_error(float actual, double expected) {
   if (expected == 0.0) {
@@ -230,7 +247,7 @@ LLM_TEST(FastExp, KernelsWithFusedMultiplyAgreeBitForBit) {
       if (!table[i].available) {
         continue;
       }
-      llm::ops::force_exp_kernel(&table[i].kernel);
+      const ForcedExpKernel forced(table[i].kernel);
       std::vector<float> got_exp(size, 0.0f);
       std::vector<float> got_sigmoid(size, 0.0f);
       llm::ops::exp_shifted(input.data(), 1.25f, got_exp.data(), length);
@@ -272,7 +289,7 @@ LLM_TEST(FastExp, KernelsWithFusedMultiplyAgreeBitForBit) {
         if (!table[i].available || table[i].kernel.fused) {
           continue;
         }
-        llm::ops::force_exp_kernel(&table[i].kernel);
+        const ForcedExpKernel forced(table[i].kernel);
         std::vector<float> got_exp(size, 0.0f);
         std::vector<float> got_sigmoid(size, 0.0f);
         llm::ops::exp_shifted(input.data(), 1.25f, got_exp.data(), length);
@@ -288,7 +305,6 @@ LLM_TEST(FastExp, KernelsWithFusedMultiplyAgreeBitForBit) {
         }
       }
     }
-    llm::ops::force_exp_kernel(nullptr);
   }
 
   // Если векторных реализаций на этой машине меньше двух, сравнивать нечего —
@@ -314,7 +330,7 @@ LLM_TEST(FastExp, EveryKernelIsAccurate) {
     if (!table[i].available) {
       continue;
     }
-    llm::ops::force_exp_kernel(&table[i].kernel);
+    const ForcedExpKernel forced(table[i].kernel);
     std::vector<float> actual(size, 0.0f);
     llm::ops::exp_array(input.data(), actual.data(),
                         static_cast<std::int64_t>(size));
@@ -333,5 +349,69 @@ LLM_TEST(FastExp, EveryKernelIsAccurate) {
                                                  << worst
                                                  << " при x = " << worst_at);
   }
-  llm::ops::force_exp_kernel(nullptr);
+}
+
+LLM_TEST(FastExp, EveryKernelWorksInPlace) {
+  // masked_softmax считает экспоненту поверх уже домноженных на масштаб
+  // значений, то есть вызывает exp_shifted с одним и тем же указателем на
+  // вход и на выход. Это записано в договоре fast_exp.h — а раз записано,
+  // должно и проверяться: реализация, читающая вперёд уже записанного, молча
+  // сломала бы softmax внимания, и проявилось бы это неверным вниманием, а не
+  // падением.
+  //
+  // Длины те же, что у побитовой сверки: важны и полные векторы, и хвосты,
+  // которые доводятся через временный буфер.
+  const std::int64_t lengths[] = {1, 7, 8, 9, 15, 16, 17, 31, 33, 1000};
+
+  llm::Rng rng(20260920);
+  std::vector<float> source;
+  for (int i = 0; i < 1000; ++i) {
+    source.push_back(rng.uniform(-20.0f, 20.0f));
+  }
+
+  int count = 0;
+  const llm::ops::ExpKernelChoice* table = llm::ops::all_exp_kernels(&count);
+  LLM_CHECK_GT(count, 0);
+
+  int checked = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      continue;
+    }
+    const ForcedExpKernel forced(table[i].kernel);
+    ++checked;
+    for (std::size_t li = 0; li < sizeof(lengths) / sizeof(lengths[0]); ++li) {
+      const std::size_t size = static_cast<std::size_t>(lengths[li]);
+      const std::vector<float> input(source.begin(),
+                                     source.begin() + static_cast<long>(size));
+
+      std::vector<float> apart(size, 0.0f);
+      llm::ops::exp_shifted(input.data(), 1.25f, apart.data(),
+                            static_cast<std::int64_t>(size));
+      std::vector<float> in_place = input;
+      llm::ops::exp_shifted(in_place.data(), 1.25f, in_place.data(),
+                            static_cast<std::int64_t>(size));
+      for (std::size_t j = 0; j < size; ++j) {
+        LLM_CHECK_MSG(apart[j] == in_place[j],
+                      table[i].kernel.name
+                          << ": exp_shifted на месте разошлась на длине "
+                          << size << " в элементе " << j << ": " << apart[j]
+                          << " против " << in_place[j]);
+      }
+
+      std::vector<float> sig_apart(size, 0.0f);
+      llm::ops::sigmoid_array(input.data(), sig_apart.data(),
+                              static_cast<std::int64_t>(size));
+      std::vector<float> sig_in_place = input;
+      llm::ops::sigmoid_array(sig_in_place.data(), sig_in_place.data(),
+                              static_cast<std::int64_t>(size));
+      for (std::size_t j = 0; j < size; ++j) {
+        LLM_CHECK_MSG(sig_apart[j] == sig_in_place[j],
+                      table[i].kernel.name
+                          << ": sigmoid_array на месте разошлась на длине "
+                          << size << " в элементе " << j);
+      }
+    }
+  }
+  LLM_CHECK_MSG(checked > 0, "ни одной доступной реализации");
 }
