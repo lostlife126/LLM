@@ -271,3 +271,36 @@ LLM_TEST(Threads, WidthLimitsHowManyThreadsActuallyRun) {
   }
   LLM_CHECK_EQ(llm::parallel_width(), automatic);
 }
+
+LLM_TEST(Threads, ThreadCountFromEnvironmentIsParsedStrictly) {
+  // Величина существует ровно ради замера «на одном ядре против четырёх».
+  // Понятая не так, она даёт число, с виду неотличимое от измеренного, —
+  // поэтому разбор строгий, как и у аргументов командной строки.
+  LLM_CHECK_EQ(llm::parse_thread_count("4"), 4);
+  LLM_CHECK_EQ(llm::parse_thread_count("1"), 1);
+
+  // Не задано — ноль, то есть «по числу ядер».
+  LLM_CHECK_EQ(llm::parse_thread_count(nullptr), 0);
+  LLM_CHECK_EQ(llm::parse_thread_count(""), 0);
+
+  // Ноль и отрицательное означают то же самое, что и не заданная величина:
+  // так же ведёт себя set_parallel_width, и разнобой был бы неожиданностью.
+  LLM_CHECK_EQ(llm::parse_thread_count("0"), 0);
+  LLM_CHECK_EQ(llm::parse_thread_count("-3"), 0);
+
+  // Вот случаи, ради которых всё это. Хвост после числа: при разборе без
+  // проверки хвоста «4x» дало бы четыре. Мусор перед числом: «x4» дало бы
+  // ноль, то есть молча число ядер вместо запрошенного.
+  LLM_EXPECT_THROWS(llm::parse_thread_count("4x"));
+  LLM_EXPECT_THROWS(llm::parse_thread_count("x4"));
+  LLM_EXPECT_THROWS(llm::parse_thread_count("2 "));
+  LLM_EXPECT_THROWS(llm::parse_thread_count("2.5"));
+  LLM_EXPECT_THROWS(llm::parse_thread_count("2k"));
+  // И величина, не помещающаяся в long: strtol выставляет ERANGE и отдаёт
+  // предел, то есть без проверки вышло бы правдоподобное число.
+  LLM_EXPECT_THROWS(llm::parse_thread_count("99999999999999999999"));
+
+  // Потолок применяется, а не отвергается: больше созданных потоков всё
+  // равно не бывает, и отказывать тут не за что.
+  LLM_CHECK_EQ(llm::parse_thread_count("100000"), 1024);
+}

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/check.h"
 #include "core/cpu.h"
 
 namespace llm {
@@ -300,17 +302,7 @@ class Pool {
   std::exception_ptr failure_;
 };
 
-int env_thread_count() {
-  const char* text = std::getenv("LLM_THREADS");
-  if (text == nullptr || *text == '\0') {
-    return 0;
-  }
-  const long value = std::strtol(text, nullptr, 10);
-  if (value <= 0) {
-    return 0;
-  }
-  return static_cast<int>(std::min<long>(value, 1024));
-}
+int env_thread_count() { return parse_thread_count(std::getenv("LLM_THREADS")); }
 
 int default_width() {
   const int from_env = env_thread_count();
@@ -336,6 +328,32 @@ std::atomic<int>& configured_width() {
 }
 
 }  // namespace
+
+int parse_thread_count(const char* text) {
+  if (text == nullptr || *text == '\0') {
+    return 0;
+  }
+  // Хвост обязан быть пустым, и это та же причина, по которой строгий разбор
+  // заведён для аргументов командной строки: величина существует ради замера,
+  // а молча понятая не так величина даёт число, с виду неотличимое от
+  // измеренного.
+  //
+  // Отказ, а не возврат нуля: нуль означает «не задано», и спутать «не
+  // задавал» с «задал с опечаткой» — как раз то, чего здесь нельзя.
+  char* end = nullptr;
+  errno = 0;
+  const long value = std::strtol(text, &end, 10);
+  LLM_CHECK_MSG(end != text && *end == '\0' && errno != ERANGE,
+                "LLM_THREADS=\"" << text << "\" — не целое число");
+  // Ноль и отрицательное — это «по числу ядер», а не отказ: так ведёт себя и
+  // set_parallel_width, и разнобой между ними был бы неожиданностью.
+  if (value <= 0) {
+    return 0;
+  }
+  // Потолок: больше созданных потоков всё равно не бывает, а огромное
+  // значение попало бы в make_epoch и вылезло бы за отведённые ему разряды.
+  return static_cast<int>(std::min<long>(value, 1024));
+}
 
 int parallel_width() {
   const int width = configured_width().load(std::memory_order_relaxed);

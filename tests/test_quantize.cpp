@@ -6,6 +6,7 @@
 // самому формату, и вывод о применимости восьми разрядов был бы ни о чём.
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,43 @@ LLM_TEST(Quantize, ScaleExponentFitsTheFormat) {
   // То же у E5M2, у которого другой край.
   const llm::Tensor wide = tensor_from({57344.0f, -1.0f});
   LLM_CHECK_EQ(llm::scale_exponent(wide, llm::Precision::kFp8E5M2), 0);
+}
+
+// Бесконечность в тензоре обязана давать отказ, а не тихо отменять масштаб.
+//
+// NaN и бесконечность ведут себя здесь по-разному, и это не мелочь. NaN не
+// станет наибольшим — сравнение с ним ложно, — и проходит насквозь как
+// значение. А бесконечность наибольшим станет, и дальше frexp получает
+// бесконечное отношение, для которого стандарт значение показателя НЕ
+// оговаривает. На этой библиотеке выходит нуль, то есть масштаб молча не
+// применяется, и весь смысл файла — «измеренная погрешность относится к
+// формату, а не к арифметике вокруг него» — теряется без единого признака.
+LLM_TEST(Quantize, InfinityIsRefusedAndNanPassesThrough) {
+  llm::Tensor with_infinity = tensor_from(
+      {0.01f, std::numeric_limits<float>::infinity(), -0.02f});
+  LLM_EXPECT_THROWS(
+      llm::scale_exponent(with_infinity, llm::Precision::kFp8E4M3));
+  LLM_EXPECT_THROWS(llm::quantize(&with_infinity, llm::Precision::kFp8E4M3));
+
+  // Отрицательная бесконечность тоже: наибольшим берётся модуль.
+  llm::Tensor negative = tensor_from(
+      {0.01f, -std::numeric_limits<float>::infinity()});
+  LLM_EXPECT_THROWS(llm::scale_exponent(negative, llm::Precision::kFp8E4M3));
+
+  // А NaN проходит и остаётся NaN: обучение, ушедшее в NaN, надо увидеть, а
+  // не получить вместо него правдоподобное число.
+  llm::Tensor with_nan =
+      tensor_from({0.01f, std::numeric_limits<float>::quiet_NaN(), -0.02f});
+  llm::quantize(&with_nan, llm::Precision::kFp8E4M3);
+  LLM_CHECK_MSG(std::isnan(with_nan.data()[1]), "NaN перестал быть NaN");
+  LLM_CHECK_MSG(with_nan.data()[0] != 0.0f,
+                "соседи NaN обязаны округлиться, а не обнулиться");
+
+  // И формат без масштаба бесконечность не отвергает: масштаба там нет, и
+  // отказывать не за что — значение просто насыщается.
+  llm::Tensor raw = tensor_from({std::numeric_limits<float>::infinity()});
+  llm::quantize(&raw, llm::Precision::kFp8E4M3NoScale);
+  LLM_CHECK_EQ(raw.data()[0], 448.0f);
 }
 
 // Ноль и тензор из одних нулей не должны ломать выбор масштаба.
