@@ -274,6 +274,34 @@ LLM_TEST(Sampler, TopPAdaptsToConfidence) {
   LLM_CHECK(saw_several);
 }
 
+LLM_TEST(Sampler, TopPBreaksTiesByTokenNumber) {
+  // При равных вероятностях порядок сортировки задаёт, кто попадёт в
+  // оставленную голову распределения, а кто будет отсечён. std::sort порядок
+  // равных не определяет, поэтому выбор зависел бы от того, чья стандартная
+  // библиотека, — и генерация с одним зерном давала бы на двух машинах разный
+  // текст. Отсюда stable_sort: у равных сохраняется исходный порядок, то есть
+  // номер токена.
+  //
+  // Проверка: шестьдесят четыре одинаковых логита, top-p = 0.25. Каждая
+  // вероятность равна 1/64, сумма перешагивает 0.25 на шестнадцатом токене,
+  // значит остаются ровно номера с нулевого по пятнадцатый.
+  SamplerConfig config;
+  config.top_p = 0.25f;
+  config.seed = 20260920;
+  Sampler sampler(config);
+
+  const std::size_t width = 64;
+  for (int trial = 0; trial < 2000; ++trial) {
+    std::vector<float> logits(width, 0.0f);
+    const int32_t token = sampler.sample(&logits, std::vector<int32_t>());
+    LLM_CHECK_MSG(token >= 0 && token < 16,
+                  "при равных вероятностях выпал токен " << token
+                                                         << ", а голова "
+                                                            "распределения — "
+                                                            "номера 0..15");
+  }
+}
+
 LLM_TEST(Sampler, TopPAlwaysKeepsAtLeastOneToken) {
   // Порог меньше вероятности самого вероятного токена не должен отсекать всё.
   SamplerConfig config;

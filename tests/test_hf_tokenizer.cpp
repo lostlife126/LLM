@@ -374,3 +374,45 @@ LLM_TEST(HfTokenizer, MergesInPairForm) {
   LLM_CHECK_EQ(ids[0], 11);
   LLM_CHECK_EQ(ids[1], 16);
 }
+
+LLM_TEST(HfTokenizer, MergeTakesTheLeftmostOfEqualRank) {
+  // Слияния применяются по одному, и каждый раз берётся пара с наименьшим
+  // рангом. Одна и та же пара может стоять в нескольких местах — тогда ранг у
+  // них общий, и решает, какое место выбрано. Эталон берёт самое левое, и это
+  // не безразлично.
+  //
+  // Словарь здесь ровно про этот случай: 'a', 'aa', 'aaa' и слияния «a a»
+  // (ранг 0), «aa a» (ранг 1). Разбор «aaa»:
+  //   слева: a|a|a -> aa|a (пара ранга 0 на месте 0) -> aaa (пара ранга 1);
+  //   справа: a|a|a -> a|aa (та же пара на месте 1), и всё — пары (a, aa) в
+  //           словаре нет, разбор кончается двумя токенами вместо одного.
+  const char* const kTiny = R"({
+  "version": "1.0",
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "use_regex": true
+  },
+  "decoder": {"type": "ByteLevel"},
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "vocab": {"a": 0, "aa": 1, "aaa": 2},
+    "merges": ["a a", "aa a"]
+  }
+})";
+
+  const llm::HfTokenizer tokenizer = llm::HfTokenizer::parse(kTiny, "проба");
+  const std::vector<int32_t> ids = tokenizer.encode("aaa");
+  const std::vector<int32_t> expected = {2};
+  LLM_CHECK_MSG(ids == expected,
+                "«aaa» разобралось в " << ids.size()
+                                       << " токенов вместо одного");
+  LLM_CHECK_EQ(tokenizer.decode(ids), std::string("aaa"));
+}
