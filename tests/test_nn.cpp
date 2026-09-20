@@ -655,3 +655,94 @@ LLM_TEST(Nn, EmptyTensorsDoNotDivideByZero) {
     LLM_CHECK(llm::ops::rope(scores, 0, 10000.0f).shape() == shapes[i]);
   }
 }
+
+LLM_TEST(Nn, ElementwiseKernelsDoNotDependOnThreadCount) {
+  // Прежняя проверка на независимость от числа потоков брала softmax,
+  // rms_norm и softmax_backward — то есть операции, которые делятся ПО
+  // СТРОКАМ. У строки границы заданы формой, и деление их не трогает.
+  //
+  // А silu и gelu делятся по ЭЛЕМЕНТАМ: parallel_range режет numel на куски,
+  // и границы кусков зависят от числа потоков напрямую. Ядро сигмоиды обязано
+  // считать хвост куска тем же кодом, что и середину, иначе результат поедет
+  // от числа ядер. В комментарии к silu это написано, а проверено не было.
+  //
+  // Заодно закрыты остальные операции, до которых прежняя проверка не дошла:
+  // обе нормировки в обратную сторону, маскированный softmax и функции потерь,
+  // где сумма собирается по восьми частям.
+  const llm::Tensor x = random_tensor(llm::Shape({256, 173}), 911);
+  const llm::Tensor g = random_tensor(llm::Shape({256, 173}), 912);
+  const llm::Tensor w = random_tensor(llm::Shape({173}), 913);
+  const llm::Tensor b = random_tensor(llm::Shape({173}), 914);
+  const llm::Tensor scores = random_tensor(llm::Shape({8, 64, 64}), 915);
+  const llm::Tensor logits = random_tensor(llm::Shape({256, 173}), 916);
+  std::vector<std::int32_t> targets(256);
+  for (std::size_t i = 0; i < targets.size(); ++i) {
+    targets[i] = static_cast<std::int32_t>((i * 37) % 173);
+  }
+  LLM_CHECK_GT(x.numel(), static_cast<std::int64_t>(1 << 14));
+
+  llm::Tensor silu_one;
+  llm::Tensor silu_back_one;
+  llm::Tensor gelu_one;
+  llm::Tensor gelu_back_one;
+  llm::Tensor layer_one;
+  llm::Tensor layer_dx_one;
+  llm::Tensor layer_dw_one;
+  llm::Tensor layer_db_one;
+  llm::Tensor rms_dx_one;
+  llm::Tensor rms_dw_one;
+  llm::Tensor masked_one;
+  llm::Tensor masked_back_one;
+  llm::Tensor loss_one;
+  llm::Tensor zloss_one;
+  {
+    const WidthGuard guard(1);
+    silu_one = llm::ops::silu(x);
+    silu_back_one = llm::ops::silu_backward(g, x);
+    gelu_one = llm::ops::gelu(x);
+    gelu_back_one = llm::ops::gelu_backward(g, x);
+    layer_one = llm::ops::layer_norm(x, w, b, kEps);
+    llm::ops::layer_norm_backward(g, x, w, kEps, &layer_dx_one, &layer_dw_one,
+                                  &layer_db_one);
+    llm::ops::rms_norm_backward(g, x, w, kEps, &rms_dx_one, &rms_dw_one);
+    masked_one = llm::ops::masked_softmax(scores, 0.3125f, 0);
+    masked_back_one =
+        llm::ops::masked_softmax_backward(scores, masked_one, 0.3125f, 0);
+    loss_one = llm::ops::cross_entropy(logits, targets);
+    zloss_one = llm::ops::z_loss(logits);
+  }
+  {
+    const WidthGuard guard(4);
+    expect_bitwise_equal("silu", silu_one, llm::ops::silu(x));
+    expect_bitwise_equal("silu_backward", silu_back_one,
+                         llm::ops::silu_backward(g, x));
+    expect_bitwise_equal("gelu", gelu_one, llm::ops::gelu(x));
+    expect_bitwise_equal("gelu_backward", gelu_back_one,
+                         llm::ops::gelu_backward(g, x));
+    expect_bitwise_equal("layer_norm", layer_one,
+                         llm::ops::layer_norm(x, w, b, kEps));
+
+    llm::Tensor dx;
+    llm::Tensor dw;
+    llm::Tensor db;
+    llm::ops::layer_norm_backward(g, x, w, kEps, &dx, &dw, &db);
+    expect_bitwise_equal("layer_norm_backward по входу", layer_dx_one, dx);
+    expect_bitwise_equal("layer_norm_backward по весу", layer_dw_one, dw);
+    expect_bitwise_equal("layer_norm_backward по сдвигу", layer_db_one, db);
+
+    llm::Tensor rms_dx;
+    llm::Tensor rms_dw;
+    llm::ops::rms_norm_backward(g, x, w, kEps, &rms_dx, &rms_dw);
+    expect_bitwise_equal("rms_norm_backward по входу", rms_dx_one, rms_dx);
+    expect_bitwise_equal("rms_norm_backward по весу", rms_dw_one, rms_dw);
+
+    expect_bitwise_equal("masked_softmax", masked_one,
+                         llm::ops::masked_softmax(scores, 0.3125f, 0));
+    expect_bitwise_equal(
+        "masked_softmax_backward", masked_back_one,
+        llm::ops::masked_softmax_backward(scores, masked_one, 0.3125f, 0));
+    expect_bitwise_equal("cross_entropy", loss_one,
+                         llm::ops::cross_entropy(logits, targets));
+    expect_bitwise_equal("z_loss", zloss_one, llm::ops::z_loss(logits));
+  }
+}
