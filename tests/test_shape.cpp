@@ -79,3 +79,13 @@ LLM_TEST(Shape, ToString) {
 }
 
 LLM_TEST(Shape, RejectsNegativeDim) { LLM_EXPECT_THROWS(llm::Shape({2, -1})); }
+
+LLM_TEST(Shape, RejectsTooHighRank) {
+  // Предел ранга — не украшение: формы приходят из чужих файлов. Заголовок
+  // safetensors задаёт форму тензора списком любой длины, и без этой проверки
+  // девятая ось записалась бы за конец массива внутри Dims.
+  LLM_CHECK_EQ(llm::Dims::kMaxRank, 8);
+  const llm::Shape widest{1, 1, 1, 1, 1, 1, 1, 1};
+  LLM_CHECK_EQ(widest.rank(), 8);
+  LLM_EXPECT_THROWS(llm::Shape({1, 1, 1, 1, 1, 1, 1, 1, 1}));
+}

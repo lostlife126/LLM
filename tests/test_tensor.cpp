@@ -256,3 +256,29 @@ LLM_TEST(Tensor, ViewKeepsStorageAlive) {
   LLM_EXPECT_NEAR(view(0), 3.0, 0.0);
   LLM_EXPECT_NEAR(view(2), 5.0, 0.0);
 }
+
+LLM_TEST(Tensor, CloneOfViewIsDense) {
+  // clone обязан выдавать плотный тензор, а не копию вида с теми же шагами.
+  // На этом держится численная проверка градиентов: она перебирает элементы
+  // входа по одному индексу в data(), а аналитический градиент раскладывает
+  // по шагам — если бы clone сохранял шаги транспонированного вида, порядки
+  // разошлись бы, и gradcheck сравнивал бы элементы не с теми.
+  const llm::Tensor transposed = iota(llm::Shape({2, 3})).transpose(0, 1);
+  LLM_CHECK(!transposed.is_contiguous());
+
+  const llm::Tensor copy = transposed.clone();
+  LLM_CHECK(copy.is_contiguous());
+  LLM_CHECK(copy.shape() == llm::Shape({3, 2}));
+  const std::vector<float> expected = {0.0f, 3.0f, 1.0f, 4.0f, 2.0f, 5.0f};
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    LLM_EXPECT_NEAR(copy.flat()[i], expected[i], 0.0);
+  }
+
+  // И растянутого вида тоже: нулевой шаг обязан превратиться в настоящие
+  // повторы, иначе запись в копию меняла бы сразу все строки.
+  llm::Tensor repeated =
+      iota(llm::Shape({1, 3})).expand(llm::Shape({2, 3})).clone();
+  LLM_CHECK(repeated.is_contiguous());
+  repeated(0, 0) = 9.0f;
+  LLM_EXPECT_NEAR(repeated(1, 0), 0.0, 0.0);
+}
