@@ -353,6 +353,43 @@ LLM_TEST(HfTokenizer, RefusesWhatChangesTheSplitSilently) {
       patched("\"unk_token\": null", "\"unk_token\": \"<unk>\""), "проба"));
 }
 
+LLM_TEST(HfTokenizer, RefusesTokenIdsThatDoNotFitTheTable) {
+  const auto patched = [](const std::string& from, const std::string& to) {
+    std::string text = kTinyTokenizer;
+    const std::size_t at = text.find(from);
+    LLM_CHECK(at != std::string::npos);
+    return text.substr(0, at) + to + text.substr(at + from.size());
+  };
+
+  // 2^32 — случай, ради которого проверка и написана. В JSON целое доходит до
+  // 2^53, а таблица индексируется int32_t: при простом приведении этот номер
+  // обращался в ноль, словарь загружался БЕЗ ошибки, и токен «h» молча
+  // получал место токена, стоявшего нулевым. Ошибка ничем себя не выдаёт:
+  // разбор идёт, номера выходят, модель отвечает мимо.
+  LLM_EXPECT_THROWS(
+      llm::HfTokenizer::parse(patched("\"h\": 0", "\"h\": 4294967296"), "проба"));
+
+  // Номер, помещающийся в int32_t, но огромный: таблица заводится длиной с
+  // него, и отказ приходил из аллокатора, ни словом не упомянув файл.
+  LLM_EXPECT_THROWS(llm::HfTokenizer::parse(
+      patched("\"h\": 0", "\"h\": 2000000000"), "проба"));
+
+  // Отрицательный номер отвергался и раньше — проверка остаётся.
+  LLM_EXPECT_THROWS(
+      llm::HfTokenizer::parse(patched("\"h\": 0", "\"h\": -1"), "проба"));
+
+  // То же и для добавленных токенов: они расширяют ту же таблицу и как раз до
+  // своего номера.
+  LLM_EXPECT_THROWS(llm::HfTokenizer::parse(
+      patched("{\"id\": 17,", "{\"id\": 2000000000,"), "проба"));
+
+  // А запас должен оставаться: словарь здесь из 18 записей, и добавленный
+  // токен с номером 100 — обычное дело, его отвергать нельзя.
+  const llm::HfTokenizer ok =
+      llm::HfTokenizer::parse(patched("{\"id\": 17,", "{\"id\": 100,"), "проба");
+  LLM_CHECK_EQ(ok.token_text(100), std::string("<|endoftext|>"));
+}
+
 LLM_TEST(HfTokenizer, MergesInPairForm) {
   // Новые версии tokenizers пишут слияния парой строк, а не одной строкой с
   // пробелом. Читаться должны обе записи.

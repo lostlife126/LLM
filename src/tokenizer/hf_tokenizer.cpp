@@ -94,12 +94,32 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
   const JsonValue vocab = model.field("vocab");
   LLM_CHECK_MSG(vocab.is_object(), origin << ": model.vocab не объект");
 
+  // Номер токена — это индекс в таблице, которую мы сейчас заведём, и брать
+  // его из файла как есть нельзя по двум причинам.
+  //
+  // Первая: в JSON целое доходит до 2^53, а таблица индексируется int32_t.
+  // Номер 4294967296 при простом приведении обращался в ноль — и это не
+  // отказ, а другой словарь: токен молча занимал чужое место, проверка на
+  // повтор ничего не замечала, и модель получала номера, которых не видела.
+  //
+  // Вторая: длина таблицы — наибольший номер плюс один, и номер в два
+  // миллиарда (в int32_t он помещается) просил бы под неё 68 ГБ, то есть
+  // отказ приходил бы из аллокатора, без единого слова о файле. Предел ниже
+  // взят не круглым числом, а от самого файла: словарь в tokenizer.json
+  // плотный, номера идут подряд от нуля, и запас в шестнадцать раз
+  // отличает редкий словарь от испорченного.
+  const int64_t id_limit =
+      16 * static_cast<int64_t>(vocab.size()) + 1024;
+
   int32_t highest = -1;
   std::vector<std::pair<int32_t, std::string>> entries;
   entries.reserve(vocab.size());
   for (std::size_t i = 0; i < vocab.size(); ++i) {
-    const int32_t id = static_cast<int32_t>(vocab.value_at(i).integer());
-    LLM_CHECK_MSG(id >= 0, origin << ": отрицательный номер токена " << id);
+    const int64_t raw = vocab.value_at(i).integer();
+    LLM_CHECK_MSG(raw >= 0 && raw < id_limit,
+                  origin << ": номер токена " << raw << " при словаре из "
+                         << vocab.size() << " записей");
+    const int32_t id = static_cast<int32_t>(raw);
     entries.push_back(std::make_pair(id, vocab.key_at(i)));
     highest = id > highest ? id : highest;
   }
@@ -153,9 +173,13 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
     for (std::size_t i = 0; i < added.size(); ++i) {
       const JsonValue item = added.at(i);
       HfAddedToken token;
-      token.id = static_cast<int32_t>(item.field("id").integer());
-      LLM_CHECK_MSG(token.id >= 0, origin << ": добавленный токен с номером "
-                                          << token.id);
+      // Тот же предел, что и у словаря: добавленные токены тоже расширяют
+      // таблицу, и расширяют её как раз до своего номера.
+      const int64_t raw = item.field("id").integer();
+      LLM_CHECK_MSG(raw >= 0 && raw < id_limit,
+                    origin << ": добавленный токен с номером " << raw
+                           << " при словаре из " << vocab.size() << " записей");
+      token.id = static_cast<int32_t>(raw);
       token.content = item.field("content").text();
       token.special = item.has("special") && item.field("special").is_bool() &&
                       item.field("special").boolean();
