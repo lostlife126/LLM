@@ -960,3 +960,50 @@ LLM_TEST(Gemm, EveryKernelMatchesNaiveOnEveryTileRemainder) {
   }
   LLM_CHECK_MSG(checked_kernels > 0, "ни одного доступного ядра");
 }
+
+LLM_TEST(Gemm, KnownProductInAllFourTransposeCombinations) {
+  // Транспонированные варианты сверялись только gemm против gemm_naive, то
+  // есть по кругу: согласованная ошибка в понимании того, что означает
+  // transpose_a, прошла бы обе реализации насквозь. Посчитанный вручную
+  // пример эту петлю разрывает.
+  //
+  //   op(A) = [[1, 2, 3],   op(B) = [[1, 2],    op(A)*op(B) = [[22, 28],
+  //            [4, 5, 6]]            [3, 4],                   [49, 64]]
+  //                                  [5, 6]]
+  //
+  // Меняется только то, КАК эти же матрицы лежат в памяти. Шаг строки задан
+  // до транспонирования, поэтому у транспонированной A он равен двум, а не
+  // трём.
+  const std::vector<float> a_plain = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  const std::vector<float> a_stored = {1.0f, 4.0f, 2.0f, 5.0f, 3.0f, 6.0f};
+  const std::vector<float> b_plain = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  const std::vector<float> b_stored = {1.0f, 3.0f, 5.0f, 2.0f, 4.0f, 6.0f};
+  const double expected[4] = {22.0, 28.0, 49.0, 64.0};
+
+  for (int mode = 0; mode < 4; ++mode) {
+    const bool transpose_a = (mode & 1) != 0;
+    const bool transpose_b = (mode & 2) != 0;
+    const std::vector<float>& a = transpose_a ? a_stored : a_plain;
+    const std::vector<float>& b = transpose_b ? b_stored : b_plain;
+    const std::int64_t lda = transpose_a ? 2 : 3;
+    const std::int64_t ldb = transpose_b ? 3 : 2;
+
+    std::vector<float> blocked(4, 0.0f);
+    llm::ops::gemm(transpose_a, transpose_b, 2, 2, 3, 1.0f, a.data(), lda,
+                   b.data(), ldb, 0.0f, blocked.data(), 2);
+    std::vector<float> naive(4, 0.0f);
+    llm::ops::gemm_naive(transpose_a, transpose_b, 2, 2, 3, 1.0f, a.data(), lda,
+                         b.data(), ldb, 0.0f, naive.data(), 2);
+
+    for (std::size_t i = 0; i < 4; ++i) {
+      LLM_CHECK_MSG(std::fabs(blocked[i] - expected[i]) < 1e-5,
+                    "tA=" << transpose_a << " tB=" << transpose_b
+                          << ": блочный дал " << blocked[i] << " вместо "
+                          << expected[i] << " в элементе " << i);
+      LLM_CHECK_MSG(std::fabs(naive[i] - expected[i]) < 1e-5,
+                    "tA=" << transpose_a << " tB=" << transpose_b
+                          << ": наивный дал " << naive[i] << " вместо "
+                          << expected[i] << " в элементе " << i);
+    }
+  }
+}

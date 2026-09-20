@@ -22,8 +22,8 @@ struct MatrixView {
 // gemm умеет работать с матрицей, у которой единичный шаг по одной из двух
 // осей. Это ровно два случая: плотные строки (обычная матрица) и плотные
 // столбцы (транспонированный вид). Всё остальное — например, результат
-// permute с перемешанными осями — приходится materializovat через
-// contiguous().
+// permute с перемешанными осями — приходится разворачивать в плотную копию
+// через contiguous().
 bool try_as_matrix(const Tensor& tensor, MatrixView* out) {
   LLM_DCHECK_EQ(tensor.rank(), 2);
   const int64_t rows = tensor.dim(0);
