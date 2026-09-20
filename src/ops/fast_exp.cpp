@@ -484,7 +484,19 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_sigmoid(
 #endif  // LLM_HAS_X86_SIMD
 
 const ExpKernelChoice* build_table(int* count) {
-  static ExpKernelChoice table[4];
+  // Вместимость считается теми же условиями, что и заполнение. Было
+  // table[4] — ровно по числу ядер на x86, без запаса, — и добавленное ядро
+  // записалось бы за границу статического массива: не отказ, а порча
+  // соседней памяти. То же место уже исправлено в таблице микроядер.
+  constexpr int kSlots = 2  // эталонное и libm есть всегда
+#if LLM_HAS_NEON
+                         + 1
+#endif
+#if LLM_HAS_X86_SIMD
+                         + 2
+#endif
+      ;
+  static ExpKernelChoice table[kSlots];
   static int size = 0;
   static bool ready = false;
   if (!ready) {
@@ -502,11 +514,13 @@ const ExpKernelChoice* build_table(int* count) {
     // архитектуры — на aarch64 склейка происходила сама, — и ровно поэтому
     // обучение на разных машинах расходилось; см. комментарий у скалярного
     // микроядра.
+    LLM_CHECK(size < kSlots);
     table[size].kernel = ExpKernel{&scalar_exp_shifted, &scalar_sigmoid,
                                    "эталонная", false};
     table[size].available = true;
     ++size;
 
+    LLM_CHECK(size < kSlots);
     table[size].kernel =
         ExpKernel{&libm_exp_shifted, &libm_sigmoid, "libm", false};
     table[size].available = true;
@@ -514,6 +528,7 @@ const ExpKernelChoice* build_table(int* count) {
 
 #if LLM_HAS_NEON
     // Доступно всегда: NEON обязателен в ARMv8-A.
+    LLM_CHECK(size < kSlots);
     table[size].kernel =
         ExpKernel{&neon_exp_shifted, &neon_sigmoid, "NEON x4", true};
     table[size].available = cpu.has_neon();
@@ -524,11 +539,13 @@ const ExpKernelChoice* build_table(int* count) {
     // Ядро экспоненты умножения с накоплением не использует, поэтому от AVX2
     // требуется только сам AVX2 — но проверяется та же пара, что у микроядер:
     // без FMA процессор всё равно не из тех, на которых это имеет смысл.
+    LLM_CHECK(size < kSlots);
     table[size].kernel =
         ExpKernel{&avx2_exp_shifted, &avx2_sigmoid, "AVX2 x8", true};
     table[size].available = cpu.has_avx2_fma();
     ++size;
 
+    LLM_CHECK(size < kSlots);
     table[size].kernel =
         ExpKernel{&avx512_exp_shifted, &avx512_sigmoid, "AVX-512 x16", true};
     table[size].available = cpu.has_avx512();

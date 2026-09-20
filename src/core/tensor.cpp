@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <ostream>
 #include <sstream>
 
@@ -71,6 +72,17 @@ Tensor::Tensor(std::shared_ptr<Storage> storage, float* data,
 
 Tensor Tensor::uninitialized(const Shape& shape) {
   const int64_t count = shape.numel();
+  // numel() уже проверила, что произведение размеров помещается в int64_t. Но
+  // байт вчетверо больше, и это произведение может не поместиться там, где
+  // поместилось само число элементов. Без проверки Storage получал бы
+  // обрезанный размер и возвращал бы нулевой указатель, а тензор оставался бы
+  // с полным numel() — то есть не отказ, а тензор без данных, о котором стало
+  // бы известно только по падению при первом обращении.
+  LLM_CHECK_MSG(
+      static_cast<uint64_t>(count) <=
+          std::numeric_limits<std::size_t>::max() / sizeof(float),
+      "тензору формы " << shape
+                       << " нужно больше памяти, чем адресует машина");
   std::shared_ptr<Storage> storage = std::make_shared<Storage>(
       static_cast<std::size_t>(count) * sizeof(float));
   float* data = count == 0 ? nullptr : storage->as<float>().data();
@@ -249,8 +261,14 @@ Tensor Tensor::slice(int axis, int64_t start, int64_t count) const {
   const int a = shape_.normalize_axis(axis);
   LLM_CHECK_GE(start, static_cast<int64_t>(0));
   LLM_CHECK_GE(count, static_cast<int64_t>(0));
-  LLM_CHECK_MSG(start + count <= shape_.dim(a),
-                "срез [" << start << ", " << start + count << ") по оси " << a
+  // Условие написано как «start в пределах оси И count помещается в остаток»,
+  // а не как start + count <= dim. Сумма двух int64_t переполняется, и при
+  // переполнении она становится отрицательной — то есть проверка границы
+  // пропускала бы ровно тот случай, ради которого написана. Для
+  // неотрицательных start и count обе записи совпадают всюду, где сумма не
+  // переполняется.
+  LLM_CHECK_MSG(start <= shape_.dim(a) && count <= shape_.dim(a) - start,
+                "срез [" << start << ", +" << count << ") по оси " << a
                          << " выходит за границу " << shape_.dim(a));
   Dims dims = shape_.dims();
   dims[a] = count;
