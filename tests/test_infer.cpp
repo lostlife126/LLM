@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "core/random.h"
@@ -499,4 +500,95 @@ LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
     LLM_CHECK_MSG(with_cache.tokens == without_cache.tokens,
                   variants[i].name << ": разошёлся выбранный текст");
   }
+}
+
+// Запасная ветвь розыгрыша не выдаёт отсечённый токен.
+//
+// Порог берётся из uniform(), то есть лежит в [0, 1), а сумма вероятностей
+// после нормировки во float отходит от единицы примерно на 1e-7. Значит порог
+// изредка оказывается больше суммы, и цикл добирается до конца, ничего не
+// вернув. Раньше запасная ветвь возвращала последний токен подряд — а
+// последним подряд после top-k или top-p почти всегда стоит как раз
+// отсечённый, с нулевой вероятностью. Один розыгрыш на семнадцать миллионов
+// выдавал бы токен, который сэмплер только что запретил.
+//
+// Ветвь эта из самого sample достижима только этой случайностью, поэтому
+// порог задаётся прямо.
+LLM_TEST(Sampler, CumulativeFallbackSkipsBlockedTokens) {
+  // Хвост отсечён: последние два токена запрещены.
+  const std::vector<float> probabilities = {0.5f, 0.5f, 0.0f, 0.0f};
+
+  // Порог заведомо недостижим — попадаем ровно в запасную ветвь.
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(probabilities, 2.0), 1);
+  // И ровно на единице: сумма 0.5 + 0.5 во float точна, так что этот случай
+  // разрешается ещё в цикле, но на том же токене.
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(probabilities, 1.0), 1);
+
+  // Нулевой порог не выбирает отсечённый первый токен: сумма догоняет его уже
+  // на нулевом номере, но вероятность там нулевая.
+  const std::vector<float> blocked_head = {0.0f, 0.0f, 1.0f};
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(blocked_head, 0.0), 2);
+
+  // Обычный ход не изменился: порог попадает внутрь второго отрезка.
+  const std::vector<float> plain = {0.25f, 0.25f, 0.5f};
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(plain, 0.4), 1);
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(plain, 0.5), 1);
+  LLM_CHECK_EQ(llm::infer::choose_by_cumulative(plain, 0.6), 2);
+
+  LLM_EXPECT_THROWS(llm::infer::choose_by_cumulative(std::vector<float>(), 0.5));
+  const std::vector<float> all_blocked = {0.0f, 0.0f};
+  LLM_EXPECT_THROWS(llm::infer::choose_by_cumulative(all_blocked, 0.5));
+}
+
+// Настройки сэмплера проверяются там, где их принимают.
+//
+// Ноль в штрафе за повтор делил бы логит на нуль; отрицательное окно при
+// приведении к беззнаковому становилось бы «сколько угодно», то есть штраф
+// накрывал бы весь текст вместо последних токенов; NaN в температуре проходил
+// бы мимо сравнения с нулём и делал бы NaN из всех логитов сразу.
+LLM_TEST(Sampler, ConfigIsCheckedOnConstruction) {
+  {
+    SamplerConfig config;
+    config.repetition_penalty = 0.0f;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.repetition_penalty = -1.0f;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.repetition_window = -1;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.top_k = -1;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.top_p = 1.5f;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.top_p = -0.1f;
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  {
+    SamplerConfig config;
+    config.temperature = std::numeric_limits<float>::quiet_NaN();
+    LLM_EXPECT_THROWS(Sampler{config});
+  }
+  // Значения по умолчанию, жадный выбор и выключенные отсечения проходят.
+  Sampler default_sampler{SamplerConfig()};
+  LLM_CHECK_EQ(default_sampler.config().top_k, static_cast<std::int64_t>(0));
+  SamplerConfig greedy;
+  greedy.temperature = 0.0f;
+  greedy.top_p = 1.0f;
+  greedy.top_k = 0;
+  Sampler greedy_sampler{greedy};
+  LLM_CHECK_EQ(greedy_sampler.config().temperature, 0.0f);
 }

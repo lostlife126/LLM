@@ -50,10 +50,20 @@ struct SamplerConfig {
   uint64_t seed = 1234;
 };
 
+// Розыгрыш обратным преобразованием: наименьший номер, на котором
+// кумулятивная сумма догоняет порог, среди тех, у кого вероятность
+// положительна.
+//
+// Открыто ради проверки. Внутри sample порог приходит из uniform(), то есть
+// лежит в [0, 1), и запасная ветвь — когда сумма не дотянула до порога из-за
+// накопленной погрешности — достижима оттуда примерно раз на семнадцать
+// миллионов розыгрышей. Задать порог прямо — единственный способ её увидеть.
+int32_t choose_by_cumulative(const std::vector<float>& probabilities,
+                             double threshold);
+
 class Sampler {
  public:
-  explicit Sampler(const SamplerConfig& config)
-      : config_(config), rng_(config.seed) {}
+  explicit Sampler(const SamplerConfig& config);
 
   // Логиты изменяются на месте. history — уже выбранные токены, нужен штрафу
   // за повтор.

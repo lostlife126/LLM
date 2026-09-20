@@ -116,6 +116,58 @@ void keep_top_p(std::vector<float>* logits, float top_p) {
 
 }  // namespace
 
+int32_t choose_by_cumulative(const std::vector<float>& probabilities,
+                             double threshold) {
+  LLM_CHECK_MSG(!probabilities.empty(), "розыгрыш по пустому распределению");
+  double accumulated = 0.0;
+  std::size_t last_positive = probabilities.size();
+  for (std::size_t i = 0; i < probabilities.size(); ++i) {
+    // Нулевые пропускаются, и это не оптимизация. uniform() возвращает
+    // значение из [0, 1), то есть может вернуть ровно нуль, и тогда
+    // накопленная сумма догоняет порог уже на нулевом токене — даже если он
+    // отсечён и вероятность его нулевая. Выбран был бы заблокированный токен.
+    //
+    // Прибавление нуля к сумме ничего не меняет ни на один разряд, поэтому
+    // пропуск не сдвигает розыгрыш: тот же порог даёт тот же номер.
+    if (probabilities[i] <= 0.0f) {
+      continue;
+    }
+    last_positive = i;
+    accumulated += probabilities[i];
+    if (accumulated >= threshold) {
+      return static_cast<int32_t>(i);
+    }
+  }
+  // Сюда попадают, когда сумма вышла чуть меньше порога из-за накопленной
+  // погрешности. Возвращается последний НЕотсечённый токен, а не последний
+  // подряд: последним подряд почти всегда оказывается как раз отсечённый, и
+  // запасная ветвь выдавала бы токен, который top-k или top-p только что
+  // запретили.
+  LLM_CHECK_MSG(last_positive < probabilities.size(),
+                "во всём распределении нет ни одной положительной вероятности");
+  return static_cast<int32_t>(last_positive);
+}
+
+Sampler::Sampler(const SamplerConfig& config)
+    : config_(config), rng_(config.seed) {
+  // Проверки на то, что не падает само. Ноль в штрафе делил бы логит на нуль,
+  // отрицательное окно превращалось бы при приведении к беззнаковому в
+  // «сколько угодно», а NaN в температуре проходил бы мимо сравнения с нулём и
+  // делал бы NaN из всех логитов сразу.
+  LLM_CHECK_MSG(!(config.temperature != config.temperature),
+                "температура не число");
+  LLM_CHECK_MSG(config.repetition_penalty > 0.0f,
+                "штраф за повтор " << config.repetition_penalty
+                                   << " должен быть положительным");
+  LLM_CHECK_MSG(config.repetition_window >= 0,
+                "окно штрафа " << config.repetition_window << " отрицательно");
+  LLM_CHECK_MSG(config.top_k >= 0,
+                "top-k " << config.top_k << " отрицателен; ноль — выключено");
+  LLM_CHECK_MSG(config.top_p >= 0.0f && config.top_p <= 1.0f,
+                "top-p " << config.top_p
+                         << " вне [0, 1]; ноль и единица — выключено");
+}
+
 int32_t Sampler::sample(std::vector<float>* logits,
                         const std::vector<int32_t>& history) {
   LLM_CHECK(logits != nullptr);
@@ -138,31 +190,7 @@ int32_t Sampler::sample(std::vector<float>* logits,
   keep_top_p(logits, config_.top_p);
 
   const std::vector<float> probabilities = softmax(*logits);
-
-  // Розыгрыш обратным преобразованием: идём по кумулятивной сумме, пока не
-  // перешагнём брошенное значение.
-  const double threshold = rng_.uniform();
-  double accumulated = 0.0;
-  for (std::size_t i = 0; i < probabilities.size(); ++i) {
-    accumulated += probabilities[i];
-    // Условие на нулевую вероятность закрывает один-единственный случай, и
-    // случай этот настоящий: uniform() возвращает значение из [0, 1), то есть
-    // может вернуть ровно нуль, и тогда накопленная сумма уже на нулевом
-    // токене оказывается не меньше порога — даже если сам токен отсечён и
-    // вероятность его равна нулю. Выбран был бы заблокированный токен.
-    //
-    // Больше ничего это условие не меняет. Если сумма стала не меньше порога
-    // на токене с нулевой вероятностью, значит она была такой и на
-    // предыдущем, и возврат произошёл бы там; исключение — самый первый
-    // токен, у которого предыдущего нет. То есть ровно тот случай, ради
-    // которого условие и стоит.
-    if (probabilities[i] > 0.0f && accumulated >= threshold) {
-      return static_cast<int32_t>(i);
-    }
-  }
-  // Сюда можно попасть только из-за накопленной погрешности, когда сумма
-  // вышла чуть меньше единицы.
-  return static_cast<int32_t>(probabilities.size() - 1);
+  return choose_by_cumulative(probabilities, rng_.uniform());
 }
 
 }  // namespace infer
