@@ -835,3 +835,71 @@ LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
   llm::ops::force_micro_kernel(nullptr);
   LLM_CHECK_MSG(checked > 0, "на этой машине нет ни одного слитного ядра");
 }
+
+LLM_TEST(Gemm, KernelsAgreeBitForBitWithScalingToo) {
+  // VectorKernelsAgreeBitForBit сравнивает ядра при alpha = 1 и beta = 0, а
+  // это ровно тот случай, в котором разница спрятана.
+  //
+  // У каждого микроядра два пути записи результата. Полная плитка пишется
+  // слитным умножением с накоплением — одно округление на элемент. Неполная,
+  // краевая, пишется обычным c += alpha * acc, и слитным его делает уже не
+  // код, а компилятор. При alpha = 1 умножение точное, и оба пути дают одно и
+  // то же независимо от того, слил компилятор или нет. При alpha, которое не
+  // степень двойки, — уже нет.
+  //
+  // Плитки у ядер разной ширины (16 у AVX2, 32 у AVX-512), поэтому полными и
+  // краевыми у них оказываются РАЗНЫЕ куски одной и той же задачи. Стоит
+  // одному компилятору перестать сливать в хвосте — и ядра разойдутся, то
+  // есть обучение на двух машинах даст разные веса. Проверено: сегодня и gcc,
+  // и clang сливают, расхождений нет.
+  llm::Rng rng(20260920);
+  const std::int64_t m = 200;
+  const std::int64_t n = 150;  // не кратно ни 16, ни 32: края есть у обоих
+  const std::int64_t k = 300;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+  const std::vector<float> c_initial = random_matrix(&rng, m, n);
+
+  // 0.3 и -2.5 не представимы точно как степень двойки, поэтому умножение на
+  // них округляет; 0.25 — представима, и на ней разницы не будет даже при
+  // разном округлении. Она здесь как раз затем, чтобы это было видно.
+  const float alphas[] = {0.3f, -2.5f, 0.25f};
+  const float betas[] = {0.5f, 1.0f};
+
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  int compared = 0;
+
+  for (std::size_t ai = 0; ai < sizeof(alphas) / sizeof(alphas[0]); ++ai) {
+    for (std::size_t bi = 0; bi < sizeof(betas) / sizeof(betas[0]); ++bi) {
+      std::vector<float> reference;
+      const char* reference_name = "";
+      for (int i = 0; i < count; ++i) {
+        if (!table[i].available || !table[i].kernel.fused) {
+          continue;
+        }
+        llm::ops::force_micro_kernel(&table[i].kernel);
+        std::vector<float> actual = c_initial;
+        llm::ops::gemm(false, false, m, n, k, alphas[ai], a.data(), k, b.data(),
+                       n, betas[bi], actual.data(), n);
+        if (reference.empty()) {
+          reference = actual;
+          reference_name = table[i].kernel.name;
+          continue;
+        }
+        ++compared;
+        for (std::size_t index = 0; index < reference.size(); ++index) {
+          LLM_CHECK_MSG(reference[index] == actual[index],
+                        "alpha=" << alphas[ai] << " beta=" << betas[bi]
+                                 << ": ядра '" << reference_name << "' и '"
+                                 << table[i].kernel.name << "' расходятся в "
+                                 << index << ": " << reference[index]
+                                 << " против " << actual[index]);
+        }
+      }
+    }
+  }
+  llm::ops::force_micro_kernel(nullptr);
+  LLM_CHECK_MSG(compared > 0 || count < 3,
+                "сравнить оказалось нечего: доступно ядер " << count);
+}
