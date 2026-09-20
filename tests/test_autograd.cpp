@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -57,15 +58,37 @@ LLM_TEST(Autograd, DiamondGraph) {
 }
 
 LLM_TEST(Autograd, LongSharedChain) {
-  // Длинная цепочка, где каждый узел используется дважды: проверяет, что
-  // обход в глубину не обрабатывает узел повторно и не переполняет стек.
+  // Длинная цепочка, где каждый узел используется дважды: обход в глубину не
+  // должен ни обрабатывать узел повторно, ни переполнять стек.
+  //
+  // Раньше длинная цепочка здесь строилась и на этом кончалась: обратный
+  // проход шёл по короткой, а по длинной не шло ничего, и ни глубина, ни
+  // повторные посещения не проверялись ничем. Теперь по ней строится сам
+  // топологический порядок — то место, где и живёт обход.
   Var a = leaf(1.0f);
   Var current = a;
-  for (int i = 0; i < 500; ++i) {
+  const int kDepth = 500;
+  for (int i = 0; i < kDepth; ++i) {
     current = llm::autograd::add(current, current);
   }
-  // После n удвоений производная равна 2^n; берём меньше шагов, чтобы не
-  // выйти за пределы float, но цепочку строим длинной.
+  const std::vector<llm::autograd::NodePtr> order =
+      llm::autograd::topological_order(current.node());
+  // Каждый шаг добавляет ровно один узел, плюс лист. Обе ссылки каждого
+  // сложения ведут в один и тот же узел, и если бы обход их не различал как
+  // уже посещённый, работы вышло бы 2^500.
+  LLM_CHECK_MSG(order.size() == static_cast<std::size_t>(kDepth + 1),
+                "в порядке " << order.size() << " узлов вместо "
+                             << kDepth + 1);
+  std::set<const llm::autograd::Node*> seen;
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    LLM_CHECK_MSG(seen.insert(order[i].get()).second,
+                  "узел " << i << " попал в порядок дважды");
+  }
+  LLM_CHECK(order.front().get() == current.node().get());
+  LLM_CHECK(order.back().get() == a.node().get());
+
+  // После n удвоений производная равна 2^n; для самого градиента берём меньше
+  // шагов, чтобы не выйти за пределы float.
   Var b = leaf(1.0f);
   Var chain = b;
   for (int i = 0; i < 20; ++i) {
