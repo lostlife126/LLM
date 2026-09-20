@@ -12,6 +12,24 @@
 
 namespace {
 
+// Возвращает автоматический выбор ядра при любом выходе из области
+// видимости — в том числе через исключение.
+//
+// Без этого непрошедшая проверка внутри перебора ядер оставляла принудительный
+// выбор включённым, и ВСЕ последующие тесты двоичного файла считались чужим
+// ядром. Поймано при проверке нового теста подменой: одна поломка в скалярном
+// ядре уронила двадцать тестов, из которых к ней относились два.
+class ForcedKernel {
+ public:
+  explicit ForcedKernel(const llm::ops::MicroKernel& kernel) {
+    llm::ops::force_micro_kernel(&kernel);
+  }
+  ~ForcedKernel() { llm::ops::force_micro_kernel(nullptr); }
+
+  ForcedKernel(const ForcedKernel&) = delete;
+  ForcedKernel& operator=(const ForcedKernel&) = delete;
+};
+
 std::vector<float> random_matrix(llm::Rng* rng, std::int64_t rows,
                                  std::int64_t ld) {
   std::vector<float> values(static_cast<std::size_t>(rows * ld));
@@ -308,7 +326,7 @@ LLM_TEST(Gemm, VectorKernelsAgreeBitForBit) {
     if (!table[i].available) {
       continue;
     }
-    llm::ops::force_micro_kernel(&table[i].kernel);
+    const ForcedKernel forced(table[i].kernel);
     std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
     llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
                    actual.data(), n);
@@ -331,7 +349,6 @@ LLM_TEST(Gemm, VectorKernelsAgreeBitForBit) {
                              << actual[index]);
     }
   }
-  llm::ops::force_micro_kernel(nullptr);
 
   // Если векторных ядер на этой машине меньше двух, сравнивать нечего. Молча
   // проходить в таком случае нельзя: пусть будет видно, что проверка не
@@ -379,7 +396,7 @@ LLM_TEST(Gemm, DirectPathMatchesNaive) {
     if (!table[i].available) {
       continue;
     }
-    llm::ops::force_micro_kernel(&table[i].kernel);
+    const ForcedKernel forced(table[i].kernel);
     for (std::size_t w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w) {
       for (std::size_t h = 0; h < sizeof(heights) / sizeof(heights[0]); ++h) {
         const std::int64_t n = widths[w];
@@ -391,7 +408,6 @@ LLM_TEST(Gemm, DirectPathMatchesNaive) {
       }
     }
   }
-  llm::ops::force_micro_kernel(nullptr);
 }
 
 LLM_TEST(Gemm, DirectPathDoesNotDependOnThreadCount) {
@@ -534,7 +550,7 @@ LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
       if (!table[i].available || !table[i].kernel.fused) {
         continue;
       }
-      llm::ops::force_micro_kernel(&table[i].kernel);
+      const ForcedKernel forced(table[i].kernel);
       std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
       llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n,
                      0.0f, actual.data(), n);
@@ -552,8 +568,7 @@ LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
                                << " — похоже, они выбрали разные пути");
       }
     }
-    llm::ops::force_micro_kernel(nullptr);
-  }
+    }
 }
 
 // --- веса половинной разрядности ---------------------------------------------
@@ -644,14 +659,13 @@ LLM_TEST(Gemm, HalfWeightsAgreeAcrossKernels) {
     if (!table[i].available) {
       continue;
     }
-    llm::ops::force_micro_kernel(&table[i].kernel);
+    const ForcedKernel forced(table[i].kernel);
     for (std::size_t j = 0; j < sizeof(kHalfCases) / sizeof(kHalfCases[0]);
          ++j) {
       check_half_matches_rounded(kHalfCases[j]);
     }
     ++checked;
   }
-  llm::ops::force_micro_kernel(nullptr);
   LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
 }
 
@@ -671,14 +685,13 @@ LLM_TEST(Gemm, HalfFallbackKeepsTheSamePath) {
     }
     llm::ops::MicroKernel crippled = table[i].kernel;
     crippled.run_rows_half = nullptr;
-    llm::ops::force_micro_kernel(&crippled);
+    const ForcedKernel forced(crippled);
     for (std::size_t j = 0; j < sizeof(kHalfCases) / sizeof(kHalfCases[0]);
          ++j) {
       check_half_matches_rounded(kHalfCases[j]);
     }
     ++checked;
   }
-  llm::ops::force_micro_kernel(nullptr);
   LLM_CHECK_MSG(checked > 0, "не проверено ни одного ядра");
 }
 
@@ -818,7 +831,7 @@ LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
     if (!table[i].available || !table[i].kernel.fused) {
       continue;
     }
-    llm::ops::force_micro_kernel(&table[i].kernel);
+    const ForcedKernel forced(table[i].kernel);
     std::vector<float> actual(static_cast<std::size_t>(m * n), 0.0f);
     llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
                    actual.data(), n);
@@ -832,7 +845,6 @@ LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
     }
     ++checked;
   }
-  llm::ops::force_micro_kernel(nullptr);
   LLM_CHECK_MSG(checked > 0, "на этой машине нет ни одного слитного ядра");
 }
 
@@ -878,7 +890,7 @@ LLM_TEST(Gemm, KernelsAgreeBitForBitWithScalingToo) {
         if (!table[i].available || !table[i].kernel.fused) {
           continue;
         }
-        llm::ops::force_micro_kernel(&table[i].kernel);
+        const ForcedKernel forced(table[i].kernel);
         std::vector<float> actual = c_initial;
         llm::ops::gemm(false, false, m, n, k, alphas[ai], a.data(), k, b.data(),
                        n, betas[bi], actual.data(), n);
@@ -899,7 +911,52 @@ LLM_TEST(Gemm, KernelsAgreeBitForBitWithScalingToo) {
       }
     }
   }
-  llm::ops::force_micro_kernel(nullptr);
   LLM_CHECK_MSG(compared > 0 || count < 3,
                 "сравнить оказалось нечего: доступно ядер " << count);
+}
+
+LLM_TEST(Gemm, EveryKernelMatchesNaiveOnEveryTileRemainder) {
+  // Сверка с наивным эталоном шла только для ядра, выбранного на этой машине.
+  // Остальные сверялись лишь друг с другом — побитово, если слитные, и с
+  // допуском, если нет. Этого мало: ошибка в обработке неполной плитки,
+  // одинаковая у всех ядер, прошла бы такую проверку насквозь, потому что
+  // сравнивать их было бы не с чем.
+  //
+  // Размеры подобраны так, чтобы дать остаток по каждой ширине плитки, какая
+  // есть в проекте: 4 и 32 у скалярного, 6 и 16 у AVX2, 8 и 32 у AVX-512,
+  // 12 и 8 у NEON. Глубина — единица, мелкое число, ровно один блок по
+  // глубине (128) и блок с остатком.
+  const std::int64_t sizes[] = {1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                11, 12, 13, 16, 17, 24, 31, 32, 33};
+  const std::int64_t depths[] = {1, 5, 128, 130};
+  const std::size_t size_count = sizeof(sizes) / sizeof(sizes[0]);
+  const std::size_t depth_count = sizeof(depths) / sizeof(depths[0]);
+
+  int count = 0;
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
+  LLM_CHECK_GT(count, 0);
+
+  int checked_kernels = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!table[i].available) {
+      continue;
+    }
+    const ForcedKernel forced(table[i].kernel);
+    ++checked_kernels;
+    // Своё зерно на ядро: одинаковые данные у всех ядер ничего не добавляют,
+    // а разные расширяют охват.
+    llm::Rng rng(90000 + i);
+    for (std::size_t mi = 0; mi < size_count; ++mi) {
+      for (std::size_t ni = 0; ni < size_count; ++ni) {
+        const std::int64_t k = depths[(mi + ni) % depth_count];
+        // Масштабы чередуются: хвост ядра, где считается alpha * acc + c,
+        // при alpha = 1 и beta = 0 упрощается и проверяется не весь.
+        const bool scaled = ((mi + ni) % 2) != 0;
+        compare_with_naive(&rng, false, false, sizes[mi], sizes[ni], k,
+                           scaled ? 0.75f : 1.0f, scaled ? 0.5f : 0.0f, 0);
+      }
+    }
+  }
+  LLM_CHECK_MSG(checked_kernels > 0, "ни одного доступного ядра");
 }
