@@ -181,3 +181,46 @@ LLM_TEST(Fp8, RoundingIsIdempotent) {
     }
   }
 }
+
+LLM_TEST(Fp8, TiesRoundToEven) {
+  // Округление к ближайшему чётному не проверялось ни в нормальной области,
+  // ни в субнормальной: замена условия на «ничья всегда вверх» оставляла суд
+  // зелёным в обоих случаях. При шести процентах шага решётки у восьми
+  // разрядов смещение от неверной ничьей — не мелочь: числа из precision_scope
+  // считаются именно этим преобразованием.
+  const llm::Fp8Format format = llm::kFp8E4M3;
+
+  // Нормальная область. У e4m3 три разряда мантиссы, значит между 1.0 и 1.25
+  // шаг 0.125, а ничья — ровно 1.0625. Код 56 — это 1.0 (мантисса чётная),
+  // код 57 — 1.125. К чётному значит вниз.
+  LLM_CHECK_EQ(llm::to_fp8(1.0625f, format), static_cast<uint8_t>(56));
+  // А 1.1875 — ничья между 1.125 (нечётная мантисса) и 1.25 (чётная): вверх.
+  LLM_CHECK_EQ(llm::to_fp8(1.1875f, format), static_cast<uint8_t>(58));
+  // Не ничья рядом: 1.05 ближе к единице.
+  LLM_CHECK_EQ(llm::to_fp8(1.05f, format), static_cast<uint8_t>(56));
+
+  // Субнормальная область: шаг 2^-9, ничьи на половинах.
+  const float step = std::ldexp(1.0f, -9);
+  LLM_CHECK_EQ(llm::to_fp8(0.5f * step, format), static_cast<uint8_t>(0));
+  LLM_CHECK_EQ(llm::to_fp8(1.5f * step, format), static_cast<uint8_t>(2));
+  LLM_CHECK_EQ(llm::to_fp8(2.5f * step, format), static_cast<uint8_t>(2));
+  LLM_CHECK_EQ(llm::to_fp8(3.5f * step, format), static_cast<uint8_t>(4));
+}
+
+LLM_TEST(Fp8, InfinityFollowsWhetherTheFormatHasOne) {
+  // У e4m3 бесконечности нет вовсе, и приходящая бесконечность обязана стать
+  // наибольшим конечным — по тому же соображению, что и переполнение: NaN
+  // погубил бы всё вычисление целиком. У e5m2 бесконечность есть, и она
+  // обязана остаться собой. Ни то, ни другое не проверялось.
+  const float infinity = std::numeric_limits<float>::infinity();
+
+  LLM_EXPECT_NEAR(llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E4M3),
+                                llm::kFp8E4M3),
+                  448.0, 0.0);
+  LLM_EXPECT_NEAR(llm::from_fp8(llm::to_fp8(-infinity, llm::kFp8E4M3),
+                                llm::kFp8E4M3),
+                  -448.0, 0.0);
+
+  LLM_CHECK(std::isinf(
+      llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E5M2), llm::kFp8E5M2)));
+}

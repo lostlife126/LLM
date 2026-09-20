@@ -575,3 +575,45 @@ LLM_TEST(Nn, MaskedSoftmaxMatchesTheSeparateChainBitwise) {
     expect_bitwise_equal("masked_softmax_backward", separate_back, fused_back);
   }
 }
+
+LLM_TEST(Nn, AttentionEntropyIsNormalisedToTheAvailableKeys) {
+  // Энтропия внимания — диагностика, которая печатается при обучении, и
+  // читать её можно только зная нормировку. Она делится на логарифм числа
+  // ДОСТУПНЫХ запросу ключей, поэтому равномерное внимание даёт ровно
+  // единицу на любой длине, а сосредоточенное — ноль. Основание логарифма при
+  // такой нормировке сокращается, и это тоже стоит закрепить: иначе кто-нибудь
+  // однажды «исправит» натуральный логарифм на двоичный в одном месте из двух.
+  //
+  // Прямой проверки у этой величины не было вовсе — только косвенная, через
+  // сравнение двух прогонов в тестах вариантов.
+
+  // Равномерное внимание по каузальной маске: запрос t видит t + 1 ключей.
+  const int64_t length = 4;
+  llm::Tensor uniform = llm::Tensor::zeros(llm::Shape({length, length}));
+  for (int64_t query = 0; query < length; ++query) {
+    const int64_t available = query + 1;
+    for (int64_t key = 0; key < available; ++key) {
+      uniform(query, key) = 1.0f / static_cast<float>(available);
+    }
+  }
+  // Первая строка видит один ключ и в среднее не входит: энтропия там ноль по
+  // построению, и делить было бы не на что.
+  LLM_EXPECT_NEAR(llm::ops::attention_entropy(uniform, 0), 1.0, 1e-6);
+
+  // Сосредоточенное внимание: вся масса на одном ключе.
+  llm::Tensor sharp = llm::Tensor::zeros(llm::Shape({length, length}));
+  for (int64_t query = 0; query < length; ++query) {
+    sharp(query, 0) = 1.0f;
+  }
+  LLM_EXPECT_NEAR(llm::ops::attention_entropy(sharp, 0), 0.0, 1e-6);
+
+  // Смещение позиций меняет число доступных ключей, а значит и нормировку.
+  // Строка из двух равных половин при смещении 0 доступна только второму
+  // запросу и даёт единицу; при смещении 2 доступны оба ключа обоим запросам.
+  llm::Tensor pair = llm::Tensor::zeros(llm::Shape({2, 2}));
+  pair(0, 0) = 0.5f;
+  pair(0, 1) = 0.5f;
+  pair(1, 0) = 0.5f;
+  pair(1, 1) = 0.5f;
+  LLM_EXPECT_NEAR(llm::ops::attention_entropy(pair, 2), 1.0, 1e-6);
+}
