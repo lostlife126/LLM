@@ -327,11 +327,20 @@ Tensor masked_softmax(const Tensor& scores, float scale, int64_t query_offset) {
   LLM_CHECK_MSG(scores.rank() >= 2, "маске нужны оси запросов и ключей");
   const int64_t keys = scores.dim(-1);
   const int64_t queries = scores.dim(-2);
+
+  Tensor out = Tensor::uninitialized(scores.shape());
+  // Пустой тензор — не ошибка, но и работы с ним нет. Проверка стоит до
+  // подсчёта матриц: делится там на queries * keys, а пустым тензор бывает
+  // ровно тогда, когда один из множителей нулевой. Без неё получался не отказ
+  // с сообщением, а SIGFPE. Соседняя attention_entropy эту проверку имеет —
+  // здесь её просто забыли.
+  if (scores.numel() == 0) {
+    return out;
+  }
   const int64_t matrices = scores.numel() / (queries * keys);
 
   Tensor holder;
   const float* x = dense_data(scores, &holder);
-  Tensor out = Tensor::uninitialized(scores.shape());
   float* y = out.data();
 
   // Делится по матрицам, а не по строкам, и это не мелочь. Цена строки здесь
@@ -382,6 +391,11 @@ Tensor masked_softmax_backward(const Tensor& grad_output, const Tensor& output,
                                float scale, int64_t query_offset) {
   const int64_t keys = output.dim(-1);
   const int64_t queries = output.dim(-2);
+
+  Tensor out = Tensor::uninitialized(output.shape());
+  if (output.numel() == 0) {  // см. masked_softmax
+    return out;
+  }
   const int64_t matrices = output.numel() / (queries * keys);
 
   Tensor grad_holder;
@@ -389,7 +403,6 @@ Tensor masked_softmax_backward(const Tensor& grad_output, const Tensor& output,
   const float* g = dense_data(grad_output, &grad_holder);
   const float* y = dense_data(output, &output_holder);
 
-  Tensor out = Tensor::uninitialized(output.shape());
   float* dx = out.data();
 
   // По матрицам, а не по строкам — по той же причине, что и в прямом проходе.
@@ -607,11 +620,15 @@ Tensor causal_mask(const Tensor& scores, int64_t query_offset) {
   LLM_CHECK_MSG(scores.rank() >= 2, "маске нужны оси запросов и ключей");
   const int64_t keys = scores.dim(-1);
   const int64_t queries = scores.dim(-2);
+
+  Tensor out = Tensor::uninitialized(scores.shape());
+  if (scores.numel() == 0) {  // см. masked_softmax
+    return out;
+  }
   const int64_t matrices = scores.numel() / (queries * keys);
 
   Tensor holder;
   const float* input = dense_data(scores, &holder);
-  Tensor out = Tensor::uninitialized(scores.shape());
   float* output = out.data();
 
   const float blocked = -std::numeric_limits<float>::infinity();
@@ -629,11 +646,15 @@ Tensor causal_mask(const Tensor& scores, int64_t query_offset) {
 Tensor causal_mask_backward(const Tensor& grad_output, int64_t query_offset) {
   const int64_t keys = grad_output.dim(-1);
   const int64_t queries = grad_output.dim(-2);
+
+  Tensor out = Tensor::uninitialized(grad_output.shape());
+  if (grad_output.numel() == 0) {  // см. masked_softmax
+    return out;
+  }
   const int64_t matrices = grad_output.numel() / (queries * keys);
 
   Tensor holder;
   const float* input = dense_data(grad_output, &holder);
-  Tensor out = Tensor::uninitialized(grad_output.shape());
   float* output = out.data();
 
   // Закрытые позиции на результат не влияли, значит их градиент — нуль.

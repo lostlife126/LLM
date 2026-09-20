@@ -617,3 +617,41 @@ LLM_TEST(Nn, AttentionEntropyIsNormalisedToTheAvailableKeys) {
   pair(1, 1) = 0.5f;
   LLM_EXPECT_NEAR(llm::ops::attention_entropy(pair, 2), 1.0, 1e-6);
 }
+
+LLM_TEST(Nn, EmptyTensorsDoNotDivideByZero) {
+  // Число матриц считается как numel / (queries * keys), а пустым тензор
+  // бывает ровно тогда, когда один из множителей нулевой. Получался не отказ с
+  // сообщением, а SIGFPE. Соседняя attention_entropy эту проверку имела —
+  // значит случай был продуман, но записан лишь в одном месте из пяти.
+  //
+  // Проверяются обе пустоты: ноль запросов и ноль ключей. Они разные: при нуле
+  // запросов пуста ось, по которой идёт внешний цикл, при нуле ключей — та, по
+  // которой считается маска.
+  const llm::Shape shapes[2] = {llm::Shape({2, 0, 4}), llm::Shape({2, 3, 0})};
+  for (int i = 0; i < 2; ++i) {
+    const llm::Tensor scores = llm::Tensor::zeros(shapes[i]);
+    LLM_CHECK_EQ(scores.numel(), static_cast<std::int64_t>(0));
+
+    const llm::Tensor weights = llm::ops::masked_softmax(scores, 0.5f, 0);
+    LLM_CHECK(weights.shape() == shapes[i]);
+
+    const llm::Tensor back =
+        llm::ops::masked_softmax_backward(scores, weights, 0.5f, 0);
+    LLM_CHECK(back.shape() == shapes[i]);
+
+    const llm::Tensor masked = llm::ops::causal_mask(scores, 0);
+    LLM_CHECK(masked.shape() == shapes[i]);
+
+    const llm::Tensor masked_back = llm::ops::causal_mask_backward(scores, 0);
+    LLM_CHECK(masked_back.shape() == shapes[i]);
+
+    // Здесь проверка была и раньше — пусть остаётся закреплённой.
+    LLM_EXPECT_NEAR(llm::ops::attention_entropy(weights, 0), 0.0, 0.0);
+
+    // И операции по последней оси на пустом входе.
+    LLM_CHECK(llm::ops::softmax(scores).shape() == shapes[i]);
+    LLM_CHECK(llm::ops::silu(scores).shape() == shapes[i]);
+    LLM_CHECK(llm::ops::gelu(scores).shape() == shapes[i]);
+    LLM_CHECK(llm::ops::rope(scores, 0, 10000.0f).shape() == shapes[i]);
+  }
+}
