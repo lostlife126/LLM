@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "core/util.h"
 #include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
@@ -27,7 +28,6 @@
 #include "train/trainer.h"
 
 namespace {
-
 
 struct Scope {
   const char* label;
@@ -97,8 +97,13 @@ int main(int argc, char** argv) {
     const llm::train::TrainReport report =
         llm::train::train(&model, target, train_config);
 
-    std::printf("%-22s обучаемых %7lld (%.2f%%)  потери %.4f  %.1f мин\n",
-                scope.label,
+    // Ширина через pad_utf8, а не через %-22s: printf считает ширину в
+    // байтах, а «ранг» занимает восемь байт на четыре знака. В таблице из
+    // четырёх строк это разъезжается на глазах — у самой длинной подписи
+    // места не оставалось вовсе. Доля обучаемых тоже с фиксированной
+    // шириной: без неё «потери» ехали следом.
+    std::printf("%s обучаемых %7lld (%6.2f%%)  потери %.4f  %.1f мин\n",
+                llm::pad_utf8(scope.label, 22).c_str(),
                 static_cast<long long>(model.trainable_parameter_count()),
                 100.0 * static_cast<double>(model.trainable_parameter_count()) /
                     static_cast<double>(model.parameter_count()),

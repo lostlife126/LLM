@@ -21,11 +21,6 @@
 #include "train/resume.h"
 #include "train/trainer.h"
 
-namespace {
-
-
-}  // namespace
-
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,

@@ -24,7 +24,6 @@
 
 namespace {
 
-
 void show_sample(llm::nn::Model* model, const llm::Bpe& tokenizer,
                  const std::string& prompt_text) {
   llm::infer::GenerateConfig config;

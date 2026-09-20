@@ -17,11 +17,6 @@
 #include "read_file.h"
 #include "tokenizer/bpe.h"
 
-namespace {
-
-
-}  // namespace
-
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
