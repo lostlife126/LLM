@@ -129,7 +129,6 @@ const MicroKernel& best_micro_kernel();
 // инструкций для него на этом процессоре нет. Проверять их вместо available
 // нельзя — вызов даст SIGILL. Единственный указатель, который бывает нулевым
 // по делу, это run_rows_half: он отзывается отдельно, когда нет F16C.
-
 struct MicroKernelChoice {
   MicroKernel kernel;
   bool available = false;

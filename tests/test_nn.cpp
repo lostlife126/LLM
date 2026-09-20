@@ -361,6 +361,36 @@ LLM_TEST(Nn, CrossEntropyRejectsMismatchedTargets) {
   LLM_EXPECT_THROWS(llm::ops::cross_entropy(logits, {0, 3}));
 }
 
+LLM_TEST(Nn, EveryFunctionTakingTargetsChecksThem) {
+  // Целью индексуется строка словаря, и раньше проверял это только
+  // cross_entropy. У двух других выход за границу оставался незамеченным:
+  // per_row_loss читала бы чужую память, а cross_entropy_backward в неё
+  // ПИСАЛА — то есть портила бы соседний тензор, и проявилось бы это где
+  // угодно, только не в этом файле.
+  //
+  // Проверяются обе стороны диапазона: отрицательная цель так же
+  // индексирует, только в другую сторону.
+  const llm::Tensor logits = llm::Tensor::zeros(llm::Shape({2, 3}));
+  const std::vector<int32_t> too_big = {0, 3};
+  const std::vector<int32_t> negative = {0, -1};
+  const std::vector<int32_t> good = {0, 2};
+
+  LLM_EXPECT_THROWS(llm::ops::cross_entropy(logits, too_big));
+  LLM_EXPECT_THROWS(llm::ops::cross_entropy(logits, negative));
+  LLM_EXPECT_THROWS(llm::ops::cross_entropy_backward(logits, too_big));
+  LLM_EXPECT_THROWS(llm::ops::cross_entropy_backward(logits, negative));
+  LLM_EXPECT_THROWS(llm::ops::per_row_loss(logits, too_big));
+  LLM_EXPECT_THROWS(llm::ops::per_row_loss(logits, negative));
+  LLM_EXPECT_THROWS(llm::ops::prediction_stats(logits, too_big));
+  LLM_EXPECT_THROWS(llm::ops::prediction_stats(logits, negative));
+
+  // И проверка не стала строже, чем надо: последняя законная цель проходит.
+  LLM_CHECK_EQ(llm::ops::per_row_loss(logits, good).size(),
+               static_cast<std::size_t>(2));
+  LLM_CHECK_EQ(llm::ops::cross_entropy_backward(logits, good).dim(1),
+               static_cast<int64_t>(3));
+}
+
 // --- Численная проверка градиентов ---
 
 LLM_TEST(Nn, GradRmsNorm) {

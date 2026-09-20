@@ -21,6 +21,23 @@ void check_arguments(const Tensor& logits,
       logits.dim(0) == static_cast<int64_t>(targets.size()),
       "логитов " << logits.dim(0) << " строк, а целей " << targets.size());
   LLM_CHECK_GT(logits.dim(0), static_cast<int64_t>(0));
+
+  // Цели проверяются здесь, а не в одной только cross_entropy, где проверка
+  // стояла раньше. Целью индексируют строку словаря все четыре функции этого
+  // файла, и у двух из них выход за границу оставался незамеченным:
+  // per_row_loss читала бы чужую память, а cross_entropy_backward в неё
+  // ПИСАЛА — то есть портила бы соседний тензор, и проявилось бы это где
+  // угодно, только не здесь.
+  //
+  // Цена — один проход по числу строк против прохода по строкам на словарь,
+  // то есть доля в тысячную. Ровно так же, отдельным проходом до работы,
+  // проверяет свои номера embedding_backward.
+  const int64_t vocab = logits.dim(1);
+  for (std::size_t row = 0; row < targets.size(); ++row) {
+    LLM_CHECK_MSG(targets[row] >= 0 && targets[row] < vocab,
+                  "цель " << targets[row] << " в строке " << row
+                          << " вне словаря размера " << vocab);
+  }
 }
 
 // Место под экспоненты одной строки.
@@ -74,8 +91,6 @@ Tensor cross_entropy(const Tensor& logits,
     for (int64_t row = first; row < last; ++row) {
       const float* row_data = data + row * vocab;
       const int64_t target = targets[static_cast<std::size_t>(row)];
-      LLM_CHECK_MSG(target >= 0 && target < vocab,
-                    "цель " << target << " вне словаря размера " << vocab);
 
       // -log p[target] = logsumexp(logits) - logits[target], и вычитание
       // максимума делает обе части конечными при любых логитах.
