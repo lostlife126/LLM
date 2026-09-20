@@ -73,6 +73,33 @@ LLM_TEST(Model, ValidateRejectsBadConfig) {
   config.d_model = 4;
   config.n_heads = 4;  // размерность головы получилась бы нечётной для RoPE
   LLM_EXPECT_THROWS(config.validate());
+
+  // Вещественные величины проверялись не все, а ошибка в них не падает — она
+  // даёт NaN где-то в середине прямого прохода.
+  config = test_config();
+  config.norm_eps = 0.0f;  // нулевая строка дала бы бесконечность
+  LLM_EXPECT_THROWS(config.validate());
+
+  config = test_config();
+  config.norm_eps = -1e-5f;
+  LLM_EXPECT_THROWS(config.validate());
+
+  config = test_config();
+  config.rope_theta = 0.0f;  // дробная степень нуля не определена
+  LLM_EXPECT_THROWS(config.validate());
+
+  config = test_config();
+  config.init_std = -0.02f;
+  LLM_EXPECT_THROWS(config.validate());
+
+  config = test_config();
+  config.z_loss_coef = -1e-4f;  // штраф стал бы поощрением
+  LLM_EXPECT_THROWS(config.validate());
+
+  // А нулевой разброс инициализации законен: вырожденно, но осмысленно.
+  config = test_config();
+  config.init_std = 0.0f;
+  config.validate();
 }
 
 LLM_TEST(Model, ParameterCountMatchesFormula) {
