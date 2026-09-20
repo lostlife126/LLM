@@ -195,6 +195,14 @@ int main() {
               llm::pad_utf8_right("скалярн.", 10).c_str(), "отн.");
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     const Case& c = cases[i];
+    // Ядро идёт по n и по k шагом в шестнадцать и хвоста не разбирает: оно
+    // написано под формы внимания, а те кратны. Некратная форма не упала бы,
+    // а прочитала бы за границей — и замер вышел бы про соседнюю память.
+    if (c.n % 16 != 0 || c.k % 16 != 0) {
+      std::printf("форма %s не кратна шестнадцати по n или k — ядро её не "
+                  "считает\n", c.label);
+      return 1;
+    }
     std::vector<float> a(c.heads * c.m * c.k, 0.5f);
     std::vector<float> b(c.heads * c.n * c.k, 0.25f);
     std::vector<float> out(c.heads * c.m * c.n, 0.0f);

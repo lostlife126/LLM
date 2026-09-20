@@ -87,6 +87,23 @@ int main(int argc, char** argv) {
 
   const llm::nn::ModelConfig config =
       llm::serialize::read_config(checkpoint_path);
+
+  // Батч оценки — один на всю таблицу и на проверку ниже.
+  const int64_t kBatch = 8;
+
+  // Если проверочная часть короче одного батча, evaluate честно вернёт нуль —
+  // и вся таблица выйдет из нулей, а столбец «к fp32» из плюс-минус нулей.
+  // Читается это как «восемь разрядов ничего не стоят», то есть ровно как
+  // вывод, обратный тому, ради которого программа написана. Рядом уже стоит
+  // такая же защита от пустого округления; эта — от пустой оценки.
+  LLM_CHECK_MSG(dataset.validation_batch_count(kBatch, config.max_seq_len) > 0,
+                "проверочная часть — "
+                    << dataset.validation_size()
+                    << " токенов, а на один батч нужно "
+                    << kBatch * config.max_seq_len << " (" << kBatch
+                    << " окон по " << config.max_seq_len
+                    << "): оценивать будет нечем");
+
   std::printf("модель: %s\n", config.to_string().c_str());
   std::printf("проверочная часть: %lld токенов, батчей на оценку %lld\n\n",
               static_cast<long long>(dataset.validation_size()),
@@ -143,7 +160,7 @@ int main(int argc, char** argv) {
     result.weight_rms_change =
         squared_weight > 0.0 ? std::sqrt(squared_change / squared_weight) : 0.0;
 
-    result.loss = llm::train::evaluate(&model, dataset, 8,
+    result.loss = llm::train::evaluate(&model, dataset, kBatch,
                                        config.max_seq_len, batches);
     results.push_back(result);
   }

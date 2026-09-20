@@ -209,6 +209,14 @@ void measure_kernel() {
   for (std::size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); ++s) {
     const int64_t k = shapes[s][0];
     const int64_t n = shapes[s][1];
+    // Оба ядра идут по n шагом kTileN и хвоста не разбирают: они написаны под
+    // формы модели, а те кратны. Некратная не упала бы, а прочитала и
+    // записала бы за границей.
+    if (n % kTileN != 0) {
+      std::printf("n=%lld не кратно %lld — эта форма ядрами не считается\n",
+                  static_cast<long long>(n), static_cast<long long>(kTileN));
+      continue;
+    }
     std::vector<float> a(static_cast<std::size_t>(k), 0.01f);
     std::vector<float> c(static_cast<std::size_t>(n), 0.0f);
     std::vector<llm::Half> half(static_cast<std::size_t>(k * n));

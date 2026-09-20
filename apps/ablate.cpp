@@ -286,6 +286,25 @@ int main(int argc, char** argv) {
       bench::read_file(corpus_path), tokenizer, 0.1);
 
   const std::vector<Variant> variants = build_variants(tokenizer.vocab_size());
+
+  // Батч один на все прогоны и на проверку ниже.
+  const int64_t kBatch = 16;
+
+  // Вся таблица — сравнение проверочных потерь между вариантами. Если
+  // проверочная часть короче одного батча, тренер не станет её считать, и
+  // final_validation_loss у каждого варианта останется нулём: таблица выйдет
+  // из нулей, парные разности из нулей, а столбец «знак» скажет «нет» про
+  // всё сразу. Выглядело бы это как честный результат «ни одно решение
+  // ничего не меняет».
+  LLM_CHECK_MSG(
+      dataset.validation_batch_count(kBatch, variants[0].config.max_seq_len) >
+          0,
+      "проверочная часть корпуса — "
+          << dataset.validation_size() << " токенов, а на один батч нужно "
+          << kBatch * variants[0].config.max_seq_len << " (" << kBatch
+          << " окон по " << variants[0].config.max_seq_len
+          << "): сравнивать варианты будет не по чему");
+
   std::printf("абляции: %zu вариантов по %d зёрен, %lld шагов каждый\n",
               variants.size(), seeds, static_cast<long long>(steps));
   // Сброс буфера после шапки: при выводе в файл она иначе не появится до
@@ -321,7 +340,7 @@ int main(int argc, char** argv) {
 
       llm::train::TrainConfig train_config;
       train_config.steps = steps;
-      train_config.batch_size = 16;
+      train_config.batch_size = kBatch;
       train_config.warmup_steps = steps / 20 + 1;
       // Порядок данных одинаков у всех прогонов: меняется только начальная
       // инициализация, поэтому разброс отражает именно её.

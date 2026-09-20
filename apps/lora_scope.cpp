@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "core/check.h"
 #include "core/util.h"
 #include "args.h"
 #include "read_file.h"
@@ -60,6 +61,21 @@ int main(int argc, char** argv) {
   const llm::data::TokenDataset target = llm::data::TokenDataset::from_text(
       bench::read_file(target_path), tokenizer, 0.1);
 
+  // Батч один на все четыре прогона и на проверку ниже.
+  const int64_t kBatch = 16;
+
+  // Вся программа — сравнение четырёх проверочных потерь между собой. Если
+  // проверочная часть короче одного батча, мерить нечем, и evaluate честно
+  // возвращает нуль — а печатается он как «потери 0.0000», числом,
+  // неотличимым с виду от измеренного и притом лучшим из возможных. Все
+  // четыре строки таблицы вышли бы одинаковыми нулями.
+  LLM_CHECK_MSG(
+      target.validation_batch_count(kBatch, config.max_seq_len) > 0,
+      "проверочная часть нового корпуса — "
+          << target.validation_size() << " токенов, а на один батч нужно "
+          << kBatch * config.max_seq_len << " (" << kBatch << " окон по "
+          << config.max_seq_len << "): сравнивать будет нечего");
+
   std::printf("модель: %s\n", config.to_string().c_str());
   std::printf("новый корпус: %lld обучающих токенов, %lld проверочных\n\n",
               static_cast<long long>(target.train_size()),
@@ -75,7 +91,7 @@ int main(int argc, char** argv) {
 
   llm::train::TrainConfig train_config;
   train_config.steps = steps;
-  train_config.batch_size = 16;
+  train_config.batch_size = kBatch;
   train_config.warmup_steps = steps / 20 + 1;
   train_config.log_every = 0;
   train_config.eval_batches = 16;

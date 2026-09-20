@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "core/check.h"
+
 #include "args.h"
 #include "read_file.h"
 #include "data/dataset.h"
@@ -62,6 +64,22 @@ int main(int argc, char** argv) {
   const llm::data::TokenDataset target = llm::data::TokenDataset::from_text(
       bench::read_file(target_path), tokenizer, 0.1);
 
+  // Батч один на все три прогона и на проверку ниже: разойдись они — и
+  // проверка перестала бы отвечать за то, что меряют прогоны.
+  const int64_t kBatch = 16;
+
+  // Проверочная часть короче одного батча означает, что мерить нечем, и
+  // evaluate честно вернёт нуль. Беда в том, что печатается он как «потери
+  // 0.0000» — числом, неотличимым с виду от измеренного и притом лучшим из
+  // возможных. Вся программа — сравнение трёх потерь между собой, так что
+  // отказ здесь честнее.
+  LLM_CHECK_MSG(
+      target.validation_batch_count(kBatch, config.max_seq_len) > 0,
+      "проверочная часть нового корпуса — "
+          << target.validation_size() << " токенов, а на один батч нужно "
+          << kBatch * config.max_seq_len << " (" << kBatch << " окон по "
+          << config.max_seq_len << "): сравнивать будет нечего");
+
   std::printf("модель: %s\n", config.to_string().c_str());
   std::printf("новый корпус: %lld обучающих токенов, %lld проверочных\n\n",
               static_cast<long long>(target.train_size()),
@@ -74,7 +92,7 @@ int main(int argc, char** argv) {
     llm::nn::Model model(config, 0);
     llm::serialize::load_checkpoint(checkpoint_path, &model);
     const float loss =
-        llm::train::evaluate(&model, target, 16, config.max_seq_len, 16);
+        llm::train::evaluate(&model, target, kBatch, config.max_seq_len, 16);
     std::printf("до дообучения: потери на новом корпусе %.4f\n", loss);
     std::printf("  что пишет:\n");
     show_sample(&model, tokenizer, prompt);
@@ -82,7 +100,7 @@ int main(int argc, char** argv) {
 
   llm::train::TrainConfig train_config;
   train_config.steps = steps;
-  train_config.batch_size = 16;
+  train_config.batch_size = kBatch;
   train_config.warmup_steps = steps / 20 + 1;
   train_config.log_every = 0;
   train_config.eval_batches = 16;

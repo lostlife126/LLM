@@ -145,6 +145,14 @@ void run_f16(int64_t m, int64_t n, int64_t k, const float* a,
 }
 
 void measure(int64_t m, int64_t n, int64_t k) {
+  // Ядро прототипа идёт по n шагом kTileN и хвоста не разбирает: оно написано
+  // под формы модели, а те кратны. Некратная не упала бы, а прочитала и
+  // записала бы за границей — замер вышел бы про соседнюю память.
+  if (n % kTileN != 0) {
+    std::printf("n=%lld не кратно %lld — ядро прототипа эту форму не считает\n",
+                static_cast<long long>(n), static_cast<long long>(kTileN));
+    return;
+  }
   llm::Rng rng(1234);
   std::vector<float> a(static_cast<std::size_t>(m * k));
   std::vector<float> b(static_cast<std::size_t>(k * n));
