@@ -224,14 +224,6 @@ LLM_TEST(Tensor, FillThroughView) {
   }
 }
 
-LLM_TEST(Tensor, SizeOneAxisIsContiguous) {
-  // Ось размера 1 не ограничивает размещение, поэтому такой вид остаётся
-  // плотным, несмотря на "неправильный" шаг.
-  const llm::Tensor tensor = iota(llm::Shape({4, 1, 3}));
-  LLM_CHECK(tensor.is_contiguous());
-  LLM_CHECK(tensor.transpose(0, 1).is_contiguous());
-}
-
 LLM_TEST(Tensor, EmptyTensor) {
   const llm::Tensor tensor = llm::Tensor::zeros(llm::Shape({0, 3}));
   LLM_CHECK(tensor.empty());
@@ -330,6 +322,11 @@ LLM_TEST(Tensor, ContiguityIgnoresAxesOfSizeOne) {
   // Плотность — это «элементы лежат подряд», а не «шаги равны
   // contiguous_strides». Ось размера 1 ничего не ограничивает: индекс по ней
   // всегда ноль, и её шаг в адрес не входит.
+  // Сначала то же на большем виде: и сам он плотный, и переставленный.
+  const llm::Tensor wide = iota(llm::Shape({4, 1, 3}));
+  LLM_CHECK(wide.is_contiguous());
+  LLM_CHECK(wide.transpose(0, 1).is_contiguous());
+
   const llm::Tensor base = llm::Tensor::from_values(
       llm::Shape({1, 2, 3}), {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
   const llm::Tensor swapped = base.transpose(0, 1);
@@ -350,4 +347,83 @@ LLM_TEST(Tensor, ContiguityIgnoresAxesOfSizeOne) {
   for (std::int64_t i = 0; i < 6; ++i) {
     LLM_EXPECT_NEAR(flattened(i), static_cast<double>(i), 0.0);
   }
+}
+
+LLM_TEST(Tensor, SelectDownToScalar) {
+  // Срез с удалением оси у вектора даёт тензор ранга 0. Проверяется отдельно,
+  // потому что ранг 0 — это тот же ранг, что у неопределённого тензора, и
+  // отличать их умеет только defined().
+  const llm::Tensor vector = iota(llm::Shape({4}));
+  const llm::Tensor scalar = vector.select(0, 2);
+
+  LLM_CHECK_EQ(scalar.rank(), 0);
+  LLM_CHECK(scalar.defined());
+  LLM_CHECK_EQ(scalar.numel(), static_cast<std::int64_t>(1));
+  LLM_CHECK(scalar.is_contiguous());
+  LLM_EXPECT_NEAR(*scalar.data(), 2.0, 0.0);
+  LLM_EXPECT_NEAR(scalar.at(std::vector<std::int64_t>()), 2.0, 0.0);
+  LLM_CHECK(scalar.shares_storage_with(vector));
+}
+
+LLM_TEST(Tensor, PermuteAcceptsNegativeAxes) {
+  // Оси нормализуются, как везде: -1 — последняя. Без этого перестановка
+  // {-1, 0} молча посчиталась бы мусором.
+  const llm::Tensor tensor = iota(llm::Shape({2, 3}));
+  const llm::Tensor by_negative = tensor.permute({-1, -2});
+  const llm::Tensor by_positive = tensor.permute({1, 0});
+
+  LLM_CHECK(by_negative.shape() == by_positive.shape());
+  for (std::int64_t i = 0; i < 3; ++i) {
+    for (std::int64_t j = 0; j < 2; ++j) {
+      LLM_EXPECT_NEAR(by_negative(i, j), by_positive(i, j), 0.0);
+    }
+  }
+  // И повтор через отрицательную запись ловится так же.
+  LLM_EXPECT_THROWS(tensor.permute({-1, 1}));
+}
+
+LLM_TEST(Tensor, SliceOfZeroLengthIsEmptyNotBroken) {
+  const llm::Tensor tensor = iota(llm::Shape({4, 3}));
+  const llm::Tensor nothing = tensor.slice(0, 2, 0);
+
+  LLM_CHECK(nothing.shape() == llm::Shape({0, 3}));
+  LLM_CHECK(nothing.empty());
+  LLM_CHECK(nothing.defined());
+  LLM_CHECK_EQ(nothing.flat().size(), static_cast<std::size_t>(0));
+  // Срез нулевой длины в самом конце оси тоже законен.
+  LLM_CHECK(tensor.slice(0, 4, 0).empty());
+}
+
+LLM_TEST(Tensor, OwnsWholeStorageDecidesWhetherBufferCanBeTaken) {
+  // От этого предиката зависит, заберёт ли накопитель градиента чужой буфер
+  // вместо копии. Ошибка здесь не падает, а портит чужие данные.
+
+  // Свежий тензор, смотрящих на буфер больше нет.
+  llm::Tensor own = llm::Tensor::zeros(llm::Shape({4, 3}));
+  LLM_CHECK(own.owns_whole_storage());
+
+  {
+    // Появился вид — смотрящих двое, забирать нельзя.
+    const llm::Tensor view = own.reshape(llm::Shape({12}));
+    LLM_CHECK(!own.owns_whole_storage());
+    LLM_CHECK(!view.owns_whole_storage());
+  }
+  // Вид умер — снова можно.
+  LLM_CHECK(own.owns_whole_storage());
+
+  // Кусок чужого буфера: смотрящий один, но буфер не весь. Забрать его
+  // значило бы присвоить хранилище, начинающееся не там, где обещает Storage.
+  const llm::Tensor part = own.slice(0, 1, 2);
+  LLM_CHECK(!part.owns_whole_storage());
+
+  // Неопределённый не владеет ничем.
+  LLM_CHECK(!llm::Tensor().owns_whole_storage());
+
+  // А вот случай, ради которого накопитель спрашивает ДВА условия сразу:
+  // перестановка покрывает буфер целиком и может остаться его единственным
+  // держателем, но порядок элементов в памяти уже не её. Один
+  // owns_whole_storage() здесь говорит «да».
+  llm::Tensor permuted = llm::Tensor::zeros(llm::Shape({2, 3})).transpose(0, 1);
+  LLM_CHECK(permuted.owns_whole_storage());
+  LLM_CHECK(!permuted.is_contiguous());
 }
