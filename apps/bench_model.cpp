@@ -25,6 +25,7 @@
 #include "core/random.h"
 #include "core/thread_pool.h"
 #include "nn/model.h"
+#include "ops/gemm.h"
 #include "train/optimizer.h"
 
 namespace {
@@ -133,5 +134,40 @@ int main(int argc, char** argv) {
                        static_cast<double>(batch * seq);
   std::printf("эффективно %.1f GFLOPS (пик умножения матриц — ./bench_gemm)\n",
               flops / step_seconds / 1e9);
+
+  // Откуда берутся байты на шаге обучения — при LLM_TRAFFIC=1.
+  //
+  // Раньше это можно было снять только на генерации (bench_generate), а
+  // утверждение в ops/gemm.h говорит и про обучение: сколько там даёт вес, а
+  // сколько накопитель. Проверить его было нечем, и оно держалось на замере,
+  // сделанном однажды и не записанном никуда.
+  //
+  // Меряется ОДИН шаг, а не серия: счётчик складывает байты всех вызовов
+  // подряд, и по серии вышла бы величина, зависящая от того, сколько раз
+  // успел повториться замер выше.
+  if (llm::ops::traffic().enabled) {
+    llm::ops::reset_traffic();
+    {
+      llm::autograd::Var loss = model.loss(ids, batch, seq);
+      loss.backward();
+      const std::vector<llm::nn::NamedParameter> parameters =
+          model.parameters();
+      for (std::size_t i = 0; i < parameters.size(); ++i) {
+        parameters[i].value->zero_grad();
+      }
+    }
+    const llm::ops::GemmTraffic step = llm::ops::traffic();
+    const double a = static_cast<double>(step.a_bytes);
+    const double b = static_cast<double>(step.b_bytes);
+    const double c = static_cast<double>(step.c_bytes);
+    const double total = a + b + c;
+    if (total > 0.0) {
+      std::printf(
+          "трафик за шаг: A %.1f МБ (%.0f%%)  B %.1f МБ (%.0f%%)  "
+          "C %.1f МБ (%.0f%%)\n",
+          a / 1048576.0, 100 * a / total, b / 1048576.0, 100 * b / total,
+          c / 1048576.0, 100 * c / total);
+    }
+  }
   return 0;
 }
