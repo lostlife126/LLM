@@ -181,6 +181,7 @@ add_executable(llm_tests
   tests/gradcheck.cpp
   tests/testing.cpp
   tests/test_main.cpp
+  tests/test_args.cpp
   tests/test_autograd.cpp
   tests/test_bpe.cpp
   tests/test_check.cpp
@@ -216,7 +217,11 @@ add_executable(llm_tests
   tests/test_util.cpp
 )
 target_link_libraries(llm_tests PRIVATE llm_core)
-target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+# apps здесь затем, что разбор аргументов и чтение файла живут там заголовками
+# и до сих пор не проверялись ничем. Через них проходят все числа, которыми
+# задаются прогоны, и ошибка в них не падает, а меняет то, что измерено.
+target_include_directories(llm_tests
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/apps)
 
 # Отдельная запись ctest на каждый набор: при падении сразу видно, какой
 # компонент сломан, без чтения общего лога.
@@ -227,6 +232,7 @@ target_include_directories(llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 # запись, прогоняющая двоичный файл целиком: список остался ради
 # гранулярности отчёта, но правильность на нём больше не держится.
 set(LLM_TEST_SUITES
+  Args
   Autograd
   Bpe
   Check

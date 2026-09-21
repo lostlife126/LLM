@@ -28,9 +28,21 @@ std::atomic<long long> g_bytes_a(0);
 std::atomic<long long> g_bytes_b(0);
 std::atomic<long long> g_bytes_c(0);
 
+// Признак учёта. Читается из окружения при первом обращении, а не при
+// статической инициализации: разбор строгий и на непонятном значении падает,
+// а падение до входа в main — это std::terminate. Тот же приём у имитации
+// половинной разрядности.
+//
+// Атомарный, потому что читают его рабочие потоки, а менять его вправе
+// проверка. Чтение расслабленное: признак только включает или выключает учёт,
+// и порядок относительно самих счётчиков ничего не значит.
+std::atomic<bool>& traffic_flag() {
+  static std::atomic<bool> flag(env_flag("LLM_TRAFFIC"));
+  return flag;
+}
+
 bool traffic_enabled() {
-  static const bool enabled = env_flag("LLM_TRAFFIC");
-  return enabled;
+  return traffic_flag().load(std::memory_order_relaxed);
 }
 
 void count_a(int64_t bytes) {
@@ -295,6 +307,20 @@ void gemm_rect(const GemmTask& task, int64_t row0, int64_t rows, int64_t col0,
   // beta применяется здесь же, своим прямоугольником. Отдельный проход по
   // всей C был бы вторым чтением всей матрицы и не делился бы по потокам.
   scale_c(rows, cols, task.beta, task.c + row0 * task.ldc + col0, task.ldc);
+
+  // Учёт накопителя. Прямой путь считает его у себя, а здесь он был пропущен
+  // целиком: A и B учитывались при упаковке, а C не учитывался нигде, и
+  // traffic() по блочному пути показывал ровно ноль. Тихо и правдоподобно —
+  // доли просто перераспределялись между A и B.
+  //
+  // Множитель — число блоков по глубине, а не единица, и в этом всё отличие
+  // от прямого пути. Тот считает каждый элемент C за один проход, потому что
+  // глубину не режет; здесь же цикл по pc возвращается к тому же
+  // прямоугольнику столько раз, на сколько кусков поделилось k, и каждый раз
+  // микроядро читает C и записывает её заново.
+  if (traffic_enabled()) {
+    count_c(rows * cols * 4 * 2 * ceil_div(task.k, kBlockK));
+  }
 
   const int64_t mr = task.mr;
   const int64_t nr = task.nr;
@@ -657,6 +683,10 @@ int64_t gemm_depth_block() { return kBlockK; }
 
 void force_direct_max_rows(int64_t rows) {
   g_forced_direct_max_rows = rows;
+}
+
+void set_traffic_enabled(bool enabled) {
+  traffic_flag().store(enabled, std::memory_order_relaxed);
 }
 
 void reset_traffic() {

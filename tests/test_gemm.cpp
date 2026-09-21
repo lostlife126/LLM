@@ -1013,3 +1013,110 @@ LLM_TEST(Gemm, KnownProductInAllFourTransposeCombinations) {
     }
   }
 }
+
+// Учёт трафика считает все три матрицы на обоих путях.
+//
+// Счётчик существует затем, чтобы отвечать числом на вопрос «где лежат байты»,
+// и из его показаний взяты утверждения о том, что при генерации веса дают две
+// трети чтения. Проверялся он при этом ничем.
+//
+// Оказалось, что накопитель C учитывался только на прямом пути. На блочном не
+// учитывался вовсе — то есть ровно там, где C и велик: блочный путь режет
+// глубину, и каждый её кусок читает и переписывает весь прямоугольник заново.
+// Наружу это выходило не нулём в отчёте, а перераспределением долей: A и B
+// оставались верными, а доля весов от этого оказывалась завышенной.
+//
+// Ожидания посчитаны по форме задачи, а не сняты с самой реализации:
+//   A упаковывается один раз на каждый кусок глубины, всего m * k значений;
+//   B — столько же раз, всего n * k;
+//   C читается и пишется на каждом куске глубины, то есть m * n * 2 значений
+//     на кусок, а кусков — k, поделённое на длину куска с округлением вверх.
+LLM_TEST(Gemm, TrafficCountsEveryMatrixOnBothPaths) {
+  // Восстанавливается прежнее состояние, а не «выключено»: учёт включают
+  // переменной окружения, и прогон набора с ней не должен ломаться об эту
+  // проверку.
+  struct Guard {
+    bool was;
+    Guard() : was(llm::ops::traffic().enabled) {
+      llm::ops::set_traffic_enabled(true);
+    }
+    ~Guard() {
+      llm::ops::set_traffic_enabled(was);
+      llm::ops::reset_traffic();
+    }
+  } guard;
+
+  // Ширина одна: при делении по столбцам каждый поток перечитывает A целиком,
+  // и суммарный трафик честно зависит от числа потоков. Проверка про формулу,
+  // а не про деление.
+  const WidthGuard width(1);
+
+  llm::Rng rng(20260921);
+  const std::int64_t m = 64;
+  // Не кратно тридцати двум — значит блочный путь на любой машине: условие
+  // выбора пути спрашивает про общее число, а не про ширину плитки ядра.
+  const std::int64_t n = 48;
+  // Больше двух кусков по глубине, с остатком: иначе множитель у C был бы
+  // единицей, и пропуск учёта на блочном пути выглядел бы как верный ответ.
+  const std::int64_t k = 300;
+  const std::vector<float> a = random_matrix(&rng, m, k);
+  const std::vector<float> b = random_matrix(&rng, k, n);
+  std::vector<float> c(static_cast<std::size_t>(m * n), 0.0f);
+
+  llm::ops::reset_traffic();
+  llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                 c.data(), n);
+  const llm::ops::GemmTraffic blocked = llm::ops::traffic();
+
+  LLM_CHECK_MSG(blocked.enabled, "учёт не включился, проверка пуста");
+  const std::int64_t chunk = llm::ops::gemm_depth_block();
+  const std::int64_t depth_blocks = (k + chunk - 1) / chunk;
+  LLM_CHECK_MSG(depth_blocks > 1,
+                "глубина уложилась в один кусок, множитель у C не проверяется");
+
+  LLM_CHECK_EQ(blocked.a_bytes, static_cast<long long>(m * k * 4));
+  LLM_CHECK_EQ(blocked.b_bytes, static_cast<long long>(n * k * 4));
+  LLM_CHECK_MSG(blocked.c_bytes ==
+                    static_cast<long long>(m * n * 4 * 2 * depth_blocks),
+                "накопитель на блочном пути учтён как "
+                    << blocked.c_bytes << " вместо "
+                    << m * n * 4 * 2 * depth_blocks);
+
+  // Прямой путь: своя формула, но накопитель обязан быть учтён и там.
+  // Ширина плитки у ядер разная, поэтому A перечитывается разное число раз —
+  // берём его у выбранного ядра, а не вписываем числом.
+  const std::int64_t direct_m = 4;  // не больше порога по числу строк
+  const std::int64_t direct_n = 64;   // кратно тридцати двум
+  const std::int64_t direct_k = 32;
+  const std::vector<float> da = random_matrix(&rng, direct_m, direct_k);
+  const std::vector<float> db = random_matrix(&rng, direct_k, direct_n);
+  std::vector<float> dc(static_cast<std::size_t>(direct_m * direct_n), 0.0f);
+
+  llm::ops::reset_traffic();
+  llm::ops::gemm(false, false, direct_m, direct_n, direct_k, 1.0f, da.data(),
+                 direct_k, db.data(), direct_n, 0.0f, dc.data(), direct_n);
+  const llm::ops::GemmTraffic direct = llm::ops::traffic();
+
+  const std::int64_t nr = llm::ops::best_micro_kernel().nr;
+  const std::int64_t mr = llm::ops::best_micro_kernel().mr;
+  const std::int64_t column_blocks = direct_n / nr;
+  const std::int64_t row_blocks = (direct_m + mr - 1) / mr;
+  LLM_CHECK_EQ(direct.a_bytes,
+               static_cast<long long>(direct_m * direct_k * 4 * column_blocks));
+  LLM_CHECK_EQ(direct.b_bytes,
+               static_cast<long long>(direct_k * direct_n * 4 * row_blocks));
+  LLM_CHECK_EQ(direct.c_bytes,
+               static_cast<long long>(direct_m * direct_n * 4 * 2));
+
+  // И выключенный учёт ничего не считает: замер не вправе платить за то, чего
+  // не просил.
+  llm::ops::set_traffic_enabled(false);
+  llm::ops::reset_traffic();
+  llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
+                 c.data(), n);
+  const llm::ops::GemmTraffic off = llm::ops::traffic();
+  LLM_CHECK(!off.enabled);
+  LLM_CHECK_EQ(off.a_bytes, static_cast<long long>(0));
+  LLM_CHECK_EQ(off.b_bytes, static_cast<long long>(0));
+  LLM_CHECK_EQ(off.c_bytes, static_cast<long long>(0));
+}

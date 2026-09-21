@@ -196,6 +196,46 @@ LLM_TEST(Model, IsCausal) {
   }
 }
 
+// Логиты последней позиции — это логиты последней позиции.
+//
+// forward_last — то, чем пользуется вся генерация, а проверялся он только сам
+// с собой: сравнения «с кэшем против без кэша» гоняют его с обеих сторон, и
+// общая ошибка прошла бы их насквозь. Срез берётся по оси номер один, а
+// осей там три; перепутанная ось при батче или длине в единицу дала бы ту же
+// форму и то же число, поэтому берутся обе больше единицы.
+LLM_TEST(Model, ForwardLastIsTheLastRowOfForward) {
+  const ModelConfig config = test_config();
+  Model model(config, 4242);
+  const int64_t batch = 2;
+  const int64_t seq = 5;
+  const std::vector<int32_t> ids =
+      random_ids(batch * seq, config.vocab_size, 31337);
+
+  const Var full = model.forward(ids, batch, seq);
+  const Var last = model.forward_last(ids, batch, seq);
+
+  LLM_CHECK(last.shape() == llm::Shape({batch, config.vocab_size}));
+  for (int64_t item = 0; item < batch; ++item) {
+    for (int64_t token = 0; token < config.vocab_size; ++token) {
+      LLM_CHECK_MSG(
+          last.value()(item, token) == full.value()(item, seq - 1, token),
+          "элемент батча " << item << ", токен " << token << ": "
+                           << last.value()(item, token) << " вместо "
+                           << full.value()(item, seq - 1, token));
+    }
+  }
+
+  // Проверка непуста: у соседней позиции логиты другие, значит совпадение
+  // выше — это именно последняя строка, а не «любая подойдёт».
+  bool neighbour_differs = false;
+  for (int64_t token = 0; token < config.vocab_size; ++token) {
+    if (full.value()(0, seq - 2, token) != full.value()(0, seq - 1, token)) {
+      neighbour_differs = true;
+    }
+  }
+  LLM_CHECK(neighbour_differs);
+}
+
 LLM_TEST(Model, BatchItemsAreIndependent) {
   // Элементы батча не должны видеть друг друга. Ошибка в свёртке осей батча и
   // голов проявилась бы именно так.

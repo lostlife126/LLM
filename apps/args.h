@@ -18,35 +18,115 @@
 //
 // Поэтому разбор строгий: строка обязана быть числом целиком, иначе
 // программа останавливается и называет аргумент по имени.
+//
+// Разбор отделён от остановки, и это не украшение. Функции с exit нельзя
+// проверить тестом — прогон кончился бы на первой же проверке, — а разбор
+// аргументов не проверялся ничем вовсе. Тот же приём уже применён дважды:
+// parse_thread_count отделена от getenv, parse_env_flag от него же.
 
 #ifndef LLM_APPS_ARGS_H_
 #define LLM_APPS_ARGS_H_
 
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
 namespace bench {
 
-inline int64_t parse_int64(const char* text, const char* what) {
+// Чем именно строка не подошла. Случаи различаются, потому что читающему
+// сообщение они говорят разное: пустой аргумент — это чаще всего сдвинутый
+// порядок, «не число» — опечатка, «вне диапазона» — верно набранное, но
+// слишком большое, «не конечное» — почти всегда попытка что-то выключить
+// словом «inf».
+enum class ParseOutcome {
+  kOk,
+  kEmpty,
+  kNotANumber,
+  kOutOfRange,
+  kNotFinite,  // только у вещественных: inf и nan
+};
+
+// Разбор без остановки программы. При неудаче *value не трогается.
+inline ParseOutcome try_parse_int64(const char* text, int64_t* value) {
   if (text == nullptr || text[0] == '\0') {
-    std::fprintf(stderr, "%s: пустое значение, ожидалось целое число\n", what);
-    std::exit(1);
+    return ParseOutcome::kEmpty;
   }
   errno = 0;
   char* end = nullptr;
-  const long long value = std::strtoll(text, &end, 10);
+  // Основание задано явно: иначе «0x10» разобралось бы как шестнадцать, а
+  // «010» — как восемь, и число из командной строки значило бы не то, что
+  // набрано.
+  const long long parsed = std::strtoll(text, &end, 10);
   // Хвост обязан быть пустым: «12abc» — это не двенадцать, это опечатка.
   if (end == text || *end != '\0') {
-    std::fprintf(stderr, "%s: '%s' не целое число\n", what, text);
-    std::exit(1);
+    return ParseOutcome::kNotANumber;
   }
   if (errno == ERANGE) {
-    std::fprintf(stderr, "%s: '%s' не помещается в целое\n", what, text);
-    std::exit(1);
+    return ParseOutcome::kOutOfRange;
   }
-  return static_cast<int64_t>(value);
+  *value = static_cast<int64_t>(parsed);
+  return ParseOutcome::kOk;
+}
+
+inline ParseOutcome try_parse_double(const char* text, double* value) {
+  if (text == nullptr || text[0] == '\0') {
+    return ParseOutcome::kEmpty;
+  }
+  errno = 0;
+  char* end = nullptr;
+  const double parsed = std::strtod(text, &end);
+  if (end == text || *end != '\0') {
+    return ParseOutcome::kNotANumber;
+  }
+  if (errno == ERANGE) {
+    return ParseOutcome::kOutOfRange;
+  }
+  // strtod понимает «nan» и «inf» — для неё это законные числа, и хвоста
+  // после них не остаётся, поэтому проверка выше их пропускает. Здесь они
+  // законными не бывают ни разу: аргументами приходят температура, дропаут и
+  // доли, и каждое из этих значений конечно по смыслу. Бесконечная
+  // температура делит логиты в нуль, а NaN проходит мимо всякого сравнения с
+  // границами — то есть мимо проверок, которые стоят дальше.
+  if (!std::isfinite(parsed)) {
+    return ParseOutcome::kNotFinite;
+  }
+  *value = parsed;
+  return ParseOutcome::kOk;
+}
+
+namespace detail {
+
+inline void fail(ParseOutcome outcome, const char* text, const char* what,
+                 const char* kind) {
+  switch (outcome) {
+    case ParseOutcome::kEmpty:
+      std::fprintf(stderr, "%s: пустое значение, ожидалось %s\n", what, kind);
+      break;
+    case ParseOutcome::kNotANumber:
+      std::fprintf(stderr, "%s: '%s' не %s\n", what, text, kind);
+      break;
+    case ParseOutcome::kOutOfRange:
+      std::fprintf(stderr, "%s: '%s' вне представимого диапазона\n", what,
+                   text);
+      break;
+    case ParseOutcome::kNotFinite:
+      std::fprintf(stderr, "%s: '%s' не конечное число\n", what, text);
+      break;
+    case ParseOutcome::kOk:
+      return;
+  }
+  std::exit(1);
+}
+
+}  // namespace detail
+
+inline int64_t parse_int64(const char* text, const char* what) {
+  int64_t value = 0;
+  const ParseOutcome outcome = try_parse_int64(text, &value);
+  detail::fail(outcome, text, what, "целое число");
+  return value;
 }
 
 // То же, но величина обязана быть положительной.
@@ -66,21 +146,9 @@ inline int64_t parse_positive_int64(const char* text, const char* what) {
 }
 
 inline double parse_double(const char* text, const char* what) {
-  if (text == nullptr || text[0] == '\0') {
-    std::fprintf(stderr, "%s: пустое значение, ожидалось число\n", what);
-    std::exit(1);
-  }
-  errno = 0;
-  char* end = nullptr;
-  const double value = std::strtod(text, &end);
-  if (end == text || *end != '\0') {
-    std::fprintf(stderr, "%s: '%s' не число\n", what, text);
-    std::exit(1);
-  }
-  if (errno == ERANGE) {
-    std::fprintf(stderr, "%s: '%s' вне представимого диапазона\n", what, text);
-    std::exit(1);
-  }
+  double value = 0.0;
+  const ParseOutcome outcome = try_parse_double(text, &value);
+  detail::fail(outcome, text, what, "число");
   return value;
 }
 
