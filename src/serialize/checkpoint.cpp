@@ -221,6 +221,12 @@ int64_t load_checkpoint(const std::string& path, nn::Model* model) {
                     "у параметра " << name << " разошлась ось " << axis);
     }
 
+    // Та же проверка, что и при записи. Читается сплошной кусок длиной в
+    // numel, и для разреженного вида это означало бы запись мимо: часть
+    // значений легла бы в чужие ячейки, а часть весов осталась бы прежней.
+    // Молча — формы-то совпали.
+    LLM_CHECK_MSG(value.is_contiguous(),
+                  "параметр " << name << " лежит не сплошным куском");
     file.read(reinterpret_cast<char*>(value.data()),
               static_cast<std::streamsize>(value.numel() * sizeof(float)));
     LLM_CHECK_MSG(file.good(),

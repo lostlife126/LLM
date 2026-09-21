@@ -203,6 +203,7 @@ add_executable(llm_tests
   tests/test_quantize.cpp
   tests/test_safetensors.cpp
   tests/test_matmul.cpp
+  tests/test_measure.cpp
   tests/test_model.cpp
   tests/test_nn.cpp
   tests/test_random.cpp
@@ -253,6 +254,7 @@ set(LLM_TEST_SUITES
   Lora
   Gemm
   Matmul
+  Measure
   Model
   Nn
   Pretokenize

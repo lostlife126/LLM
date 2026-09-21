@@ -186,6 +186,10 @@ ResumeState load_resume(const std::string& path, nn::Model* model,
     Tensor& target = parameters[i].value->value();
     LLM_CHECK_MSG(value.shape() == target.shape(),
                   "у веса " << name << " в снимке другая форма");
+    // Копируется сплошной кусок длиной в numel, поэтому разреженный вид дал
+    // бы запись мимо ячеек — при совпавших формах и без единого слова.
+    LLM_CHECK_MSG(target.is_contiguous(),
+                  "вес " << name << " лежит не сплошным куском");
     std::memcpy(target.data(), value.data(),
                 static_cast<std::size_t>(value.numel()) * sizeof(float));
   }
