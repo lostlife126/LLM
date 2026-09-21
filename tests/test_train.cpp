@@ -12,6 +12,7 @@
 #include "core/random.h"
 #include "core/cpu.h"
 #include "core/thread_pool.h"
+#include "nn/dropout.h"
 #include "serialize/checkpoint.h"
 #include "testing.h"
 #include "train/optimizer.h"
@@ -1047,6 +1048,44 @@ LLM_TEST(Train, EvaluateWithNothingToMeasureReturnsZeroNotNan) {
   const float real = llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr);
   LLM_CHECK_MSG(real == real, "проверочные потери оказались NaN");
   LLM_CHECK_GT(real, 0.0f);
+}
+
+LLM_TEST(Train, EvaluateRefusesToRunWithDropoutOn) {
+  // Проверочные потери считаются без дропаута — иначе часть каналов
+  // зануляется, величина выходит выше и шумнее, и по ней выбирается лучший
+  // чекпоинт. Падения при этом нет: числа остаются правдоподобными.
+  //
+  // Держится это сейчас на том, что область обучения в train() охватывает
+  // только проход вперёд-назад. Расширить её на шаг целиком — правка на один
+  // символ, и заметить её было бы нечем. Отсюда сторож в самой evaluate.
+  llm::nn::ModelConfig config = test_config();
+  config.dropout = 0.1f;
+  llm::nn::Model model(config, 7);
+
+  std::vector<std::int32_t> tokens;
+  for (int i = 0; i < 400; ++i) {
+    tokens.push_back(static_cast<std::int32_t>(i % config.vocab_size));
+  }
+  const llm::data::TokenDataset dataset(tokens, 0.5);
+  LLM_CHECK_GT(dataset.validation_batch_count(2, 8),
+               static_cast<std::int64_t>(0));
+
+  // Вне области обучения — обычный вызов.
+  const float clean = llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr);
+  LLM_CHECK_GT(clean, 0.0f);
+
+  // Внутри — отказ, а не тихо другое число.
+  {
+    const llm::nn::TrainingScope training(123);
+    LLM_CHECK(llm::nn::training_mode());
+    LLM_EXPECT_THROWS(llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr));
+  }
+
+  // Область закрылась — снова работает. Иначе сторож мог бы оказаться
+  // односторонним и сломать всё последующее.
+  LLM_CHECK(!llm::nn::training_mode());
+  LLM_EXPECT_NEAR(llm::train::evaluate(&model, dataset, 2, 8, 2, nullptr),
+                  clean, 0.0);
 }
 
 LLM_TEST(Train, ResumeRefusesAnotherRunShape) {

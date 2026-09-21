@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -203,6 +204,51 @@ LLM_TEST(Model, IsCausal) {
 // общая ошибка прошла бы их насквозь. Срез берётся по оси номер один, а
 // осей там три; перепутанная ось при батче или длине в единицу дала бы ту же
 // форму и то же число, поэтому берутся обе больше единицы.
+LLM_TEST(Model, ConfigRefusesNonFiniteNumbers) {
+  // Сравнения в validate() ловят NaN сами: с ним ложно любое сравнение. А
+  // плюс бесконечность проходит их все — она и больше нуля, и не меньше нуля.
+  //
+  // Прийти она может из повреждённого чекпоинта: там вещественные поля
+  // читаются сырыми байтами. Падения дальше не будет. При бесконечном
+  // rope_theta частоты всех пар, кроме нулевой, обращаются в нуль — поворот
+  // позиций тихо выключается; при бесконечном norm_eps нормировка отдаёт нули.
+  const float infinity = std::numeric_limits<float>::infinity();
+  const float not_a_number = std::numeric_limits<float>::quiet_NaN();
+
+  {
+    ModelConfig config = test_config();
+    config.norm_eps = infinity;
+    LLM_EXPECT_THROWS(config.validate());
+  }
+  {
+    ModelConfig config = test_config();
+    config.rope_theta = infinity;
+    LLM_EXPECT_THROWS(config.validate());
+  }
+  {
+    ModelConfig config = test_config();
+    config.init_std = infinity;
+    LLM_EXPECT_THROWS(config.validate());
+  }
+  {
+    ModelConfig config = test_config();
+    config.z_loss_coef = infinity;
+    LLM_EXPECT_THROWS(config.validate());
+  }
+
+  // NaN отвергается и без новой проверки — это видно по тому, что тест на неё
+  // не опирается, но пусть будет записано, что оба случая закрыты.
+  {
+    ModelConfig config = test_config();
+    config.norm_eps = not_a_number;
+    LLM_EXPECT_THROWS(config.validate());
+  }
+
+  // Проверка непуста: исправная конфигурация проходит.
+  ModelConfig good = test_config();
+  good.validate();
+}
+
 LLM_TEST(Model, ForwardLastIsTheLastRowOfForward) {
   const ModelConfig config = test_config();
   Model model(config, 4242);

@@ -342,9 +342,24 @@ class Parser {
     // это можно, но знать об этом надо.
     const std::string digits =
         text_.substr(begin, position_ - begin).to_string();
+    const double value = std::strtod(digits.c_str(), nullptr);
+    // Число, не помещающееся в double, — это отказ, а не бесконечность.
+    //
+    // Записать бесконечность в JSON нельзя: слова inf грамматика не знает.
+    // Зато её можно получить литералом вроде 1e400, и до сих пор она проходила
+    // насквозь. Дальше это не падает: norm_eps и rope_theta читаются из
+    // number() напрямую, а проверки конфигурации бесконечность переживают —
+    // она и больше нуля, и не меньше любой границы. Видно это было бы только
+    // по результату: при бесконечной rope_theta все частоты, кроме нулевой
+    // пары, обращаются в нуль, то есть RoPE тихо выключается почти целиком.
+    //
+    // Проверяется конечность, а не errno. ERANGE strtod ставит и при потере
+    // значимости — 1e-400 даёт ноль, — а это законное JSON-число, и отвергать
+    // его было бы неверно.
+    fail_if(!std::isfinite(value), "число не помещается в double");
     const std::size_t node = add_node();
     (*nodes_)[node].kind = JsonKind::kNumber;
-    (*nodes_)[node].number = std::strtod(digits.c_str(), nullptr);
+    (*nodes_)[node].number = value;
     return node;
   }
 

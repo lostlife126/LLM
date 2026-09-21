@@ -142,6 +142,26 @@ LLM_TEST(Json, MalformedInputThrows) {
   LLM_EXPECT_THROWS(JsonDocument::parse("{} {}"));
 }
 
+LLM_TEST(Json, NumberTooLargeForDoubleThrows) {
+  // Бесконечность в JSON не записывается словом, зато получается литералом, и
+  // до сих пор она проходила насквозь. Падения дальше не было бы: norm_eps и
+  // rope_theta читаются из number() прямо, а проверки конфигурации
+  // бесконечность переживают — она больше нуля и не меньше любой границы.
+  LLM_EXPECT_THROWS(JsonDocument::parse("1e400"));
+  LLM_EXPECT_THROWS(JsonDocument::parse("-1e400"));
+  LLM_EXPECT_THROWS(JsonDocument::parse("{\"rope_theta\": 1e400}"));
+
+  // А потеря значимости — не отказ. strtod ставит ERANGE и на неё тоже,
+  // поэтому проверка по errno отвергла бы законное число; проверяется
+  // конечность, и здесь она соблюдена.
+  const JsonDocument tiny = JsonDocument::parse("1e-400");
+  LLM_EXPECT_NEAR(tiny.root().number(), 0.0, 0.0);
+
+  // Граница представимого проходит: это ещё число, а не бесконечность.
+  const JsonDocument big = JsonDocument::parse("1e308");
+  LLM_CHECK(big.root().number() > 1e307);
+}
+
 LLM_TEST(Json, RawControlCharacterInStringThrows) {
   // Двоичный файл, поданный вместо текста, обязан отвергаться на первом же
   // управляющем байте, а не через мегабайт разбора.
