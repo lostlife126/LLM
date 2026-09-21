@@ -71,4 +71,4 @@ jobs:
             src/train/*.h src/train/*.cpp \
             src/serialize/*.h src/serialize/*.cpp \
             src/tokenizer/*.h src/tokenizer/*.cpp \
-            apps/*.cpp tests/*.h tests/*.cpp
+            apps/*.cpp apps/*.h tests/*.h tests/*.cpp

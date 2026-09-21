@@ -37,13 +37,13 @@ bool ends_with(const std::string& text, const std::string& suffix) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  const char* const usage =
+      "<чекпоинт.llmw> <словарь.bpe> [\"затравка\"] [токенов] [температура]";
   if (argc < 3) {
-    std::fprintf(stderr,
-                 "использование: %s <чекпоинт.llmw> <словарь.bpe> "
-                 "[\"затравка\"] [токенов] [температура]\n",
-                 argv[0]);
+    std::fprintf(stderr, "использование: %s %s\n", argv[0], usage);
     return 1;
   }
+  bench::expect_at_most(argc, 5, usage);
   const std::string checkpoint_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string prompt_text = argc > 3 ? argv[3] : "The ";

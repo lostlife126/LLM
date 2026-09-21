@@ -664,6 +664,13 @@ LLM_TEST(Model, PreparedEmbeddingGivesTheSameLogits) {
   const std::vector<float> actual = forward_logits(&model, ids, batch, seq);
 
   LLM_CHECK_MSG(reference.size() == actual.size(), "формы логитов разошлись");
+  // Проверка непуста: равенство размеров выполняется и при двух пустых
+  // списках, а цикл ниже тогда не выполняется вовсе. Число логитов посчитано
+  // по задаче, а не снято с прогона.
+  LLM_CHECK_MSG(reference.size() == static_cast<std::size_t>(
+                                        batch * seq * config.vocab_size),
+                "логитов " << reference.size() << " вместо "
+                           << batch * seq * config.vocab_size);
   for (std::size_t i = 0; i < reference.size(); ++i) {
     LLM_CHECK_MSG(reference[i] == actual[i],
                   "логит " << i << " равен " << actual[i] << " вместо "

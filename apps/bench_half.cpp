@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "args.h"
+
 #include "measure.h"
 
 #include "core/cpu.h"
@@ -244,7 +246,10 @@ void measure_library(int64_t m, int64_t n, int64_t k) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
   std::printf("процессор: %s\n", llm::cpu_features().to_string().c_str());
 
   // Формы взяты из настоящей модели: k — это d_model или ffn_hidden, n — их

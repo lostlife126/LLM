@@ -23,6 +23,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "args.h"
+
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "ops/fast_exp.h"
@@ -100,7 +102,10 @@ void check_exp() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
   llm::set_parallel_width(1);
   std::printf("процессор: %s\n", llm::cpu_features().to_string().c_str());
   check_gemm();

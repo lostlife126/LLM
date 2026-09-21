@@ -145,6 +145,32 @@ inline int64_t parse_positive_int64(const char* text, const char* what) {
   return value;
 }
 
+// Лишние аргументы — отказ, а не мусор, который можно не заметить.
+//
+// Нижнюю границу argc проверяют не все приложения, а верхнюю не проверяло ни
+// одно из шестнадцати, и это та же болезнь, что лечит строгий разбор выше:
+// величина, понятая не так, даёт число, с виду неотличимое от измеренного.
+//
+// Случай не выдуманный. В scripts/pi_check.sh стояло «bench_model tiny 8 128»,
+// где 128 задумывалось длиной окна, а bench_model читает только пресет и батч.
+// Третий аргумент отбрасывался молча. Спасло совпадение: у пресета tiny окно и
+// так 128, — то есть замер был верен случайно, и перестал бы быть верным от
+// любой правки пресета.
+//
+// expected — наибольшее допустимое число аргументов ПОСЛЕ имени программы.
+inline void expect_at_most(int argc, int expected, const char* usage) {
+  if (argc - 1 <= expected) {
+    return;
+  }
+  std::fprintf(stderr,
+               "лишних аргументов: передано %d, принимается не больше %d\n",
+               argc - 1, expected);
+  if (usage != nullptr) {
+    std::fprintf(stderr, "использование: %s\n", usage);
+  }
+  std::exit(1);
+}
+
 inline double parse_double(const char* text, const char* what) {
   double value = 0.0;
   const ParseOutcome outcome = try_parse_double(text, &value);

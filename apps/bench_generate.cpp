@@ -56,6 +56,7 @@ double measure(llm::nn::Model* model, const std::vector<int32_t>& prompt,
 }  // namespace
 
 int main(int argc, char** argv) {
+  bench::expect_at_most(argc, 2, "[пресет] [токенов]");
   const std::string name = argc > 1 ? argv[1] : "tiny";
   const int64_t tokens =
       argc > 2 ? bench::parse_positive_int64(argv[2], "число токенов") : 100;

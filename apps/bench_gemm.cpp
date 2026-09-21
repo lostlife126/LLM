@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
+
 #include "measure.h"
 
 #include "core/cpu.h"
@@ -288,7 +290,10 @@ void compare_paths() {
       "должен его включать; меньше единицы — наоборот.\n");
 }
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
   compare_kernels();
   compare_threads();
   compare_paths();

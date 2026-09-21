@@ -23,13 +23,14 @@
 #include "train/trainer.h"
 
 int main(int argc, char** argv) {
+  const char* const usage =
+      "<корпус.txt> <словарь.bpe> [пресет] [шагов] [батч] [дропаут] [зерно] "
+      "[выход.llmw]";
   if (argc < 3) {
-    std::fprintf(stderr,
-                 "использование: %s <корпус.txt> <словарь.bpe> [пресет] "
-                 "[шагов] [батч] [дропаут] [зерно] [выход.llmw]\n",
-                 argv[0]);
+    std::fprintf(stderr, "использование: %s %s\n", argv[0], usage);
     return 1;
   }
+  bench::expect_at_most(argc, 8, usage);
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string preset = argc > 3 ? argv[3] : "nano";

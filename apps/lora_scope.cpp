@@ -42,13 +42,13 @@ struct Scope {
 }  // namespace
 
 int main(int argc, char** argv) {
+  const char* const usage =
+      "<чекпоинт.llmw> <словарь.bpe> <новый_корпус.txt> [шагов]";
   if (argc < 4) {
-    std::fprintf(stderr,
-                 "использование: %s <чекпоинт.llmw> <словарь.bpe> "
-                 "<новый_корпус.txt> [шагов]\n",
-                 argv[0]);
+    std::fprintf(stderr, "использование: %s %s\n", argv[0], usage);
     return 1;
   }
+  bench::expect_at_most(argc, 4, usage);
   const std::string checkpoint_path = argv[1];
   const std::string vocab_path = argv[2];
   const std::string target_path = argv[3];

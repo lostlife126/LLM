@@ -30,6 +30,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "args.h"
+
 #include "measure.h"
 
 #include "core/cpu.h"
@@ -253,7 +255,10 @@ void measure_kernel() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
   std::printf("процессор: %s\n\n", llm::cpu_features().to_string().c_str());
   measure_bulk();
 #if LLM_FP8_X86

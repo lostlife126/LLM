@@ -24,6 +24,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "args.h"
+
 #include "measure.h"
 
 #include "core/cpu.h"
@@ -138,7 +140,10 @@ double best_gflops(double flops, Fn fn) {
 
 #endif  // LLM_QK_X86
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
 #if !LLM_QK_X86
   std::printf("замер написан под AVX-512 и на этой архитектуре не работает\n");
   return 0;

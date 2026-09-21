@@ -180,7 +180,9 @@ LLM_THREADS=1 ./build-release/bench_fp8 2>&1 | head -14
 
 if [ "$FULL" = "1" ]; then
   say "10. Шаг обучения (только с --full)"
-  LLM_THREADS=4 ./build-release/bench_model tiny 8 128 2>&1 | tail -14
+  # Длина окна аргументом не задаётся: bench_model берёт её у пресета, а у
+  # tiny она и так 128. Третий аргумент здесь стоял и молча отбрасывался.
+  LLM_THREADS=4 ./build-release/bench_model tiny 8 2>&1 | tail -14
 fi
 
 say "Состояние ПОСЛЕ замеров"

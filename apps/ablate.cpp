@@ -249,13 +249,14 @@ bool sign_agrees(const std::vector<float>& delta) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Фильтр вариантов раньше в подсказке не упоминался, хотя читается ниже.
+  const char* const usage =
+      "<корпус.txt> <словарь.bpe> [шагов] [зёрен] [фильтр,через,запятую]";
   if (argc < 3) {
-    std::fprintf(stderr,
-                 "использование: %s <корпус.txt> <словарь.bpe> [шагов] "
-                 "[зёрен]\n",
-                 argv[0]);
+    std::fprintf(stderr, "использование: %s %s\n", argv[0], usage);
     return 1;
   }
+  bench::expect_at_most(argc, 5, usage);
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
   const int64_t steps =

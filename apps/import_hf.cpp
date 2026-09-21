@@ -71,12 +71,12 @@ int main(int argc, char** argv) {
 namespace {
 
 int run(int argc, char** argv) {
+  const char* const usage = "<каталог модели> <выход.llmw> [окно]";
   if (argc < 3) {
-    std::fprintf(stderr,
-                 "использование: %s <каталог модели> <выход.llmw> [окно]\n",
-                 argv[0]);
+    std::fprintf(stderr, "использование: %s %s\n", argv[0], usage);
     return 1;
   }
+  bench::expect_at_most(argc, 3, usage);
   const std::string directory = argv[1];
   const std::string output = argv[2];
   const int64_t max_seq_len =

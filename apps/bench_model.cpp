@@ -42,6 +42,10 @@ std::vector<int32_t> random_ids(int64_t count, int64_t vocab) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Приложение читает ровно два аргумента. Длина окна берётся у пресета и
+  // аргументом не задаётся — в scripts/pi_check.sh третьим стояло «128», и
+  // оно молча отбрасывалось.
+  bench::expect_at_most(argc, 2, "[пресет] [батч]");
   const std::string preset = argc > 1 ? argv[1] : "nano";
   const int64_t batch = argc > 2 ? bench::parse_positive_int64(argv[2], "батч") : 16;
 

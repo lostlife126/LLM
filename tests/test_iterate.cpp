@@ -101,6 +101,11 @@ LLM_TEST(Iterate, CursorStartsAtAnyBlock) {
   const llm::Dims strides({40, 5, 1});  // перестановка, хвост плотный
   const llm::BlockWalkN<1> walk = llm::block_walk(shape, strides);
 
+  // Проверка непуста: кусков больше одного, значит арифметика разложения
+  // номера по осям действительно работает, а не пропускается вместе с циклом.
+  LLM_CHECK_MSG(walk.blocks() > 1,
+                "кусков " << walk.blocks() << " — проверять нечего");
+
   for (int64_t start = 0; start < walk.blocks(); ++start) {
     llm::BlockWalkN<1>::Cursor from_start = walk.at(0);
     for (int64_t step = 0; step < start; ++step) {

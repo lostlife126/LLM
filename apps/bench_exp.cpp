@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
+
 #include "measure.h"
 
 #include "core/cpu.h"
@@ -76,7 +78,10 @@ void run_case(std::int64_t count) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char**) {
+  // Аргументов это приложение не принимает, и лишний обязан
+  // получить отказ, а не быть отброшенным молча.
+  bench::expect_at_most(argc, 0, "без аргументов");
   std::printf("процессор: %s\n\n", llm::cpu_features().to_string().c_str());
   std::printf("миллионов значений в секунду, один поток\n");
   std::printf("%s", llm::pad_utf8_right("длина", 10).c_str());

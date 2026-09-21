@@ -76,6 +76,15 @@ LLM_TEST(Infer, CacheMatchesFullRecompute) {
   LLM_CHECK_EQ(with_cache.tokens.size(), without_cache.tokens.size());
   LLM_CHECK_EQ(with_cache.step_logits.size(), without_cache.step_logits.size());
 
+  // Проверка непуста. Равенство размеров выполняется и при нуле шагов: цикл
+  // ниже тогда не выполнится, списки токенов совпадут как пустые, и главный
+  // тест инференса пройдёт, ничего не сверив. Число шагов известно заранее —
+  // max_tokens, — потому что затравка короткая и в контекст всё помещается.
+  LLM_CHECK_MSG(with_cache.step_logits.size() ==
+                    static_cast<std::size_t>(cached.max_tokens),
+                "шагов " << with_cache.step_logits.size() << " вместо "
+                         << cached.max_tokens << ": сверять почти нечего");
+
   for (std::size_t step = 0; step < with_cache.step_logits.size(); ++step) {
     const std::vector<float>& a = with_cache.step_logits[step];
     const std::vector<float>& b = without_cache.step_logits[step];
@@ -463,6 +472,12 @@ LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
     variants.push_back(Variant{"развязанные эмбеддинги", c});
   }
 
+  // Сколько значений реально сверено. Без этого счётчика проверка пуста при
+  // нулевом числе шагов: размеры сойдутся (оба нуля), внутренний цикл не
+  // выполнится, списки токенов совпадут как пустые — и единственный тест,
+  // сверяющий кэш с пересчётом по всем вариантам, пройдёт, ничего не доказав.
+  int64_t compared = 0;
+
   for (std::size_t i = 0; i < variants.size(); ++i) {
     const ModelConfig& config = variants[i].config;
     Model model(config, 17);
@@ -495,11 +510,23 @@ LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
                           << ": шаг " << step << ", токен " << token
                           << ": с кэшем " << a[token] << ", без кэша "
                           << b[token]);
+        ++compared;
       }
     }
+    LLM_CHECK_MSG(!with_cache.tokens.empty(),
+                  variants[i].name << ": генерация не выдала ни одного токена");
     LLM_CHECK_MSG(with_cache.tokens == without_cache.tokens,
                   variants[i].name << ": разошёлся выбранный текст");
   }
+
+  // Нижняя граница посчитана по задаче, а не снята с прогона: вариантов
+  // столько, сколько их заведено выше, шагов у каждого max_tokens, и на шаге
+  // сверяется целый ряд логитов длиной в словарь.
+  const int64_t expected = static_cast<int64_t>(variants.size()) * 10 *
+                           test_config().vocab_size;
+  LLM_CHECK_MSG(compared == expected,
+                "сверено " << compared << " логитов вместо " << expected
+                           << ": проверка прошла не по всем шагам");
 }
 
 // Запасная ветвь розыгрыша не выдаёт отсечённый токен.
