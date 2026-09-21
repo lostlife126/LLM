@@ -241,7 +241,21 @@ void neon_exp_shifted(const float* input, float shift, float* output,
   // Хвост доводится тем же ядром через временный буфер: скалярная реализация
   // округляет иначе, и последние элементы массива отличались бы от остальных.
   if (i < count) {
-    float tail[4];
+    // Выравнивание по ширине вектора — не украшение.
+    //
+    // Загрузка здесь невыровненная по записи, но компилятор вправе свернуть её
+    // в выровненную, если считает, что знает адрес локального массива. Он его
+    // и знает — пока кто-нибудь не переселит кадр стека. Санитайзер адресов
+    // ровно это и делает: локальные переменные уезжают на поддельный стек с
+    // выравниванием в тридцать два байта, свёрнутая команда получает адрес,
+    // кратный не тому числу, и прогон падает с SIGSEGV внутри арифметики,
+    // которая памяти не касается вовсе.
+    //
+    // Поймано сборкой с -fsanitize=address: падало только ядро AVX-512 и
+    // только при detect_stack_use_after_return, то есть при настройке по
+    // умолчанию. С явным выравниванием переменная остаётся на настоящем
+    // стеке, и предположение компилятора становится верным.
+    alignas(16) float tail[4];
     for (int64_t j = 0; j < 4; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }
@@ -261,7 +275,7 @@ void neon_sigmoid(const float* input, float* output, int64_t count) {
     vst1q_f32(output + i, vdivq_f32(one, vaddq_f32(one, e)));
   }
   if (i < count) {
-    float tail[4];
+    alignas(16) float tail[4];
     for (int64_t j = 0; j < 4; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }
@@ -345,7 +359,7 @@ __attribute__((target("avx2,fma"))) void avx2_exp_shifted(const float* input,
   // заголовок), и тогда последние несколько элементов массива отличались бы от
   // остальных. Поэтому хвост доводится тем же ядром через временный буфер.
   if (i < count) {
-    float tail[8];
+    alignas(32) float tail[8];
     for (int64_t j = 0; j < 8; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }
@@ -370,7 +384,7 @@ __attribute__((target("avx2,fma"))) void avx2_sigmoid(const float* input,
     _mm256_storeu_ps(output + i, _mm256_div_ps(one, _mm256_add_ps(one, e)));
   }
   if (i < count) {
-    float tail[8];
+    alignas(32) float tail[8];
     for (int64_t j = 0; j < 8; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }
@@ -437,7 +451,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_exp_shifted(
     _mm512_storeu_ps(output + i, exp16(x));
   }
   if (i < count) {
-    float tail[16];
+    alignas(64) float tail[16];
     for (int64_t j = 0; j < 16; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }
@@ -466,7 +480,7 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_sigmoid(
     _mm512_storeu_ps(output + i, _mm512_div_ps(one, _mm512_add_ps(one, e)));
   }
   if (i < count) {
-    float tail[16];
+    alignas(64) float tail[16];
     for (int64_t j = 0; j < 16; ++j) {
       tail[j] = i + j < count ? input[i + j] : 0.0f;
     }

@@ -14,6 +14,17 @@ endif()
 
 option(LLM_SANITIZE "Собрать с ASan и UBSan" OFF)
 
+# Санитайзер гонок — отдельной ручкой, потому что с ASan он несовместим.
+#
+# Заведён не для полноты набора. Главное обещание проекта — результат не
+# зависит от числа потоков, — держится на разделении работы без общих ячеек, и
+# проверить это чтением нельзя: гонка не падает, а изредка сдвигает младшие
+# разряды. Прогон всего набора под ним стоит несколько минут.
+#
+#   cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DLLM_SANITIZE_THREAD=ON && cmake --build build-tsan -j8
+option(LLM_SANITIZE_THREAD "Собрать с TSan (несовместим с LLM_SANITIZE)" OFF)
+
 # Предупреждения — ошибки. В проекте, где вся арифметика на индексах и
 # указателях, -Wsign-compare и -Wunused ловят реальные баги.
 add_compile_options(-Wall -Wextra -Werror)
@@ -44,9 +55,19 @@ add_compile_options(-ffp-contract=off)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fno-omit-frame-pointer")
 
+if(LLM_SANITIZE AND LLM_SANITIZE_THREAD)
+  message(FATAL_ERROR "LLM_SANITIZE и LLM_SANITIZE_THREAD несовместимы: "
+                      "ASan и TSan не работают в одной сборке")
+endif()
+
 if(LLM_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all)
   add_link_options(-fsanitize=address,undefined)
+endif()
+
+if(LLM_SANITIZE_THREAD)
+  add_compile_options(-fsanitize=thread)
+  add_link_options(-fsanitize=thread)
 endif()
 
 add_library(llm_core
