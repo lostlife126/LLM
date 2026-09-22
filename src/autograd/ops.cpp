@@ -197,12 +197,11 @@ Var mean(const Var& input, const std::vector<int>& axes, bool keepdim) {
   const Shape input_shape = input.shape();
   const Shape kept = keepdim_shape(input_shape, axes);
   const float scale = 1.0f / static_cast<float>(count);
-  return make_unary(input, "mean", ops::mean(input.value(), axes, keepdim),
-                    [input_shape, kept, scale](const Tensor& grad) {
-                      return ops::mul_scalar(grad, scale)
-                          .reshape(kept)
-                          .expand(input_shape);
-                    });
+  return make_unary(
+      input, "mean", ops::mean(input.value(), axes, keepdim),
+      [input_shape, kept, scale](const Tensor& grad) {
+        return ops::mul_scalar(grad, scale).reshape(kept).expand(input_shape);
+      });
 }
 
 namespace {
@@ -245,26 +244,28 @@ Var matmul(const Var& a, const Var& b) {
 
 Var reshape(const Var& input, const Shape& shape) {
   const Shape input_shape = input.shape();
-  return make_unary_view(input, "reshape", input.value().contiguous().reshape(shape),
-                    [input_shape](const Tensor& grad) {
-                      return grad.contiguous().reshape(input_shape);
-                    });
+  return make_unary_view(input, "reshape",
+                         input.value().contiguous().reshape(shape),
+                         [input_shape](const Tensor& grad) {
+                           return grad.contiguous().reshape(input_shape);
+                         });
 }
 
 Var expand(const Var& input, const Shape& shape) {
   const Shape input_shape = input.shape();
   return make_unary_view(input, "expand", input.value().expand(shape),
-                    [input_shape](const Tensor& grad) {
-                      return ops::reduce_to_shape(grad, input_shape);
-                    });
+                         [input_shape](const Tensor& grad) {
+                           return ops::reduce_to_shape(grad, input_shape);
+                         });
 }
 
 Var transpose(const Var& input, int axis_a, int axis_b) {
-  return make_unary_view(input, "transpose", input.value().transpose(axis_a, axis_b),
-                    [axis_a, axis_b](const Tensor& grad) {
-                      // Перестановка двух осей обратна сама себе.
-                      return grad.transpose(axis_a, axis_b);
-                    });
+  return make_unary_view(input, "transpose",
+                         input.value().transpose(axis_a, axis_b),
+                         [axis_a, axis_b](const Tensor& grad) {
+                           // Перестановка двух осей обратна сама себе.
+                           return grad.transpose(axis_a, axis_b);
+                         });
 }
 
 Var permute(const Var& input, const std::vector<int>& order) {

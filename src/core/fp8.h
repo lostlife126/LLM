@@ -80,15 +80,15 @@ inline uint8_t nan_code(const Fp8Format& format, uint32_t sign) {
   const uint32_t field = static_cast<uint32_t>(max_exponent_field(format));
   const uint32_t mantissa =
       format.has_infinity ? 1u : (1u << format.mantissa_bits) - 1u;
-  return static_cast<uint8_t>(
-      sign | (field << format.mantissa_bits) | mantissa);
+  return static_cast<uint8_t>(sign | (field << format.mantissa_bits) |
+                              mantissa);
 }
 
 inline uint8_t saturated_code(const Fp8Format& format, uint32_t sign) {
-  return static_cast<uint8_t>(
-      sign |
-      (static_cast<uint32_t>(top_normal_field(format)) << format.mantissa_bits) |
-      top_mantissa(format));
+  return static_cast<uint8_t>(sign |
+                              (static_cast<uint32_t>(top_normal_field(format))
+                               << format.mantissa_bits) |
+                              top_mantissa(format));
 }
 
 }  // namespace fp8_detail
@@ -172,9 +172,8 @@ inline float from_fp8(uint8_t code, const Fp8Format& format) {
   const uint32_t sign = static_cast<uint32_t>(code & 0x80u) << 24;
   const uint32_t all_mantissa = (1u << format.mantissa_bits) - 1u;
   const uint32_t mantissa = static_cast<uint32_t>(code) & all_mantissa;
-  const uint32_t field =
-      (static_cast<uint32_t>(code) >> format.mantissa_bits) &
-      static_cast<uint32_t>(max_exponent_field(format));
+  const uint32_t field = (static_cast<uint32_t>(code) >> format.mantissa_bits) &
+                         static_cast<uint32_t>(max_exponent_field(format));
   const int shift = mantissa_shift(format);
 
   if (field == static_cast<uint32_t>(max_exponent_field(format))) {
@@ -203,8 +202,7 @@ inline float from_fp8(uint8_t code, const Fp8Format& format) {
     }
     shifted &= all_mantissa;
     const int32_t result_exponent = 127 - bias(format) + 1 - shifts;
-    return bits_as_float(sign |
-                         (static_cast<uint32_t>(result_exponent) << 23) |
+    return bits_as_float(sign | (static_cast<uint32_t>(result_exponent) << 23) |
                          (shifted << shift));
   }
 

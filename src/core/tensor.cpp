@@ -25,8 +25,8 @@ constexpr int64_t kCopyGrain = 1 << 14;
 // Копирование идёт кусками подряд идущих элементов, а не по одному: см.
 // BlockWalk. Для плотного тензора кусок один на весь тензор, и всё сводится к
 // memcpy; для перестановки осей внимания кусок равен размеру головы.
-void copy_dense(const Shape& shape, const Dims& strides,
-                const float* in, float* out) {
+void copy_dense(const Shape& shape, const Dims& strides, const float* in,
+                float* out) {
   const BlockWalkN<1> walk = block_walk(shape, strides);
   const int64_t run = walk.run();
   const int64_t run_stride = walk.run_stride(0);
@@ -81,8 +81,7 @@ Tensor Tensor::uninitialized(const Shape& shape) {
   LLM_CHECK_MSG(
       static_cast<uint64_t>(count) <=
           std::numeric_limits<std::size_t>::max() / sizeof(float),
-      "тензору формы " << shape
-                       << " нужно больше памяти, чем адресует машина");
+      "тензору формы " << shape << " нужно больше памяти, чем адресует машина");
   std::shared_ptr<Storage> storage = std::make_shared<Storage>(
       static_cast<std::size_t>(count) * sizeof(float));
   float* data = count == 0 ? nullptr : storage->as<float>().data();

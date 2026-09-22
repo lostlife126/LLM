@@ -126,13 +126,13 @@ GradCheckResult gradcheck(
       const double minus = evaluate(fn, perturbed);
       data[element] = original;
 
-      value_scale = std::max(value_scale,
-                             std::max(std::fabs(plus), std::fabs(minus)));
+      value_scale =
+          std::max(value_scale, std::max(std::fabs(plus), std::fabs(minus)));
 
       const double numeric = (plus - minus) / (2.0 * static_cast<double>(step));
-      const double absolute = std::fabs(
-          numeric -
-          static_cast<double>(analytic[static_cast<std::size_t>(element)]));
+      const double absolute =
+          std::fabs(numeric - static_cast<double>(
+                                  analytic[static_cast<std::size_t>(element)]));
       if (absolute > worst_absolute) {
         worst_absolute = absolute;
         worst_element = element;

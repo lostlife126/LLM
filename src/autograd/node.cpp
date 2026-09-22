@@ -1,8 +1,8 @@
 #include "autograd/node.h"
 
 #include <algorithm>
-#include <utility>
 #include <unordered_set>
+#include <utility>
 
 #include "core/check.h"
 #include "core/fp16.h"

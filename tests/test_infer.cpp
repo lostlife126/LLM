@@ -497,19 +497,18 @@ LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
     const GenerateResult without_cache = llm::infer::generate(
         &model, prompt, full, llm::infer::TokenCallback(), true);
 
-    LLM_CHECK_MSG(with_cache.step_logits.size() ==
-                      without_cache.step_logits.size(),
-                  variants[i].name << ": разное число шагов");
+    LLM_CHECK_MSG(
+        with_cache.step_logits.size() == without_cache.step_logits.size(),
+        variants[i].name << ": разное число шагов");
     for (std::size_t step = 0; step < with_cache.step_logits.size(); ++step) {
       const std::vector<float>& a = with_cache.step_logits[step];
       const std::vector<float>& b = without_cache.step_logits[step];
       LLM_CHECK_EQ(a.size(), b.size());
       for (std::size_t token = 0; token < a.size(); ++token) {
         LLM_CHECK_MSG(a[token] == b[token],
-                      variants[i].name
-                          << ": шаг " << step << ", токен " << token
-                          << ": с кэшем " << a[token] << ", без кэша "
-                          << b[token]);
+                      variants[i].name << ": шаг " << step << ", токен "
+                                       << token << ": с кэшем " << a[token]
+                                       << ", без кэша " << b[token]);
         ++compared;
       }
     }
@@ -522,8 +521,8 @@ LLM_TEST(Infer, CacheMatchesFullRecomputeForEveryVariant) {
   // Нижняя граница посчитана по задаче, а не снята с прогона: вариантов
   // столько, сколько их заведено выше, шагов у каждого max_tokens, и на шаге
   // сверяется целый ряд логитов длиной в словарь.
-  const int64_t expected = static_cast<int64_t>(variants.size()) * 10 *
-                           test_config().vocab_size;
+  const int64_t expected =
+      static_cast<int64_t>(variants.size()) * 10 * test_config().vocab_size;
   LLM_CHECK_MSG(compared == expected,
                 "сверено " << compared << " логитов вместо " << expected
                            << ": проверка прошла не по всем шагам");
@@ -562,7 +561,8 @@ LLM_TEST(Sampler, CumulativeFallbackSkipsBlockedTokens) {
   LLM_CHECK_EQ(llm::infer::choose_by_cumulative(plain, 0.5), 1);
   LLM_CHECK_EQ(llm::infer::choose_by_cumulative(plain, 0.6), 2);
 
-  LLM_EXPECT_THROWS(llm::infer::choose_by_cumulative(std::vector<float>(), 0.5));
+  LLM_EXPECT_THROWS(
+      llm::infer::choose_by_cumulative(std::vector<float>(), 0.5));
   const std::vector<float> all_blocked = {0.0f, 0.0f};
   LLM_EXPECT_THROWS(llm::infer::choose_by_cumulative(all_blocked, 0.5));
 }

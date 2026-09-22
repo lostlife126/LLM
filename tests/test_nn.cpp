@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "autograd/nn.h"
-#include "core/thread_pool.h"
 #include "autograd/ops.h"
+#include "core/thread_pool.h"
 #include "gradcheck.h"
 #include "ops/elementwise.h"
 #include "ops/embedding.h"
@@ -492,14 +492,14 @@ namespace {
 using llm::testing::WidthGuard;
 
 void expect_bitwise_equal(const char* what, const llm::Tensor& lhs,
-                         const llm::Tensor& rhs) {
-  LLM_CHECK_MSG(lhs.numel() == rhs.numel(),
-                what << ": размеры разошлись, " << lhs.numel() << " и "
-                     << rhs.numel());
+                          const llm::Tensor& rhs) {
+  LLM_CHECK_MSG(lhs.numel() == rhs.numel(), what << ": размеры разошлись, "
+                                                 << lhs.numel() << " и "
+                                                 << rhs.numel());
   for (int64_t i = 0; i < lhs.numel(); ++i) {
     LLM_CHECK_MSG(lhs.data()[i] == rhs.data()[i],
-                  what << ": элемент " << i << " разошёлся, "
-                       << lhs.data()[i] << " и " << rhs.data()[i]);
+                  what << ": элемент " << i << " разошёлся, " << lhs.data()[i]
+                       << " и " << rhs.data()[i]);
   }
 }
 
@@ -576,9 +576,9 @@ LLM_TEST(Nn, RowReductionsDoNotDependOnThreadCount) {
 }
 
 LLM_TEST(Nn, MaskedSoftmaxMatchesTheSeparateChainBitwise) {
-  // Слитая цепочка обязана совпадать с раздельной побитово, а не приблизительно.
-  // Это и есть условие, при котором её можно ставить в модель, не пересчитывая
-  // заново все числа обучения в README.
+  // Слитая цепочка обязана совпадать с раздельной побитово, а не
+  // приблизительно. Это и есть условие, при котором её можно ставить в модель,
+  // не пересчитывая заново все числа обучения в README.
   //
   // Совпадение не случайно: закрытые позиции дают после экспоненты ровно нуль,
   // нуль не меняет ни максимум, ни сумму, а номер накопителя у элемента зависит

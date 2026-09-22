@@ -78,9 +78,8 @@ LLM_TEST(Measure, TakesTheMinimumOverSeriesNotTheLastOrTheMean) {
         burn(kSlow);
       },
       0.0);
-  LLM_CHECK_MSG(all_slow > kSlow * 0.5,
-                "медленная серия отмерена как " << all_slow
-                                                << " с — часы не идут");
+  LLM_CHECK_MSG(all_slow > kSlow * 0.5, "медленная серия отмерена как "
+                                            << all_slow << " с — часы не идут");
 
   LLM_CHECK_MSG(best < all_slow * 0.5,
                 "лучшее время " << best << " с при медленном " << all_slow

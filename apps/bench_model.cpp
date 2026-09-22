@@ -19,11 +19,10 @@
 #include <vector>
 
 #include "args.h"
-#include "measure.h"
-
 #include "core/cpu.h"
 #include "core/random.h"
 #include "core/thread_pool.h"
+#include "measure.h"
 #include "nn/model.h"
 #include "ops/gemm.h"
 #include "train/optimizer.h"
@@ -48,7 +47,8 @@ int main(int argc, char** argv) {
   // оно молча отбрасывалось.
   bench::expect_at_most(argc, 2, "[пресет] [батч]");
   const std::string preset = argc > 1 ? argv[1] : "nano";
-  const int64_t batch = argc > 2 ? bench::parse_positive_int64(argv[2], "батч") : 16;
+  const int64_t batch =
+      argc > 2 ? bench::parse_positive_int64(argv[2], "батч") : 16;
 
   const llm::nn::ModelConfig config = llm::nn::ModelConfig::by_name(preset);
   llm::nn::Model model(config, 1234);

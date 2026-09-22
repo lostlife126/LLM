@@ -3,10 +3,10 @@
 #include <utility>
 #include <vector>
 
-#include "autograd/node.h"
-#include "core/fp16.h"
 #include "autograd/nn.h"
+#include "autograd/node.h"
 #include "autograd/ops.h"
+#include "core/fp16.h"
 #include "testing.h"
 
 namespace {
@@ -77,8 +77,7 @@ LLM_TEST(Autograd, LongSharedChain) {
   // сложения ведут в один и тот же узел, и если бы обход их не различал как
   // уже посещённый, работы вышло бы 2^500.
   LLM_CHECK_MSG(order.size() == static_cast<std::size_t>(kDepth + 1),
-                "в порядке " << order.size() << " узлов вместо "
-                             << kDepth + 1);
+                "в порядке " << order.size() << " узлов вместо " << kDepth + 1);
   std::set<const llm::autograd::Node*> seen;
   for (std::size_t i = 0; i < order.size(); ++i) {
     LLM_CHECK_MSG(seen.insert(order[i].get()).second,
@@ -289,7 +288,8 @@ llm::Tensor awkward_values(int64_t count) {
 // Величина глобальная, и оставить её включённой значило бы испортить все
 // следующие тесты в наборе.
 struct SimulationGuard {
-  explicit SimulationGuard(bool enabled) : saved_(llm::autograd::fp16_simulation()) {
+  explicit SimulationGuard(bool enabled)
+      : saved_(llm::autograd::fp16_simulation()) {
     set_fp16_simulation(enabled);
   }
   ~SimulationGuard() { set_fp16_simulation(saved_); }
@@ -376,16 +376,17 @@ LLM_TEST(Autograd, Fp16SimulationLeavesParameterViewsAlone) {
     const Var view = llm::autograd::reshape(weight, llm::Shape({3, 4}));
     // Вид плотный — значит без условия на единоличное владение имитация
     // округлила бы его, а с ним данные параметра.
-    LLM_CHECK_MSG(view.value().is_contiguous(),
-                  "вид перестал быть плотным, и тест больше ничего не сторожит");
+    LLM_CHECK_MSG(
+        view.value().is_contiguous(),
+        "вид перестал быть плотным, и тест больше ничего не сторожит");
   }
 
   for (int64_t i = 0; i < weight.value().numel(); ++i) {
-    LLM_CHECK_MSG(weight.value().data()[i] == before[static_cast<std::size_t>(i)],
-                  "параметр изменился в элементе " << i << ": "
-                                                   << weight.value().data()[i]
-                                                   << " вместо "
-                                                   << before[static_cast<std::size_t>(i)]);
+    LLM_CHECK_MSG(
+        weight.value().data()[i] == before[static_cast<std::size_t>(i)],
+        "параметр изменился в элементе "
+            << i << ": " << weight.value().data()[i] << " вместо "
+            << before[static_cast<std::size_t>(i)]);
   }
 }
 
@@ -458,9 +459,9 @@ LLM_TEST(Autograd, ReductionSpreadsTheGradientBackOverEveryAxisSet) {
       const bool averaging = which == 1;
       for (int keep = 0; keep < 2; ++keep) {
         Var x = Var::leaf(llm::Tensor::full(shape, 2.0f), true);
-        const Var reduction =
-            averaging ? llm::autograd::mean(x, axes, keep != 0)
-                      : llm::autograd::sum(x, axes, keep != 0);
+        const Var reduction = averaging
+                                  ? llm::autograd::mean(x, axes, keep != 0)
+                                  : llm::autograd::sum(x, axes, keep != 0);
         // Свернуть до скаляра: backward берёт начало только от него, а
         // оставшиеся оси у части наборов ещё есть.
         llm::autograd::sum_all(reduction).backward();

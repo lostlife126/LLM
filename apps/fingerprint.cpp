@@ -24,7 +24,6 @@
 #include <vector>
 
 #include "args.h"
-
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "ops/fast_exp.h"
@@ -58,7 +57,8 @@ void check_gemm() {
   std::printf("\nумножение матриц %lldx%lldx%lld\n", static_cast<long long>(m),
               static_cast<long long>(n), static_cast<long long>(k));
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   for (int i = 0; i < count; ++i) {
     if (!table[i].available) {
       continue;

@@ -19,7 +19,6 @@
 #include <vector>
 
 #include "args.h"
-
 #include "core/check.h"
 #include "nn/model.h"
 #include "serialize/checkpoint.h"

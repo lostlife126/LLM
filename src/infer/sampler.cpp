@@ -163,9 +163,9 @@ Sampler::Sampler(const SamplerConfig& config)
                 "окно штрафа " << config.repetition_window << " отрицательно");
   LLM_CHECK_MSG(config.top_k >= 0,
                 "top-k " << config.top_k << " отрицателен; ноль — выключено");
-  LLM_CHECK_MSG(config.top_p >= 0.0f && config.top_p <= 1.0f,
-                "top-p " << config.top_p
-                         << " вне [0, 1]; ноль и единица — выключено");
+  LLM_CHECK_MSG(
+      config.top_p >= 0.0f && config.top_p <= 1.0f,
+      "top-p " << config.top_p << " вне [0, 1]; ноль и единица — выключено");
 }
 
 int32_t Sampler::sample(std::vector<float>* logits,

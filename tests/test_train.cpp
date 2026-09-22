@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "autograd/ops.h"
-#include "core/random.h"
 #include "core/cpu.h"
+#include "core/random.h"
 #include "core/thread_pool.h"
 #include "nn/dropout.h"
 #include "serialize/checkpoint.h"
@@ -114,10 +114,10 @@ LLM_TEST(Train, ScheduleWarmsUpThenDecays) {
   // 0.5, множитель 0.75. Две трети: шаг 70, косинус от 2pi/3 равен -0.5,
   // множитель 0.25. Обе точки посчитаны руками, без обращения к тому же
   // косинусу, что и в реализации.
-  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 40),
-                  0.1 + 0.9 * 0.75, 1e-6);
-  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 70),
-                  0.1 + 0.9 * 0.25, 1e-6);
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 40), 0.1 + 0.9 * 0.75,
+                  1e-6);
+  LLM_EXPECT_NEAR(llm::train::learning_rate_at(config, 70), 0.1 + 0.9 * 0.25,
+                  1e-6);
 }
 
 LLM_TEST(Train, ScheduleWithoutWarmup) {
@@ -915,8 +915,8 @@ LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
   // частей, не спрашивая, сколько потоков разрешено занимать, и при ширине
   // один обход занимал два потока.
   LLM_CHECK_MSG(llm::parallel_width() > 1 || llm::detect_core_count() < 2,
-                "ширина осталась " << llm::parallel_width()
-                                   << " при " << llm::detect_core_count()
+                "ширина осталась " << llm::parallel_width() << " при "
+                                   << llm::detect_core_count()
                                    << " ядрах: сравнивать нечего");
   const double four = llm::train::AdamW::sum_squares(gradient);
 
@@ -925,8 +925,10 @@ LLM_TEST(Train, GradNormSumDoesNotDependOnThreadCount) {
   // выводится явно.
   LLM_CHECK_MSG(one != serial,
                 "данные не различают порядок сложения, проверка пуста");
-  LLM_CHECK_MSG(one == four, "сумма квадратов зависит от числа потоков, "
-                             "разница " << (one - four));
+  LLM_CHECK_MSG(one == four,
+                "сумма квадратов зависит от числа потоков, "
+                "разница "
+                    << (one - four));
 }
 
 LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
@@ -974,13 +976,13 @@ LLM_TEST(Train, OptimizerDoesNotDependOnThreadCount) {
   const std::pair<llm::Tensor, float> one = run(1);
   const std::pair<llm::Tensor, float> four = run(4);
 
-  LLM_CHECK_MSG(one.second == four.second,
-                "норма градиента разошлась: " << one.second << " и "
-                                              << four.second);
+  LLM_CHECK_MSG(
+      one.second == four.second,
+      "норма градиента разошлась: " << one.second << " и " << four.second);
   for (int64_t i = 0; i < count; ++i) {
     LLM_CHECK_MSG(one.first.data()[i] == four.first.data()[i],
-                  "вес " << i << " разошёлся: " << one.first.data()[i]
-                         << " и " << four.first.data()[i]);
+                  "вес " << i << " разошёлся: " << one.first.data()[i] << " и "
+                         << four.first.data()[i]);
   }
 }
 
@@ -1005,8 +1007,8 @@ LLM_TEST(Train, ScheduleHandlesWarmupEqualToTotal) {
 
   for (int64_t step = 0; step < 10; ++step) {
     const float value = llm::train::learning_rate_at(config, step);
-    LLM_CHECK_MSG(value == value, "скорость обучения на шаге " << step
-                                                              << " оказалась NaN");
+    LLM_CHECK_MSG(value == value,
+                  "скорость обучения на шаге " << step << " оказалась NaN");
     LLM_CHECK_GT(value, 0.0f);
     LLM_CHECK_LE(value, 1.0f);
   }
@@ -1038,7 +1040,8 @@ LLM_TEST(Train, EvaluateWithNothingToMeasureReturnsZeroNotNan) {
     tokens.push_back(static_cast<std::int32_t>(i % config.vocab_size));
   }
   const llm::data::TokenDataset dataset(tokens, 0.5);
-  LLM_CHECK_GT(dataset.validation_batch_count(2, 8), static_cast<std::int64_t>(0));
+  LLM_CHECK_GT(dataset.validation_batch_count(2, 8),
+               static_cast<std::int64_t>(0));
 
   const float nothing = llm::train::evaluate(&model, dataset, 2, 8, 0, nullptr);
   LLM_CHECK_MSG(nothing == nothing, "проверочные потери оказались NaN");

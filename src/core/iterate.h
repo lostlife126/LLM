@@ -27,8 +27,8 @@ namespace detail {
 // смещения вычитается весь накопленный по этой оси вклад.
 //
 // Корректно работает с шагом 0 (растянутая ось) и с любой перестановкой осей.
-inline void advance(const Shape& shape, Dims* index,
-                    const Dims* const* strides, int64_t* offsets, int count) {
+inline void advance(const Shape& shape, Dims* index, const Dims* const* strides,
+                    int64_t* offsets, int count) {
   for (int axis = shape.rank() - 1; axis >= 0; --axis) {
     (*index)[axis] += 1;
     for (int t = 0; t < count; ++t) {
@@ -47,8 +47,7 @@ inline void advance(const Shape& shape, Dims* index,
 }  // namespace detail
 
 template <typename Fn>
-void for_each_offset(const Shape& shape, const Dims& strides,
-                     Fn fn) {
+void for_each_offset(const Shape& shape, const Dims& strides, Fn fn) {
   const int64_t total = shape.numel();
   if (total == 0) {
     return;
@@ -80,8 +79,7 @@ void for_each_offset2(const Shape& shape, const Dims& strides_a,
 
 template <typename Fn>
 void for_each_offset3(const Shape& shape, const Dims& strides_a,
-                      const Dims& strides_b,
-                      const Dims& strides_c, Fn fn) {
+                      const Dims& strides_b, const Dims& strides_c, Fn fn) {
   const int64_t total = shape.numel();
   if (total == 0) {
     return;
@@ -122,8 +120,7 @@ template <int kSets>
 class BlockWalkN {
  public:
   // strides[s] — набор номер s; все наборы описывают одну и ту же форму.
-  BlockWalkN(const Shape& shape,
-             const Dims* const (&strides)[kSets]) {
+  BlockWalkN(const Shape& shape, const Dims* const (&strides)[kSets]) {
     const int rank = shape.rank();
     int collapsed = 0;
     for (int set = 0; set < kSets; ++set) {
@@ -238,14 +235,12 @@ class BlockWalkN {
 };
 
 // Удобные обёртки: обход с одним и с двумя наборами шагов.
-inline BlockWalkN<1> block_walk(const Shape& shape,
-                                const Dims& strides) {
+inline BlockWalkN<1> block_walk(const Shape& shape, const Dims& strides) {
   const Dims* const sets[1] = {&strides};
   return BlockWalkN<1>(shape, sets);
 }
 
-inline BlockWalkN<2> block_walk2(const Shape& shape,
-                                 const Dims& strides_a,
+inline BlockWalkN<2> block_walk2(const Shape& shape, const Dims& strides_a,
                                  const Dims& strides_b) {
   const Dims* const sets[2] = {&strides_a, &strides_b};
   return BlockWalkN<2>(shape, sets);

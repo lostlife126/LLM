@@ -26,13 +26,12 @@
 #include <vector>
 
 #include "args.h"
-#include "read_file.h"
-
 #include "core/check.h"
-#include "core/util.h"
 #include "core/quantize.h"
+#include "core/util.h"
 #include "data/dataset.h"
 #include "nn/model.h"
+#include "read_file.h"
 #include "serialize/checkpoint.h"
 #include "tokenizer/bpe.h"
 #include "train/trainer.h"
@@ -96,13 +95,12 @@ int main(int argc, char** argv) {
   // Читается это как «восемь разрядов ничего не стоят», то есть ровно как
   // вывод, обратный тому, ради которого программа написана. Рядом уже стоит
   // такая же защита от пустого округления; эта — от пустой оценки.
-  LLM_CHECK_MSG(dataset.validation_batch_count(kBatch, config.max_seq_len) > 0,
-                "проверочная часть — "
-                    << dataset.validation_size()
-                    << " токенов, а на один батч нужно "
-                    << kBatch * config.max_seq_len << " (" << kBatch
-                    << " окон по " << config.max_seq_len
-                    << "): оценивать будет нечем");
+  LLM_CHECK_MSG(
+      dataset.validation_batch_count(kBatch, config.max_seq_len) > 0,
+      "проверочная часть — "
+          << dataset.validation_size() << " токенов, а на один батч нужно "
+          << kBatch * config.max_seq_len << " (" << kBatch << " окон по "
+          << config.max_seq_len << "): оценивать будет нечем");
 
   std::printf("модель: %s\n", config.to_string().c_str());
   std::printf("проверочная часть: %lld токенов, батчей на оценку %lld\n\n",
@@ -110,8 +108,9 @@ int main(int argc, char** argv) {
               static_cast<long long>(batches));
 
   const llm::Precision order[5] = {
-      llm::Precision::kFp32, llm::Precision::kFp16, llm::Precision::kFp8E5M2,
-      llm::Precision::kFp8E4M3, llm::Precision::kFp8E4M3NoScale,
+      llm::Precision::kFp32,           llm::Precision::kFp16,
+      llm::Precision::kFp8E5M2,        llm::Precision::kFp8E4M3,
+      llm::Precision::kFp8E4M3NoScale,
   };
 
   std::vector<Result> results;
@@ -165,8 +164,7 @@ int main(int argc, char** argv) {
     results.push_back(result);
   }
 
-  std::printf("%s %s %s %10s %s %s\n",
-              llm::pad_utf8("разрядность", 10).c_str(),
+  std::printf("%s %s %s %10s %s %s\n", llm::pad_utf8("разрядность", 10).c_str(),
               llm::pad_utf8_right("потери", 10).c_str(),
               llm::pad_utf8_right("перплекс.", 10).c_str(), "к fp32",
               llm::pad_utf8_right("сдвиг весов", 12).c_str(),
@@ -175,17 +173,16 @@ int main(int argc, char** argv) {
       "-----------------------------------------------------------------\n");
   const double base = results[0].loss;
   for (std::size_t i = 0; i < results.size(); ++i) {
-    std::printf("%s %10.4f %10.1f %+10.4f %11.2f%% %8d\n",
-                llm::pad_utf8(llm::precision_name(results[i].precision), 10)
-                    .c_str(),
-                results[i].loss,
-                std::exp(static_cast<double>(results[i].loss)),
-                results[i].loss - base,
-                100.0 * results[i].weight_rms_change,
-                results[i].largest_scale_exponent);
+    std::printf(
+        "%s %10.4f %10.1f %+10.4f %11.2f%% %8d\n",
+        llm::pad_utf8(llm::precision_name(results[i].precision), 10).c_str(),
+        results[i].loss, std::exp(static_cast<double>(results[i].loss)),
+        results[i].loss - base, 100.0 * results[i].weight_rms_change,
+        results[i].largest_scale_exponent);
   }
   std::printf(
-      "\nсдвиг весов — среднеквадратичный, в долях от них самих. Если он нулевой,\n"
+      "\nсдвиг весов — среднеквадратичный, в долях от них самих. Если он "
+      "нулевой,\n"
       "округление ничего не сделало, и строка потерь ничего не значит.\n"
       "масштаб — показатель степени двойки, на которую делится тензор перед\n"
       "округлением; для fp16 и e4m3-raw масштаб не применяется.\n");

@@ -20,12 +20,12 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
 #include "core/check.h"
 #include "core/util.h"
-#include "args.h"
-#include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
+#include "read_file.h"
 #include "tokenizer/bpe.h"
 #include "train/trainer.h"
 
@@ -245,7 +245,6 @@ bool sign_agrees(const std::vector<float>& delta) {
   return true;
 }
 
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -261,9 +260,9 @@ int main(int argc, char** argv) {
   const std::string vocab_path = argv[2];
   const int64_t steps =
       argc > 3 ? bench::parse_positive_int64(argv[3], "число шагов") : 1000;
-  const int seeds =
-      argc > 4 ? static_cast<int>(bench::parse_positive_int64(argv[4], "число зёрен"))
-               : 2;
+  const int seeds = argc > 4 ? static_cast<int>(bench::parse_positive_int64(
+                                   argv[4], "число зёрен"))
+                             : 2;
   // Необязательный фильтр: список подстрок через запятую. Позволяет догнать
   // несколько вариантов, не пересчитывая всю таблицу.
   const std::string filter = argc > 5 ? argv[5] : std::string();
@@ -297,14 +296,14 @@ int main(int argc, char** argv) {
   // из нулей, парные разности из нулей, а столбец «знак» скажет «нет» про
   // всё сразу. Выглядело бы это как честный результат «ни одно решение
   // ничего не меняет».
-  LLM_CHECK_MSG(
-      dataset.validation_batch_count(kBatch, variants[0].config.max_seq_len) >
-          0,
-      "проверочная часть корпуса — "
-          << dataset.validation_size() << " токенов, а на один батч нужно "
-          << kBatch * variants[0].config.max_seq_len << " (" << kBatch
-          << " окон по " << variants[0].config.max_seq_len
-          << "): сравнивать варианты будет не по чему");
+  LLM_CHECK_MSG(dataset.validation_batch_count(
+                    kBatch, variants[0].config.max_seq_len) > 0,
+                "проверочная часть корпуса — "
+                    << dataset.validation_size()
+                    << " токенов, а на один батч нужно "
+                    << kBatch * variants[0].config.max_seq_len << " (" << kBatch
+                    << " окон по " << variants[0].config.max_seq_len
+                    << "): сравнивать варианты будет не по чему");
 
   std::printf("абляции: %zu вариантов по %d зёрен, %lld шагов каждый\n",
               variants.size(), seeds, static_cast<long long>(steps));
@@ -367,9 +366,9 @@ int main(int argc, char** argv) {
   // не выбравший ничего сверх базового. Это опечатка в подстроке, и таблица
   // из одной строки про неё не скажет ничего — колонка разностей будет
   // сравнивать базовый вариант сам с собой.
-  LLM_CHECK_MSG(filter.empty() || outcomes.size() > 1,
-                "фильтр '" << filter
-                           << "' не выбрал ни одного варианта сверх базового");
+  LLM_CHECK_MSG(
+      filter.empty() || outcomes.size() > 1,
+      "фильтр '" << filter << "' не выбрал ни одного варианта сверх базового");
   const Outcome& baseline = outcomes[0];
 
   // Итоговая таблица, отсортированная по качеству.

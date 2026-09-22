@@ -14,13 +14,12 @@
 #include <string>
 #include <vector>
 
-#include "core/check.h"
-
 #include "args.h"
-#include "read_file.h"
+#include "core/check.h"
 #include "data/dataset.h"
 #include "infer/generate.h"
 #include "nn/model.h"
+#include "read_file.h"
 #include "serialize/checkpoint.h"
 #include "tokenizer/bpe.h"
 #include "train/trainer.h"

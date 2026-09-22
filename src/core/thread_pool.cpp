@@ -130,11 +130,10 @@ class Pool {
     // parallel_width(), но ручка, которая действует не везде, — это ручка,
     // которой нельзя мерить, а мерить ею как раз и надо: сравнение «на одном
     // ядре против четырёх» должно запускать один и тот же двоичный файл.
-    const int width = std::max(1, configured_width().load(
-                                      std::memory_order_relaxed));
-    const int workers = std::min(std::min(static_cast<int>(threads_.size()),
-                                          tasks - 1),
-                                 width - 1);
+    const int width =
+        std::max(1, configured_width().load(std::memory_order_relaxed));
+    const int workers = std::min(
+        std::min(static_cast<int>(threads_.size()), tasks - 1), width - 1);
     if (workers <= 0) {
       for (int i = 0; i < tasks; ++i) {
         task(i);
@@ -302,7 +301,9 @@ class Pool {
   std::exception_ptr failure_;
 };
 
-int env_thread_count() { return parse_thread_count(std::getenv("LLM_THREADS")); }
+int env_thread_count() {
+  return parse_thread_count(std::getenv("LLM_THREADS"));
+}
 
 int default_width() {
   const int from_env = env_thread_count();

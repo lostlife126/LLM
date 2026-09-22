@@ -28,9 +28,8 @@ int main(int argc, char** argv) {
   const std::string corpus_path = argv[1];
   const std::string vocab_path = argv[2];
   const int vocab_size =
-      argc > 3
-          ? static_cast<int>(bench::parse_int64(argv[3], "размер словаря"))
-          : 1024;
+      argc > 3 ? static_cast<int>(bench::parse_int64(argv[3], "размер словаря"))
+               : 1024;
 
   const std::string text = bench::read_file(corpus_path);
   std::printf("обучение словаря на %zu байтах, цель %d токенов\n", text.size(),

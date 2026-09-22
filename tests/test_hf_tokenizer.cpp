@@ -366,8 +366,8 @@ LLM_TEST(HfTokenizer, RefusesTokenIdsThatDoNotFitTheTable) {
   // обращался в ноль, словарь загружался БЕЗ ошибки, и токен «h» молча
   // получал место токена, стоявшего нулевым. Ошибка ничем себя не выдаёт:
   // разбор идёт, номера выходят, модель отвечает мимо.
-  LLM_EXPECT_THROWS(
-      llm::HfTokenizer::parse(patched("\"h\": 0", "\"h\": 4294967296"), "проба"));
+  LLM_EXPECT_THROWS(llm::HfTokenizer::parse(
+      patched("\"h\": 0", "\"h\": 4294967296"), "проба"));
 
   // Номер, помещающийся в int32_t, но огромный: таблица заводится длиной с
   // него, и отказ приходил из аллокатора, ни словом не упомянув файл.
@@ -385,8 +385,8 @@ LLM_TEST(HfTokenizer, RefusesTokenIdsThatDoNotFitTheTable) {
 
   // А запас должен оставаться: словарь здесь из 18 записей, и добавленный
   // токен с номером 100 — обычное дело, его отвергать нельзя.
-  const llm::HfTokenizer ok =
-      llm::HfTokenizer::parse(patched("{\"id\": 17,", "{\"id\": 100,"), "проба");
+  const llm::HfTokenizer ok = llm::HfTokenizer::parse(
+      patched("{\"id\": 17,", "{\"id\": 100,"), "проба");
   LLM_CHECK_EQ(ok.token_text(100), std::string("<|endoftext|>"));
 }
 
@@ -449,9 +449,8 @@ LLM_TEST(HfTokenizer, MergeTakesTheLeftmostOfEqualRank) {
   const llm::HfTokenizer tokenizer = llm::HfTokenizer::parse(kTiny, "проба");
   const std::vector<int32_t> ids = tokenizer.encode("aaa");
   const std::vector<int32_t> expected = {2};
-  LLM_CHECK_MSG(ids == expected,
-                "«aaa» разобралось в " << ids.size()
-                                       << " токенов вместо одного");
+  LLM_CHECK_MSG(ids == expected, "«aaa» разобралось в "
+                                     << ids.size() << " токенов вместо одного");
   LLM_CHECK_EQ(tokenizer.decode(ids), std::string("aaa"));
 }
 
@@ -499,8 +498,11 @@ LLM_TEST(HfTokenizer, LongChunkIsNotQuadratic) {
       " \"decoder\": {\"type\": \"ByteLevel\"},"
       " \"model\": {\"type\": \"BPE\", \"dropout\": null,"
       " \"unk_token\": null, \"continuing_subword_prefix\": null,"
-      " \"end_of_word_suffix\": null, \"vocab\": {" + vocab + "},"
-      " \"merges\": [" + merges + "]}}";
+      " \"end_of_word_suffix\": null, \"vocab\": {" +
+      vocab +
+      "},"
+      " \"merges\": [" +
+      merges + "]}}";
 
   const llm::HfTokenizer tokenizer = llm::HfTokenizer::parse(text, "проба");
 
@@ -538,11 +540,11 @@ LLM_TEST(HfTokenizer, LongChunkIsNotQuadratic) {
   // далее.
   const std::vector<int32_t> short_expected = {9, 8, 7, 6, 5, 3};
   const std::vector<int32_t> long_expected = {11, 10, 9, 8, 7, 5};
-  LLM_CHECK_MSG(short_ids == short_expected,
-                "1000 пробелов разобрались в " << short_ids.size()
-                                               << " токенов вместо шести");
-  LLM_CHECK_MSG(long_ids == long_expected,
-                "4000 пробелов разобрались в " << long_ids.size()
+  LLM_CHECK_MSG(short_ids == short_expected, "1000 пробелов разобрались в "
+                                                 << short_ids.size()
+                                                 << " токенов вместо шести");
+  LLM_CHECK_MSG(long_ids == long_expected, "4000 пробелов разобрались в "
+                                               << long_ids.size()
                                                << " токенов вместо шести");
   LLM_CHECK_EQ(tokenizer.decode(long_ids), std::string(4000, ' '));
 
@@ -554,8 +556,8 @@ LLM_TEST(HfTokenizer, LongChunkIsNotQuadratic) {
   LLM_CHECK_MSG(short_seconds > 0.0,
                 "часы не различили разбор тысячи пробелов — проверять нечем");
   const double growth = long_seconds / short_seconds;
-  LLM_CHECK_MSG(growth < 8.0,
-                "кусок вчетверо длиннее разбирался в " << growth
-                    << " раз дольше (" << short_seconds << " с против "
-                    << long_seconds << " с) — похоже, снова квадрат от длины");
+  LLM_CHECK_MSG(growth < 8.0, "кусок вчетверо длиннее разбирался в "
+                                  << growth << " раз дольше (" << short_seconds
+                                  << " с против " << long_seconds
+                                  << " с) — похоже, снова квадрат от длины");
 }

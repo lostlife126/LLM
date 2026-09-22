@@ -12,8 +12,8 @@
 #include "nn/config.h"
 #include "nn/lora.h"
 #include "nn/model.h"
-#include "train/optimizer.h"
 #include "testing.h"
+#include "train/optimizer.h"
 
 namespace {
 
@@ -476,8 +476,8 @@ double gradient_scale_of(const llm::nn::NamedParameter& parameter) {
   const llm::Tensor gradient = parameter.value->grad().contiguous();
   double largest = 0.0;
   for (int64_t i = 0; i < gradient.numel(); ++i) {
-    largest = std::max(largest,
-                       std::fabs(static_cast<double>(gradient.data()[i])));
+    largest =
+        std::max(largest, std::fabs(static_cast<double>(gradient.data()[i])));
   }
   return largest;
 }
@@ -604,8 +604,7 @@ void round_all_parameters(Model* model) {
   }
 }
 
-std::vector<float> forward_logits(Model* model,
-                                  const std::vector<int32_t>& ids,
+std::vector<float> forward_logits(Model* model, const std::vector<int32_t>& ids,
                                   int64_t batch, int64_t seq) {
   llm::autograd::NoGradGuard no_grad;
   const Var logits = model->forward(ids, batch, seq);
@@ -633,9 +632,9 @@ void check_half_forward_matches(bool tie_embeddings) {
   LLM_CHECK_MSG(reference.size() == actual.size(), "формы логитов разошлись");
   for (std::size_t i = 0; i < reference.size(); ++i) {
     LLM_CHECK_MSG(reference[i] == actual[i],
-                  "связанные эмбеддинги = "
-                      << tie_embeddings << ": логит " << i << " равен "
-                      << actual[i] << " вместо " << reference[i]);
+                  "связанные эмбеддинги = " << tie_embeddings << ": логит " << i
+                                            << " равен " << actual[i]
+                                            << " вместо " << reference[i]);
   }
 }
 
@@ -667,14 +666,14 @@ LLM_TEST(Model, PreparedEmbeddingGivesTheSameLogits) {
   // Проверка непуста: равенство размеров выполняется и при двух пустых
   // списках, а цикл ниже тогда не выполняется вовсе. Число логитов посчитано
   // по задаче, а не снято с прогона.
-  LLM_CHECK_MSG(reference.size() == static_cast<std::size_t>(
-                                        batch * seq * config.vocab_size),
+  LLM_CHECK_MSG(reference.size() ==
+                    static_cast<std::size_t>(batch * seq * config.vocab_size),
                 "логитов " << reference.size() << " вместо "
                            << batch * seq * config.vocab_size);
   for (std::size_t i = 0; i < reference.size(); ++i) {
-    LLM_CHECK_MSG(reference[i] == actual[i],
-                  "логит " << i << " равен " << actual[i] << " вместо "
-                           << reference[i]);
+    LLM_CHECK_MSG(reference[i] == actual[i], "логит " << i << " равен "
+                                                      << actual[i] << " вместо "
+                                                      << reference[i]);
   }
 }
 
@@ -731,9 +730,9 @@ void check_logits_equal(const std::vector<float>& expected,
                         const std::vector<float>& actual, const char* what) {
   LLM_CHECK_MSG(expected.size() == actual.size(), what << ": формы разошлись");
   for (std::size_t i = 0; i < expected.size(); ++i) {
-    LLM_CHECK_MSG(expected[i] == actual[i],
-                  what << ": логит " << i << " равен " << actual[i]
-                       << " вместо " << expected[i]);
+    LLM_CHECK_MSG(expected[i] == actual[i], what << ": логит " << i << " равен "
+                                                 << actual[i] << " вместо "
+                                                 << expected[i]);
   }
 }
 
@@ -818,9 +817,9 @@ LLM_TEST(Model, PackingHalfDoesNotChangeTraining) {
   const Var after = model.loss(ids, batch, seq);
   const float after_value = after.value().data()[0];
 
-  LLM_CHECK_MSG(before_value == after_value,
-                "потери после упаковки стали " << after_value << " вместо "
-                                               << before_value);
+  LLM_CHECK_MSG(before_value == after_value, "потери после упаковки стали "
+                                                 << after_value << " вместо "
+                                                 << before_value);
 }
 
 // --- недействительность подготовленных копий ------------------------------
@@ -943,7 +942,8 @@ LLM_TEST(Linear, MergingLoraInvalidatesTheHalfCopy) {
                   "после вплавления копия обязана стать недействительной");
 
     llm::autograd::NoGradGuard no_grad;
-    llm::Tensor input = llm::Tensor::uninitialized(llm::Shape({3, in_features}));
+    llm::Tensor input =
+        llm::Tensor::uninitialized(llm::Shape({3, in_features}));
     llm::Rng input_rng(11);
     for (int64_t i = 0; i < input.numel(); ++i) {
       input.data()[i] = input_rng.normal() * 0.3f;
@@ -981,10 +981,12 @@ std::vector<double> rms_norm_row(const std::vector<double>& x,
   for (std::size_t i = 0; i < x.size(); ++i) {
     squares += x[i] * x[i];
   }
-  const double scale = 1.0 / std::sqrt(squares / static_cast<double>(x.size()) + eps);
+  const double scale =
+      1.0 / std::sqrt(squares / static_cast<double>(x.size()) + eps);
   std::vector<double> out(x.size());
   for (std::size_t i = 0; i < x.size(); ++i) {
-    out[i] = x[i] * scale * static_cast<double>(weight(static_cast<int64_t>(i)));
+    out[i] =
+        x[i] * scale * static_cast<double>(weight(static_cast<int64_t>(i)));
   }
   return out;
 }
@@ -1036,7 +1038,8 @@ LLM_TEST(Model, OneLayerMatchesAnIndependentReference) {
   Model model(config, 123);
   const std::vector<llm::nn::NamedParameter> all = model.parameters();
   const llm::Tensor table = by_name(all, "token_embedding");
-  const llm::Tensor attention_norm = by_name(all, "block.0.attention_norm.weight");
+  const llm::Tensor attention_norm =
+      by_name(all, "block.0.attention_norm.weight");
   llm::Tensor wq = by_name(all, "block.0.attention.query.weight");
   llm::Tensor wk = by_name(all, "block.0.attention.key.weight");
   llm::Tensor wv = by_name(all, "block.0.attention.value.weight");
@@ -1083,9 +1086,8 @@ LLM_TEST(Model, OneLayerMatchesAnIndependentReference) {
   for (int64_t t = 0; t < seq; ++t) {
     x[static_cast<std::size_t>(t)].resize(width);
     for (std::size_t i = 0; i < width; ++i) {
-      x[static_cast<std::size_t>(t)][i] =
-          static_cast<double>(table(ids[static_cast<std::size_t>(t)],
-                                    static_cast<int64_t>(i)));
+      x[static_cast<std::size_t>(t)][i] = static_cast<double>(
+          table(ids[static_cast<std::size_t>(t)], static_cast<int64_t>(i)));
     }
   }
 
@@ -1107,72 +1109,74 @@ LLM_TEST(Model, OneLayerMatchesAnIndependentReference) {
   // данные масштаба не различали, оба совпали бы с моделью одинаково хорошо,
   // и тест ничего не значил бы.
   const auto reference = [&](double scale) {
-  std::vector<std::vector<double>> after(static_cast<std::size_t>(seq));
-  for (int64_t t = 0; t < seq; ++t) {
-    std::vector<double> scores(static_cast<std::size_t>(t + 1));
-    double largest = -1e300;
-    for (int64_t u = 0; u <= t; ++u) {
-      double dot = 0.0;
-      for (std::size_t i = 0; i < width; ++i) {
-        dot += q[static_cast<std::size_t>(t)][i] * k[static_cast<std::size_t>(u)][i];
+    std::vector<std::vector<double>> after(static_cast<std::size_t>(seq));
+    for (int64_t t = 0; t < seq; ++t) {
+      std::vector<double> scores(static_cast<std::size_t>(t + 1));
+      double largest = -1e300;
+      for (int64_t u = 0; u <= t; ++u) {
+        double dot = 0.0;
+        for (std::size_t i = 0; i < width; ++i) {
+          dot += q[static_cast<std::size_t>(t)][i] *
+                 k[static_cast<std::size_t>(u)][i];
+        }
+        scores[static_cast<std::size_t>(u)] = dot * scale;
+        largest = std::max(largest, scores[static_cast<std::size_t>(u)]);
       }
-      scores[static_cast<std::size_t>(u)] = dot * scale;
-      largest = std::max(largest, scores[static_cast<std::size_t>(u)]);
-    }
-    double total = 0.0;
-    for (std::size_t u = 0; u < scores.size(); ++u) {
-      scores[u] = std::exp(scores[u] - largest);
-      total += scores[u];
-    }
-    std::vector<double> mixed(width, 0.0);
-    for (std::size_t u = 0; u < scores.size(); ++u) {
-      const double weight = scores[u] / total;
+      double total = 0.0;
+      for (std::size_t u = 0; u < scores.size(); ++u) {
+        scores[u] = std::exp(scores[u] - largest);
+        total += scores[u];
+      }
+      std::vector<double> mixed(width, 0.0);
+      for (std::size_t u = 0; u < scores.size(); ++u) {
+        const double weight = scores[u] / total;
+        for (std::size_t i = 0; i < width; ++i) {
+          mixed[i] += weight * v[u][i];
+        }
+      }
+      const std::vector<double> projected = project(mixed, wo);
+      after[static_cast<std::size_t>(t)].resize(width);
       for (std::size_t i = 0; i < width; ++i) {
-        mixed[i] += weight * v[u][i];
+        // Остаток складывается с выходом подслоя, а не с нормированным входом.
+        after[static_cast<std::size_t>(t)][i] =
+            x[static_cast<std::size_t>(t)][i] + projected[i];
       }
     }
-    const std::vector<double> projected = project(mixed, wo);
-    after[static_cast<std::size_t>(t)].resize(width);
-    for (std::size_t i = 0; i < width; ++i) {
-      // Остаток складывается с выходом подслоя, а не с нормированным входом.
-      after[static_cast<std::size_t>(t)][i] =
-          x[static_cast<std::size_t>(t)][i] + projected[i];
-    }
-  }
 
-  // 3. SwiGLU: silu на вентиле, произведение с up, затем down.
-  std::vector<std::vector<double>> y(static_cast<std::size_t>(seq));
-  for (int64_t t = 0; t < seq; ++t) {
-    const std::vector<double> h =
-        rms_norm_row(after[static_cast<std::size_t>(t)], mlp_norm, eps);
-    const std::vector<double> gate = project(h, wgate);
-    const std::vector<double> up = project(h, wup);
-    std::vector<double> hidden(gate.size());
-    for (std::size_t j = 0; j < gate.size(); ++j) {
-      hidden[j] = gate[j] / (1.0 + std::exp(-gate[j])) * up[j];
-    }
-    const std::vector<double> down = project(hidden, wdown);
-    std::vector<double> sum(width);
-    for (std::size_t i = 0; i < width; ++i) {
-      sum[i] = after[static_cast<std::size_t>(t)][i] + down[i];
-    }
-    y[static_cast<std::size_t>(t)] = rms_norm_row(sum, final_norm, eps);
-  }
-
-  // 4. Логиты: те же эмбеддинги, только транспонированные.
-  double worst = 0.0;
-  for (int64_t t = 0; t < seq; ++t) {
-    for (int64_t token = 0; token < config.vocab_size; ++token) {
-      double logit = 0.0;
-      for (std::size_t i = 0; i < width; ++i) {
-        logit += y[static_cast<std::size_t>(t)][i] *
-                 static_cast<double>(table(token, static_cast<int64_t>(i)));
+    // 3. SwiGLU: silu на вентиле, произведение с up, затем down.
+    std::vector<std::vector<double>> y(static_cast<std::size_t>(seq));
+    for (int64_t t = 0; t < seq; ++t) {
+      const std::vector<double> h =
+          rms_norm_row(after[static_cast<std::size_t>(t)], mlp_norm, eps);
+      const std::vector<double> gate = project(h, wgate);
+      const std::vector<double> up = project(h, wup);
+      std::vector<double> hidden(gate.size());
+      for (std::size_t j = 0; j < gate.size(); ++j) {
+        hidden[j] = gate[j] / (1.0 + std::exp(-gate[j])) * up[j];
       }
-      worst = std::max(worst, std::fabs(logit - static_cast<double>(
-                                                   actual.value()(0, t, token))));
+      const std::vector<double> down = project(hidden, wdown);
+      std::vector<double> sum(width);
+      for (std::size_t i = 0; i < width; ++i) {
+        sum[i] = after[static_cast<std::size_t>(t)][i] + down[i];
+      }
+      y[static_cast<std::size_t>(t)] = rms_norm_row(sum, final_norm, eps);
     }
-  }
-  return worst;
+
+    // 4. Логиты: те же эмбеддинги, только транспонированные.
+    double worst = 0.0;
+    for (int64_t t = 0; t < seq; ++t) {
+      for (int64_t token = 0; token < config.vocab_size; ++token) {
+        double logit = 0.0;
+        for (std::size_t i = 0; i < width; ++i) {
+          logit += y[static_cast<std::size_t>(t)][i] *
+                   static_cast<double>(table(token, static_cast<int64_t>(i)));
+        }
+        worst = std::max(
+            worst, std::fabs(logit -
+                             static_cast<double>(actual.value()(0, t, token))));
+      }
+    }
+    return worst;
   };
 
   const double head_dim = static_cast<double>(config.head_dim());

@@ -46,7 +46,6 @@ class ForcedExpKernel {
   ForcedExpKernel& operator=(const ForcedExpKernel&) = delete;
 };
 
-
 // Относительная погрешность против std::exp в двойной точности.
 double relative_error(float actual, double expected) {
   if (expected == 0.0) {

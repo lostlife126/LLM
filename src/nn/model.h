@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "core/half.h"
 #include "autograd/node.h"
+#include "core/half.h"
 #include "core/random.h"
 #include "nn/config.h"
 #include "nn/diagnostics.h"
@@ -48,7 +48,7 @@ struct NamedParameter {
 // не то, что показывает.
 enum class Prepared {
   kRelease,  // копия может разойтись с весом — объявить её недействительной
-  kKeep,     // обход только читает — копия остаётся в силе
+  kKeep,  // обход только читает — копия остаётся в силе
 };
 
 // Нормировка, скрывающая выбор между RMSNorm и LayerNorm.

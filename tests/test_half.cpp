@@ -67,9 +67,9 @@ LLM_TEST(Half, BulkExpansionEqualsReferenceOnEveryValue) {
       // старшая часть мантиссы обязана дойти без изменений.
       LLM_CHECK_MSG(std::isnan(expanded[bits]),
                     "значение " << bits << " перестало быть NaN");
-      LLM_CHECK_MSG(llm::float_bits(expanded[bits]) ==
-                        llm::float_bits(reference),
-                    "разряды NaN у значения " << bits << " разошлись");
+      LLM_CHECK_MSG(
+          llm::float_bits(expanded[bits]) == llm::float_bits(reference),
+          "разряды NaN у значения " << bits << " разошлись");
       continue;
     }
     LLM_CHECK_MSG(expanded[bits] == reference,
@@ -99,8 +99,9 @@ LLM_TEST(Half, BulkMatchesScalar) {
                       static_cast<int64_t>(source.size()));
 
   for (std::size_t i = 0; i < source.size(); ++i) {
-    LLM_CHECK_MSG(packed[i].bits == half_from_float(source[i]).bits,
-                  "пакетное упаковало " << source[i] << " иначе, чем поштучное");
+    LLM_CHECK_MSG(
+        packed[i].bits == half_from_float(source[i]).bits,
+        "пакетное упаковало " << source[i] << " иначе, чем поштучное");
     LLM_CHECK_MSG(expanded[i] == float_from_half(packed[i]),
                   "пакетное развернуло " << source[i] << " иначе");
   }
@@ -172,14 +173,14 @@ LLM_TEST(Half, ErrorStaysWithinLattice) {
                     << normal_samples << ", субнормальных "
                     << subnormal_samples);
 
-  LLM_CHECK_MSG(worst_relative <= 1.0 / 2048.0,
-                "относительная погрешность " << worst_relative
-                                             << " больше половины шага");
+  LLM_CHECK_MSG(worst_relative <= 1.0 / 2048.0, "относительная погрешность "
+                                                    << worst_relative
+                                                    << " больше половины шага");
   // Иначе проверка ничего не ловит: при округлении в сторону нуля погрешность
   // была бы вдвое больше, а при подмене half на float — нулевой.
-  LLM_CHECK_MSG(worst_relative > 1.0 / 4096.0,
-                "относительная погрешность " << worst_relative
-                                             << " подозрительно мала");
+  LLM_CHECK_MSG(worst_relative > 1.0 / 4096.0, "относительная погрешность "
+                                                   << worst_relative
+                                                   << " подозрительно мала");
 
   LLM_CHECK_MSG(worst_absolute <= 1.0 / 33554432.0,
                 "абсолютная погрешность в субнормальной области "

@@ -53,7 +53,8 @@ LLM_TEST(Check, EveryRegisteredTestHasAUniqueName) {
   // в отчёте они неразличимы: читающий увидит одно имя и решит, что тест
   // один. Так теряется копия, в которую вносили правку.
   //
-  // Заодно ловится пустое имя — оно получилось бы при неудачной макроподстановке.
+  // Заодно ловится пустое имя — оно получилось бы при неудачной
+  // макроподстановке.
   const std::vector<llm::testing::TestCase>& tests = llm::testing::registry();
   LLM_CHECK_GT(tests.size(), static_cast<std::size_t>(100));
 

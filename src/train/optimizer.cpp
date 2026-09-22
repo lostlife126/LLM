@@ -4,8 +4,8 @@
 #include <cmath>
 #include <utility>
 
-#include "core/check.h"
 #include "autograd/node.h"
+#include "core/check.h"
 #include "ops/parallel.h"
 #include "ops/row_reduce.h"
 
@@ -104,11 +104,10 @@ double AdamW::sum_squares(const Tensor& tensor) {
   LLM_DCHECK(tensor.is_contiguous());
   const float* data = tensor.data();
   double parts[ops::kSumParts] = {};
-  ops::for_row_parts(tensor.numel(), 1,
-                     [&](int64_t part, int64_t first, int64_t last) {
-                       parts[part] = ops::row_sum_squares(data + first,
-                                                          last - first);
-                     });
+  ops::for_row_parts(
+      tensor.numel(), 1, [&](int64_t part, int64_t first, int64_t last) {
+        parts[part] = ops::row_sum_squares(data + first, last - first);
+      });
   double total = 0.0;
   for (int part = 0; part < ops::kSumParts; ++part) {
     total += parts[part];
@@ -121,9 +120,9 @@ float AdamW::clip_grad_norm(float max_norm) {
   // всех градиентов: шаг пошёл бы ВВЕРХ по функции потерь. Нулевой обнулял бы
   // их целиком, и обучение молча вставало бы. Ни то, ни другое не «обрезка
   // выключена» — выключают её большим пределом.
-  LLM_CHECK_MSG(max_norm > 0.0f,
-                "предел нормы градиента " << max_norm
-                                          << " должен быть положительным");
+  LLM_CHECK_MSG(max_norm > 0.0f, "предел нормы градиента "
+                                     << max_norm
+                                     << " должен быть положительным");
   double sum_squares = 0.0;
   for (std::size_t i = 0; i < parameters_.size(); ++i) {
     const Tensor& grad = parameters_[i].value->grad();

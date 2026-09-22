@@ -18,8 +18,8 @@
 
 namespace {
 
-using llm::from_fp8;
 using llm::Fp8Format;
+using llm::from_fp8;
 using llm::kFp8E4M3;
 using llm::kFp8E5M2;
 using llm::round_to_fp8;
@@ -53,9 +53,9 @@ LLM_TEST(Fp8, RoundTripSurvivesEveryCode) {
     // у E5M2 верхнее поле порядка даёт по три NaN на знак плюс бесконечности,
     // а бесконечность круг проходит.
     const int expected = which == 0 ? 254 : 250;
-    LLM_CHECK_MSG(checked == expected,
-                  kNames[which] << ": прошли круг " << checked
-                                << " кодов вместо " << expected);
+    LLM_CHECK_MSG(checked == expected, kNames[which]
+                                           << ": прошли круг " << checked
+                                           << " кодов вместо " << expected);
   }
 }
 
@@ -67,12 +67,12 @@ LLM_TEST(Fp8, BoundariesMatchTheSpecification) {
                 "наибольшее конечное E4M3 должно быть 448");
   LLM_CHECK_MSG(round_to_fp8(1.0e30f, kFp8E4M3) == 448.0f,
                 "переполнение E4M3 обязано насыщать, а не давать NaN");
-  LLM_CHECK_MSG(round_to_fp8(std::ldexp(1.0f, -6), kFp8E4M3) ==
-                    std::ldexp(1.0f, -6),
-                "наименьшее нормальное E4M3 — 2^-6");
-  LLM_CHECK_MSG(round_to_fp8(std::ldexp(1.0f, -9), kFp8E4M3) ==
-                    std::ldexp(1.0f, -9),
-                "наименьшее субнормальное E4M3 — 2^-9");
+  LLM_CHECK_MSG(
+      round_to_fp8(std::ldexp(1.0f, -6), kFp8E4M3) == std::ldexp(1.0f, -6),
+      "наименьшее нормальное E4M3 — 2^-6");
+  LLM_CHECK_MSG(
+      round_to_fp8(std::ldexp(1.0f, -9), kFp8E4M3) == std::ldexp(1.0f, -9),
+      "наименьшее субнормальное E4M3 — 2^-9");
   LLM_CHECK_MSG(round_to_fp8(std::ldexp(1.0f, -12), kFp8E4M3) == 0.0f,
                 "значение много меньше субнормального обязано дать нуль");
 
@@ -80,12 +80,12 @@ LLM_TEST(Fp8, BoundariesMatchTheSpecification) {
                 "наибольшее конечное E5M2 должно быть 57344");
   LLM_CHECK_MSG(round_to_fp8(1.0e30f, kFp8E5M2) == 57344.0f,
                 "переполнение E5M2 обязано насыщать");
-  LLM_CHECK_MSG(round_to_fp8(std::ldexp(1.0f, -14), kFp8E5M2) ==
-                    std::ldexp(1.0f, -14),
-                "наименьшее нормальное E5M2 — 2^-14");
-  LLM_CHECK_MSG(round_to_fp8(std::ldexp(1.0f, -16), kFp8E5M2) ==
-                    std::ldexp(1.0f, -16),
-                "наименьшее субнормальное E5M2 — 2^-16");
+  LLM_CHECK_MSG(
+      round_to_fp8(std::ldexp(1.0f, -14), kFp8E5M2) == std::ldexp(1.0f, -14),
+      "наименьшее нормальное E5M2 — 2^-14");
+  LLM_CHECK_MSG(
+      round_to_fp8(std::ldexp(1.0f, -16), kFp8E5M2) == std::ldexp(1.0f, -16),
+      "наименьшее субнормальное E5M2 — 2^-16");
 }
 
 // Сколько всего различных значений даёт формат. Число маленькое, и это главное,
@@ -122,7 +122,7 @@ LLM_TEST(Fp8, DistinctValueCountIsSmall) {
 LLM_TEST(Fp8, ErrorStaysWithinLattice) {
   struct Expectation {
     Fp8Format format;
-    double relative_bound;   // 2^-(mantissa_bits + 1)
+    double relative_bound;  // 2^-(mantissa_bits + 1)
     float min_normal;
   };
   const Expectation expectations[2] = {
@@ -138,32 +138,30 @@ LLM_TEST(Fp8, ErrorStaysWithinLattice) {
     for (int i = 0; i < 100000; ++i) {
       // Разброс взят широким нарочно: значения обязаны попадать в разные
       // бинады, иначе проверка увидела бы только одну ступеньку решётки.
-      const float value =
-          rng.normal() * std::ldexp(1.0f, rng.index(10) - 2);
+      const float value = rng.normal() * std::ldexp(1.0f, rng.index(10) - 2);
       if (value == 0.0f || std::fabs(value) < e.min_normal ||
           std::fabs(value) > 400.0f) {
         continue;
       }
       ++samples;
       const float rounded = round_to_fp8(value, e.format);
-      const double relative = std::fabs(
-          (static_cast<double>(rounded) - value) / static_cast<double>(value));
+      const double relative = std::fabs((static_cast<double>(rounded) - value) /
+                                        static_cast<double>(value));
       if (relative > worst) {
         worst = relative;
       }
     }
-    LLM_CHECK_MSG(samples > 1000,
-                  kNames[which] << ": выборка вышла пустой, " << samples
-                                << " значений");
+    LLM_CHECK_MSG(samples > 1000, kNames[which] << ": выборка вышла пустой, "
+                                                << samples << " значений");
     LLM_CHECK_MSG(worst <= e.relative_bound,
                   kNames[which] << ": погрешность " << worst
                                 << " больше половины шага решётки "
                                 << e.relative_bound);
     // Иначе проверка ничего не ловит: при подмене формата на fp16 погрешность
     // была бы в сотни раз меньше.
-    LLM_CHECK_MSG(worst > e.relative_bound / 2.0,
-                  kNames[which] << ": погрешность " << worst
-                                << " подозрительно мала");
+    LLM_CHECK_MSG(
+        worst > e.relative_bound / 2.0,
+        kNames[which] << ": погрешность " << worst << " подозрительно мала");
   }
 }
 
@@ -215,12 +213,12 @@ LLM_TEST(Fp8, InfinityFollowsWhetherTheFormatHasOne) {
   // обязана остаться собой. Ни то, ни другое не проверялось.
   const float infinity = std::numeric_limits<float>::infinity();
 
-  LLM_EXPECT_NEAR(llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E4M3),
-                                llm::kFp8E4M3),
-                  448.0, 0.0);
-  LLM_EXPECT_NEAR(llm::from_fp8(llm::to_fp8(-infinity, llm::kFp8E4M3),
-                                llm::kFp8E4M3),
-                  -448.0, 0.0);
+  LLM_EXPECT_NEAR(
+      llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E4M3), llm::kFp8E4M3), 448.0,
+      0.0);
+  LLM_EXPECT_NEAR(
+      llm::from_fp8(llm::to_fp8(-infinity, llm::kFp8E4M3), llm::kFp8E4M3),
+      -448.0, 0.0);
 
   LLM_CHECK(std::isinf(
       llm::from_fp8(llm::to_fp8(infinity, llm::kFp8E5M2), llm::kFp8E5M2)));

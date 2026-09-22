@@ -574,7 +574,7 @@ LLM_TEST(Gemm, PathChoiceDoesNotDependOnTheKernel) {
                                << " — похоже, они выбрали разные пути");
       }
     }
-    }
+  }
 }
 
 // --- веса половинной разрядности ---------------------------------------------
@@ -659,7 +659,8 @@ LLM_TEST(Gemm, HalfWeightsMatchRoundedExactly) {
 // и ошибиться в нём можно независимо от остальных.
 LLM_TEST(Gemm, HalfWeightsAgreeAcrossKernels) {
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   int checked = 0;
   for (int i = 0; i < count; ++i) {
     if (!table[i].available) {
@@ -683,7 +684,8 @@ LLM_TEST(Gemm, HalfWeightsAgreeAcrossKernels) {
 // все остальные.
 LLM_TEST(Gemm, HalfFallbackKeepsTheSamePath) {
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   int checked = 0;
   for (int i = 0; i < count; ++i) {
     if (!table[i].available || table[i].kernel.run_rows_half == nullptr) {
@@ -715,7 +717,8 @@ LLM_TEST(Gemm, HalfFallbackKeepsTheSamePath) {
 // у AVX-512 тридцать два, то есть кратна восьми и хвоста не даёт.
 LLM_TEST(Gemm, TransposePackMatchesTheScalarReference) {
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   LLM_CHECK_MSG(count > 0, "таблица ядер пуста");
 
   // Скалярное ядро пользуется простым вариантом упаковки, он и эталон.
@@ -745,16 +748,16 @@ LLM_TEST(Gemm, TransposePackMatchesTheScalarReference) {
         const std::int64_t lda = kc + 5;
         const std::vector<float> source = random_matrix(&rng, lanes, lda);
 
-        std::vector<float> expected(
-            static_cast<std::size_t>(kc * lanes), -7.0f);
+        std::vector<float> expected(static_cast<std::size_t>(kc * lanes),
+                                    -7.0f);
         reference(source.data(), lda, lanes, rows, kc, expected.data());
 
         for (int i = 0; i < count; ++i) {
           if (!table[i].available) {
             continue;
           }
-          std::vector<float> actual(
-              static_cast<std::size_t>(kc * lanes), -7.0f);
+          std::vector<float> actual(static_cast<std::size_t>(kc * lanes),
+                                    -7.0f);
           table[i].kernel.pack_transpose(source.data(), lda, lanes, rows, kc,
                                          actual.data());
           for (std::size_t j = 0; j < expected.size(); ++j) {
@@ -831,7 +834,8 @@ LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
   }
 
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   int checked = 0;
   for (int i = 0; i < count; ++i) {
     if (!table[i].available || !table[i].kernel.fused) {
@@ -842,12 +846,11 @@ LLM_TEST(Gemm, DepthSumIsSplitIntoBlocksOfTheDeclaredLength) {
     llm::ops::gemm(false, false, m, n, k, 1.0f, a.data(), k, b.data(), n, 0.0f,
                    actual.data(), n);
     for (std::size_t index = 0; index < expected.size(); ++index) {
-      LLM_CHECK_MSG(expected[index] == actual[index],
-                    "ядро '" << table[i].kernel.name << "', элемент " << index
-                             << ": " << actual[index] << " вместо "
-                             << expected[index]
-                             << " — сумма по глубине сложена не кусками по "
-                             << chunk);
+      LLM_CHECK_MSG(
+          expected[index] == actual[index],
+          "ядро '" << table[i].kernel.name << "', элемент " << index << ": "
+                   << actual[index] << " вместо " << expected[index]
+                   << " — сумма по глубине сложена не кусками по " << chunk);
     }
     ++checked;
   }
@@ -885,7 +888,8 @@ LLM_TEST(Gemm, KernelsAgreeBitForBitWithScalingToo) {
   const float betas[] = {0.5f, 1.0f};
 
   int count = 0;
-  const llm::ops::MicroKernelChoice* table = llm::ops::all_micro_kernels(&count);
+  const llm::ops::MicroKernelChoice* table =
+      llm::ops::all_micro_kernels(&count);
   int compared = 0;
 
   for (std::size_t ai = 0; ai < sizeof(alphas) / sizeof(alphas[0]); ++ai) {
@@ -1076,17 +1080,16 @@ LLM_TEST(Gemm, TrafficCountsEveryMatrixOnBothPaths) {
 
   LLM_CHECK_EQ(blocked.a_bytes, static_cast<long long>(m * k * 4));
   LLM_CHECK_EQ(blocked.b_bytes, static_cast<long long>(n * k * 4));
-  LLM_CHECK_MSG(blocked.c_bytes ==
-                    static_cast<long long>(m * n * 4 * 2 * depth_blocks),
-                "накопитель на блочном пути учтён как "
-                    << blocked.c_bytes << " вместо "
-                    << m * n * 4 * 2 * depth_blocks);
+  LLM_CHECK_MSG(
+      blocked.c_bytes == static_cast<long long>(m * n * 4 * 2 * depth_blocks),
+      "накопитель на блочном пути учтён как " << blocked.c_bytes << " вместо "
+                                              << m * n * 4 * 2 * depth_blocks);
 
   // Прямой путь: своя формула, но накопитель обязан быть учтён и там.
   // Ширина плитки у ядер разная, поэтому A перечитывается разное число раз —
   // берём его у выбранного ядра, а не вписываем числом.
   const std::int64_t direct_m = 4;  // не больше порога по числу строк
-  const std::int64_t direct_n = 64;   // кратно тридцати двум
+  const std::int64_t direct_n = 64;  // кратно тридцати двум
   const std::int64_t direct_k = 32;
   const std::vector<float> da = random_matrix(&rng, direct_m, direct_k);
   const std::vector<float> db = random_matrix(&rng, direct_k, direct_n);

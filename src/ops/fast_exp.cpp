@@ -536,8 +536,8 @@ const ExpKernelChoice* build_table(int* count) {
     // обучение на разных машинах расходилось; см. комментарий у скалярного
     // микроядра.
     LLM_CHECK(size < kSlots);
-    table[size].kernel = ExpKernel{&scalar_exp_shifted, &scalar_sigmoid,
-                                   "эталонная", false};
+    table[size].kernel =
+        ExpKernel{&scalar_exp_shifted, &scalar_sigmoid, "эталонная", false};
     table[size].available = true;
     ++size;
 

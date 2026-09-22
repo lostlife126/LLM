@@ -256,10 +256,10 @@ void scalar_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
 // субнормальных числах, и компилятор эту ветку не векторизует. Скалярное ядро
 // и без того эталон, а не рабочая лошадь — оно существует, чтобы векторным
 // было с чем сверяться на машине, где векторных нет. Поэтому написано прямо.
-void scalar_kernel_rows_half(int64_t kc, const float* __restrict a,
-                             int64_t lda, const Half* __restrict b,
-                             int64_t bstride, float alpha, float* __restrict c,
-                             int64_t ldc, int64_t rows, int64_t cols) {
+void scalar_kernel_rows_half(int64_t kc, const float* __restrict a, int64_t lda,
+                             const Half* __restrict b, int64_t bstride,
+                             float alpha, float* __restrict c, int64_t ldc,
+                             int64_t rows, int64_t cols) {
   float acc0[kScalarN] = {};
   float acc1[kScalarN] = {};
   float acc2[kScalarN] = {};
@@ -525,8 +525,8 @@ __attribute__((target("avx2,fma"))) void avx2_kernel_rows(
 // парой. Проверка признака стоит одно обращение к CPUID при запуске.
 __attribute__((target("avx2,fma,f16c"))) void avx2_kernel_rows_half(
     int64_t kc, const float* __restrict a, int64_t lda,
-    const Half* __restrict b, int64_t bstride, float alpha,
-    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+    const Half* __restrict b, int64_t bstride, float alpha, float* __restrict c,
+    int64_t ldc, int64_t rows, int64_t cols) {
   __m256 acc00 = _mm256_setzero_ps();
   __m256 acc01 = _mm256_setzero_ps();
   __m256 acc10 = _mm256_setzero_ps();
@@ -548,8 +548,7 @@ __attribute__((target("avx2,fma,f16c"))) void avx2_kernel_rows_half(
   const float* a5 = a + (rows > 5 ? 5 : rows - 1) * lda;
 
   for (int64_t p = 0; p < kc; ++p) {
-    const __m128i* packed =
-        reinterpret_cast<const __m128i*>(b + p * bstride);
+    const __m128i* packed = reinterpret_cast<const __m128i*>(b + p * bstride);
     const __m256 b0 = _mm256_cvtph_ps(_mm_loadu_si128(packed));
     const __m256 b1 = _mm256_cvtph_ps(_mm_loadu_si128(packed + 1));
 
@@ -847,10 +846,11 @@ __attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows(
 // варианта, который живёт в F16C. Поэтому атрибут target тот же, что у соседа
 // сверху.
 
-__attribute__((target("avx512f,avx512bw,avx512vl"))) void avx512_kernel_rows_half(
-    int64_t kc, const float* __restrict a, int64_t lda,
-    const Half* __restrict b, int64_t bstride, float alpha,
-    float* __restrict c, int64_t ldc, int64_t rows, int64_t cols) {
+__attribute__((target("avx512f,avx512bw,avx512vl"))) void
+avx512_kernel_rows_half(int64_t kc, const float* __restrict a, int64_t lda,
+                        const Half* __restrict b, int64_t bstride, float alpha,
+                        float* __restrict c, int64_t ldc, int64_t rows,
+                        int64_t cols) {
   __m512 acc00 = _mm512_setzero_ps();
   __m512 acc01 = _mm512_setzero_ps();
   __m512 acc10 = _mm512_setzero_ps();
@@ -1366,12 +1366,10 @@ void neon_kernel_rows(int64_t kc, const float* __restrict a, int64_t lda,
 // упираются в память заметно раньше, чем в арифметику, а генерация по токену —
 // это как раз чистое чтение весов.
 
-void neon_kernel_rows_half(int64_t kc, const float* __restrict a,
-                           int64_t lda,
+void neon_kernel_rows_half(int64_t kc, const float* __restrict a, int64_t lda,
                            const Half* __restrict b, int64_t bstride,
-                           float alpha,
-                           float* __restrict c, int64_t ldc, int64_t rows,
-                           int64_t cols) {
+                           float alpha, float* __restrict c, int64_t ldc,
+                           int64_t rows, int64_t cols) {
   float32x4_t acc00 = vdupq_n_f32(0.0f);
   float32x4_t acc01 = vdupq_n_f32(0.0f);
   float32x4_t acc10 = vdupq_n_f32(0.0f);

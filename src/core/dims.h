@@ -55,8 +55,8 @@ class Dims {
   bool empty() const { return size_ == 0; }
 
   void push_back(int64_t value) {
-    LLM_CHECK_MSG(size_ < kMaxRank, "ранг больше " << kMaxRank
-                                                   << ", это не поддерживается");
+    LLM_CHECK_MSG(size_ < kMaxRank,
+                  "ранг больше " << kMaxRank << ", это не поддерживается");
     values_[size_++] = value;
   }
 

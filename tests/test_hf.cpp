@@ -396,9 +396,9 @@ LLM_TEST(Hf, WrittenSafetensorsHeaderIsAligned) {
   for (int i = 7; i >= 0; --i) {
     header_length = (header_length << 8) | length_bytes[i];
   }
-  LLM_CHECK_MSG((8 + header_length) % 8 == 0,
-                "данные начинаются с байта " << 8 + header_length
-                                             << " — не кратно восьми");
+  LLM_CHECK_MSG((8 + header_length) % 8 == 0, "данные начинаются с байта "
+                                                  << 8 + header_length
+                                                  << " — не кратно восьми");
 
   // Дополнение — пробелы, и заголовок после них остаётся разбираемым.
   std::string header(static_cast<std::size_t>(header_length), '\0');

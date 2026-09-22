@@ -17,11 +17,10 @@ float learning_rate_at(const ScheduleConfig& config, int64_t step) {
   // подъём по градиенту вместо спуска, — тихо, без падения и без единого
   // NaN. Больше единицы превратила бы затухание в разгон.
   LLM_CHECK_MSG(config.min_ratio >= 0.0f && config.min_ratio <= 1.0f,
-                "нижняя доля скорости " << config.min_ratio
-                                        << " вне [0, 1]");
-  LLM_CHECK_MSG(config.max_learning_rate >= 0.0f,
-                "скорость обучения " << config.max_learning_rate
-                                     << " отрицательна");
+                "нижняя доля скорости " << config.min_ratio << " вне [0, 1]");
+  LLM_CHECK_MSG(
+      config.max_learning_rate >= 0.0f,
+      "скорость обучения " << config.max_learning_rate << " отрицательна");
 
   const float minimum = config.max_learning_rate * config.min_ratio;
 

@@ -31,13 +31,11 @@
 #include <vector>
 
 #include "args.h"
-
-#include "measure.h"
-
 #include "core/cpu.h"
-#include "core/util.h"
 #include "core/fp8.h"
 #include "core/half.h"
+#include "core/util.h"
+#include "measure.h"
 
 namespace {
 
@@ -62,8 +60,8 @@ void expand_half(const llm::Half* source, float* destination, int64_t count) {
     const uint32_t is_subnormal = 0u - ((field - 1u) >> 31);
     bits += 112u << 23;
     const float normal = llm::bits_as_float(bits);
-    const float subnormal = llm::bits_as_float(bits + (1u << 23)) -
-                            llm::bits_as_float(113u << 23);
+    const float subnormal =
+        llm::bits_as_float(bits + (1u << 23)) - llm::bits_as_float(113u << 23);
     const uint32_t chosen = (is_subnormal & llm::float_bits(subnormal)) |
                             (~is_subnormal & llm::float_bits(normal));
     destination[i] = llm::bits_as_float(chosen | sign);
@@ -82,8 +80,8 @@ void expand_e4m3(const uint8_t* source, float* destination, int64_t count) {
     const uint32_t is_subnormal = 0u - ((field - 1u) >> 31);
     bits += 120u << 23;
     const float normal = llm::bits_as_float(bits);
-    const float subnormal = llm::bits_as_float(bits + (1u << 23)) -
-                            llm::bits_as_float(121u << 23);
+    const float subnormal =
+        llm::bits_as_float(bits + (1u << 23)) - llm::bits_as_float(121u << 23);
     const uint32_t chosen = (is_subnormal & llm::float_bits(subnormal)) |
                             (~is_subnormal & llm::float_bits(normal));
     destination[i] = llm::bits_as_float(chosen | sign);
@@ -106,10 +104,7 @@ void measure_bulk() {
   const double narrow_seconds = bench::best_seconds(
       [&]() { expand_e4m3(narrow.data(), out.data(), count); }, 0.4);
   const double copy_seconds = bench::best_seconds(
-      [&]() {
-        std::copy(source.begin(), source.end(), out.begin());
-      },
-      0.4);
+      [&]() { std::copy(source.begin(), source.end(), out.begin()); }, 0.4);
 
   const double per = 1.0e9 / static_cast<double>(count);
   const double elements = static_cast<double>(count);
@@ -128,8 +123,8 @@ void measure_bulk() {
   // себе не спасёт.
   const auto line = [&](const char* name, double seconds, double bytes) {
     std::printf("  %s %6.3f нс  %4.0f байт  %6.2f ГБ/с\n",
-              llm::pad_utf8(name, 14).c_str(),
-                seconds * per, bytes, bytes * elements / seconds / 1.0e9);
+                llm::pad_utf8(name, 14).c_str(), seconds * per, bytes,
+                bytes * elements / seconds / 1.0e9);
   };
   std::printf("пакетная распаковка, на элемент\n");
   line("fp16 -> float", half_seconds, 6.0);
@@ -148,8 +143,10 @@ void measure_bulk() {
 // умножения с накоплением, а не в то, что мерится.
 constexpr int64_t kTileN = 64;
 
-__attribute__((target("avx2,fma,f16c"))) void row_half(
-    int64_t k, const float* a, const llm::Half* b, int64_t ldb, float* c) {
+__attribute__((target("avx2,fma,f16c"))) void row_half(int64_t k,
+                                                       const float* a,
+                                                       const llm::Half* b,
+                                                       int64_t ldb, float* c) {
   __m256 acc[8];
   for (int i = 0; i < 8; ++i) acc[i] = _mm256_setzero_ps();
   for (int64_t p = 0; p < k; ++p) {
@@ -181,14 +178,14 @@ __attribute__((target("avx2,fma"))) inline __m256 expand_eight(
   const __m256 subnormal = _mm256_sub_ps(
       _mm256_castsi256_ps(_mm256_add_epi32(bits, _mm256_set1_epi32(1 << 23))),
       _mm256_castsi256_ps(_mm256_set1_epi32(121 << 23)));
-  const __m256 chosen = _mm256_blendv_ps(normal, subnormal,
-                                         _mm256_castsi256_ps(is_subnormal));
+  const __m256 chosen =
+      _mm256_blendv_ps(normal, subnormal, _mm256_castsi256_ps(is_subnormal));
   return _mm256_or_ps(chosen, _mm256_castsi256_ps(sign));
 }
 
 __attribute__((target("avx2,fma"))) void row_e4m3(int64_t k, const float* a,
-                                                  const uint8_t* b,
-                                                  int64_t ldb, float* c) {
+                                                  const uint8_t* b, int64_t ldb,
+                                                  float* c) {
   __m256 acc[8];
   for (int i = 0; i < 8; ++i) acc[i] = _mm256_setzero_ps();
   for (int64_t p = 0; p < k; ++p) {
@@ -203,7 +200,10 @@ __attribute__((target("avx2,fma"))) void row_e4m3(int64_t k, const float* a,
 
 void measure_kernel() {
   static const int64_t shapes[][2] = {
-      {256, 256}, {256, 4096}, {512, 4096}, {384, 8192},
+      {256, 256},
+      {256, 4096},
+      {512, 4096},
+      {384, 8192},
   };
   std::printf("распаковка внутри ядра, m = 1 (форма генерации по токену)\n");
   std::printf("%s %10s %10s %s\n", llm::pad_utf8("форма", 20).c_str(), "fp16",

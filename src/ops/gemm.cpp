@@ -596,8 +596,8 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
       count_b(k * cols * b_element * row_blocks);
       count_c((last - first) * cols * 4 * 2);
     }
-    scale_c(last - first, cols, task.beta,
-            task.c + first * task.ldc + col0, task.ldc);
+    scale_c(last - first, cols, task.beta, task.c + first * task.ldc + col0,
+            task.ldc);
     for (int64_t i = first; i < last; i += mr) {
       const int64_t rows = std::min(mr, last - i);
       for (int64_t j = col0; j < col0 + cols; j += nr) {
@@ -652,8 +652,8 @@ void gemm_direct(const GemmTask& task, int64_t m, int64_t n) {
   }
   parallel_for(tasks, [&](int index) {
     const int64_t begin = (units * index) / tasks * unit_size;
-    const int64_t end = std::min((units * (index + 1)) / tasks * unit_size,
-                                 split_rows ? m : n);
+    const int64_t end =
+        std::min((units * (index + 1)) / tasks * unit_size, split_rows ? m : n);
     if (begin >= end) {
       return;
     }
@@ -681,9 +681,7 @@ void check_arguments(bool transpose_a, bool transpose_b, int64_t m, int64_t n,
 
 int64_t gemm_depth_block() { return kBlockK; }
 
-void force_direct_max_rows(int64_t rows) {
-  g_forced_direct_max_rows = rows;
-}
+void force_direct_max_rows(int64_t rows) { g_forced_direct_max_rows = rows; }
 
 void set_traffic_enabled(bool enabled) {
   traffic_flag().store(enabled, std::memory_order_relaxed);

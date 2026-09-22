@@ -21,7 +21,7 @@ using llm::to_fp16;
 
 LLM_TEST(Fp16, ExactValuesSurviveUnchanged) {
   // Всё, что представимо в половинной разрядности, обязано вернуться собой.
-  const float exact[] = {0.0f,   1.0f,  -1.0f, 0.5f,    2.0f,
+  const float exact[] = {0.0f,   1.0f,    -1.0f,    0.5f,      2.0f,
                          -0.25f, 1024.0f, 65504.0f, -65504.0f, 6.103515625e-5f};
   for (std::size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); ++i) {
     LLM_CHECK_MSG(round_to_fp16(exact[i]) == exact[i],
@@ -36,9 +36,9 @@ LLM_TEST(Fp16, RoundsToNearestEven) {
   const float step = std::ldexp(1.0f, -10);
   const float half = step * 0.5f;
   // 1 + half: мантисса 0 (чётная) против 1 — остаётся 1.0.
-  LLM_CHECK_MSG(round_to_fp16(1.0f + half) == 1.0f,
-                "округление к чётному не сработало: "
-                    << round_to_fp16(1.0f + half));
+  LLM_CHECK_MSG(
+      round_to_fp16(1.0f + half) == 1.0f,
+      "округление к чётному не сработало: " << round_to_fp16(1.0f + half));
   // 1 + step + half: выбор между мантиссами 1 и 2, чётная — 2.
   LLM_CHECK_MSG(round_to_fp16(1.0f + step + half) == 1.0f + 2.0f * step,
                 "округление к чётному не сработало вверх: "
@@ -85,8 +85,7 @@ LLM_TEST(Fp16, RelativeErrorMatchesFormat) {
   double worst = 0.0;
   for (int i = -14; i <= 15; ++i) {
     for (int j = 0; j < 997; ++j) {
-      const float value =
-          std::ldexp(1.0f + static_cast<float>(j) / 997.0f, i);
+      const float value = std::ldexp(1.0f + static_cast<float>(j) / 997.0f, i);
       const float rounded = round_to_fp16(value);
       const double error = std::fabs(rounded - value) / value;
       if (error > worst) {
@@ -103,9 +102,8 @@ LLM_TEST(Fp16, RoundTripIsIdempotent) {
   // операции к операции, и замер сходимости показывал бы дрейф округления,
   // а не свойство арифметики.
   for (int i = 0; i < 5000; ++i) {
-    const float value =
-        std::ldexp(static_cast<float>((i * 7919 % 2003) - 1000) / 997.0f,
-                   (i % 25) - 12);
+    const float value = std::ldexp(
+        static_cast<float>((i * 7919 % 2003) - 1000) / 997.0f, (i % 25) - 12);
     const float once = round_to_fp16(value);
     LLM_CHECK_MSG(round_to_fp16(once) == once,
                   "повторное округление изменило " << once);

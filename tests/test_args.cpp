@@ -44,8 +44,8 @@ void expect_int_fails(const char* text, ParseOutcome expected) {
   int64_t value = -12345;
   const ParseOutcome outcome = bench::try_parse_int64(text, &value);
   LLM_CHECK_MSG(outcome == expected,
-                "'" << (text == nullptr ? "(nullptr)" : text)
-                    << "': исход " << static_cast<int>(outcome) << " вместо "
+                "'" << (text == nullptr ? "(nullptr)" : text) << "': исход "
+                    << static_cast<int>(outcome) << " вместо "
                     << static_cast<int>(expected));
   LLM_CHECK_MSG(value == -12345,
                 "при неудаче разбор изменил значение на " << value);
@@ -55,8 +55,8 @@ void expect_double_fails(const char* text, ParseOutcome expected) {
   double value = -12345.0;
   const ParseOutcome outcome = bench::try_parse_double(text, &value);
   LLM_CHECK_MSG(outcome == expected,
-                "'" << (text == nullptr ? "(nullptr)" : text)
-                    << "': исход " << static_cast<int>(outcome) << " вместо "
+                "'" << (text == nullptr ? "(nullptr)" : text) << "': исход "
+                    << static_cast<int>(outcome) << " вместо "
                     << static_cast<int>(expected));
   LLM_CHECK_MSG(value == -12345.0,
                 "при неудаче разбор изменил значение на " << value);
@@ -131,8 +131,8 @@ LLM_TEST(Args, DoublesRefuseInfinityAndNotANumber) {
   // меньше нуля и не больше нуля, дропаут NaN не в [0, 1) и не вне его.
   // Бесконечная температура делит все логиты в нуль. Ни то, ни другое не
   // падает.
-  const char* const refused[] = {"nan",  "NaN",  "-nan",     "inf",
-                                 "INF",  "-inf", "infinity", "Infinity"};
+  const char* const refused[] = {"nan", "NaN",  "-nan",     "inf",
+                                 "INF", "-inf", "infinity", "Infinity"};
   for (std::size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); ++i) {
     expect_double_fails(refused[i], ParseOutcome::kNotFinite);
   }

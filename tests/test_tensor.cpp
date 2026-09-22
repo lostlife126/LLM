@@ -1,5 +1,5 @@
-#include <limits>
 #include <cstdint>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -336,7 +336,8 @@ LLM_TEST(Tensor, ContiguityIgnoresAxesOfSizeOne) {
   LLM_CHECK_EQ(swapped.stride(1), static_cast<std::int64_t>(6));
   const llm::Dims dense_strides = llm::contiguous_strides(swapped.shape());
   LLM_CHECK_NE(swapped.stride(1), dense_strides[1]);
-  LLM_CHECK_MSG(swapped.is_contiguous(), "шаг по оси размера 1 не должен мешать");
+  LLM_CHECK_MSG(swapped.is_contiguous(),
+                "шаг по оси размера 1 не должен мешать");
 
   // И раз плотный — значит flat() и reshape() дают верный порядок элементов.
   const llm::Span<const float> flat = swapped.flat();

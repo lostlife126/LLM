@@ -546,8 +546,8 @@ void Block::pack_half() {
   mlp_.pack_half();
 }
 
-void Block::collect(const std::string& prefix,
-                    std::vector<NamedParameter>* out, Prepared prepared) {
+void Block::collect(const std::string& prefix, std::vector<NamedParameter>* out,
+                    Prepared prepared) {
   attention_norm_.collect(prefix + ".attention_norm", out);
   attention_.collect(prefix + ".attention", out, prepared);
   mlp_norm_.collect(prefix + ".mlp_norm", out);

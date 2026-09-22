@@ -13,13 +13,11 @@
 #include <vector>
 
 #include "args.h"
-
-#include "measure.h"
-
 #include "core/cpu.h"
-#include "core/util.h"
 #include "core/random.h"
 #include "core/thread_pool.h"
+#include "core/util.h"
+#include "measure.h"
 #include "ops/gemm.h"
 #include "ops/micro_kernel.h"
 
@@ -126,8 +124,8 @@ void compare_kernels() {
               llm::cpu_features().to_string().c_str(),
               llm::detect_core_count());
   std::printf("\nмикроядра на одном потоке, квадрат 512\n");
-  std::printf("%s %10s %s\n", llm::pad_utf8("микроядро", 18).c_str(),
-              "GFLOPS", llm::pad_utf8_right("доступно", 10).c_str());
+  std::printf("%s %10s %s\n", llm::pad_utf8("микроядро", 18).c_str(), "GFLOPS",
+              llm::pad_utf8_right("доступно", 10).c_str());
   std::printf("----------------------------------------\n");
 
   // Ядра сравниваются на одном потоке. Иначе в цифру попадает ещё и то, как
@@ -229,8 +227,8 @@ void compare_paths() {
   };
   // Формы генерации по одному токену и разбора короткой затравки.
   const Case cases[] = {
-      {1, 4096, 256},  {1, 8192, 384}, {4, 4096, 256},
-      {8, 4096, 256},  {16, 4096, 256}, {32, 4096, 256},
+      {1, 4096, 256}, {1, 8192, 384},  {4, 4096, 256},
+      {8, 4096, 256}, {16, 4096, 256}, {32, 4096, 256},
   };
 
   std::printf("\nпрямой путь против блочного (мс, меньше — лучше)\n");
@@ -251,8 +249,8 @@ void compare_paths() {
     for (std::size_t j = 0; j < b.size(); ++j) b[j] = rng.normal() * 0.05f;
 
     const auto once = [&]() {
-      llm::ops::gemm(false, false, c.m, c.n, c.k, 1.0f, a.data(), c.k,
-                     b.data(), c.n, 0.0f, out.data(), c.n);
+      llm::ops::gemm(false, false, c.m, c.n, c.k, 1.0f, a.data(), c.k, b.data(),
+                     c.n, 0.0f, out.data(), c.n);
     };
 
     // Порог по числу строк — не единственное условие прямого пути: он
@@ -261,13 +259,14 @@ void compare_paths() {
     // формы здесь подобраны так, чтобы это было верно. Проверяется, а не
     // предполагается: иначе замер молча сравнивал бы прямой путь с самим
     // собой.
-    const double b_bytes = 4.0 * static_cast<double>(c.k) *
-                           static_cast<double>(c.n);
+    const double b_bytes =
+        4.0 * static_cast<double>(c.k) * static_cast<double>(c.n);
     if (b_bytes <= 256.0 * 1024.0) {
-      std::printf("  форма m=%lld n=%lld k=%lld пропущена: B укладывается в\n"
-                  "  кэш, и прямой путь включён независимо от порога\n",
-                  static_cast<long long>(c.m), static_cast<long long>(c.n),
-                  static_cast<long long>(c.k));
+      std::printf(
+          "  форма m=%lld n=%lld k=%lld пропущена: B укладывается в\n"
+          "  кэш, и прямой путь включён независимо от порога\n",
+          static_cast<long long>(c.m), static_cast<long long>(c.n),
+          static_cast<long long>(c.k));
       continue;
     }
 

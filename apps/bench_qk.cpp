@@ -25,12 +25,10 @@
 #include <vector>
 
 #include "args.h"
-
-#include "measure.h"
-
 #include "core/cpu.h"
-#include "core/util.h"
 #include "core/thread_pool.h"
+#include "core/util.h"
+#include "measure.h"
 #include "ops/gemm.h"
 
 #if LLM_QK_X86
@@ -39,8 +37,7 @@ namespace {
 // Свёртка шестнадцати аккумуляторов в один вектор из шестнадцати сумм.
 // Дерево из четырёх уровней: пары, четвёрки по 64 бита, потом 128-битные
 // дорожки. Сорок пять операций на шестнадцать результатов.
-__attribute__((target("avx512f")))
-__m512 reduce16(const __m512* a) {
+__attribute__((target("avx512f"))) __m512 reduce16(const __m512* a) {
   __m512 s[8];
   for (int i = 0; i < 8; ++i) {
     s[i] = _mm512_add_ps(_mm512_unpacklo_ps(a[2 * i], a[2 * i + 1]),
@@ -55,16 +52,14 @@ __m512 reduce16(const __m512* a) {
   }
   __m512 q[2];
   for (int i = 0; i < 2; ++i) {
-    q[i] = _mm512_add_ps(
-        _mm512_shuffle_f32x4(v[2 * i], v[2 * i + 1], 0x44),
-        _mm512_shuffle_f32x4(v[2 * i], v[2 * i + 1], 0xee));
+    q[i] = _mm512_add_ps(_mm512_shuffle_f32x4(v[2 * i], v[2 * i + 1], 0x44),
+                         _mm512_shuffle_f32x4(v[2 * i], v[2 * i + 1], 0xee));
   }
   return _mm512_add_ps(_mm512_shuffle_f32x4(q[0], q[1], 0x88),
                        _mm512_shuffle_f32x4(q[0], q[1], 0xdd));
 }
 
-__attribute__((target("avx512f")))
-bool reduce16_self_check() {
+__attribute__((target("avx512f"))) bool reduce16_self_check() {
   __m512 acc[16];
   for (int t = 0; t < 16; ++t) {
     acc[t] = _mm512_set1_ps(static_cast<float>(t + 1));
@@ -83,10 +78,13 @@ bool reduce16_self_check() {
   return true;
 }
 
-// C = A * B^T, обе построчно. Плитка 1 x 16: одна строка A, шестнадцать строк B.
-__attribute__((target("avx512f")))
-void gemm_dot(int64_t m, int64_t n, int64_t k, float alpha, const float* a,
-              int64_t lda, const float* b, int64_t ldb, float* c, int64_t ldc) {
+// C = A * B^T, обе построчно. Плитка 1 x 16: одна строка A, шестнадцать строк
+// B.
+__attribute__((target("avx512f"))) void gemm_dot(int64_t m, int64_t n,
+                                                 int64_t k, float alpha,
+                                                 const float* a, int64_t lda,
+                                                 const float* b, int64_t ldb,
+                                                 float* c, int64_t ldc) {
   const __m512 scale = _mm512_set1_ps(alpha);
   for (int64_t i = 0; i < m; ++i) {
     const float* arow = a + i * lda;
@@ -204,8 +202,10 @@ int main(int argc, char**) {
     // написано под формы внимания, а те кратны. Некратная форма не упала бы,
     // а прочитала бы за границей — и замер вышел бы про соседнюю память.
     if (c.n % 16 != 0 || c.k % 16 != 0) {
-      std::printf("форма %s не кратна шестнадцати по n или k — ядро её не "
-                  "считает\n", c.label);
+      std::printf(
+          "форма %s не кратна шестнадцати по n или k — ядро её не "
+          "считает\n",
+          c.label);
       return 1;
     }
     std::vector<float> a(c.heads * c.m * c.k, 0.5f);

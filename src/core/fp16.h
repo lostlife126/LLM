@@ -48,9 +48,8 @@ inline uint16_t to_fp16(float value) {
     // Бесконечность и NaN. У NaN обязан остаться ненулевым хоть один разряд
     // мантиссы, иначе он превратится в бесконечность; старший разряд ставится
     // явно, потому что при сдвиге на 13 младшие могли быть единственными.
-    return static_cast<uint16_t>(sign | 0x7C00u |
-                                 (mantissa != 0 ? (0x200u | (mantissa >> 13))
-                                                : 0u));
+    return static_cast<uint16_t>(
+        sign | 0x7C00u | (mantissa != 0 ? (0x200u | (mantissa >> 13)) : 0u));
   }
 
   const int32_t exponent = static_cast<int32_t>(raw_exponent) - 127 + 15;
@@ -90,9 +89,8 @@ inline uint16_t to_fp16(float value) {
       }
     }
   }
-  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(final_exponent)
-                                       << 10) |
-                               result);
+  return static_cast<uint16_t>(
+      sign | (static_cast<uint32_t>(final_exponent) << 10) | result);
 }
 
 // Половинная разрядность -> float. Преобразование точное: каждое значение

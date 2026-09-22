@@ -27,13 +27,11 @@
 #include <vector>
 
 #include "args.h"
-
-#include "measure.h"
-
 #include "core/cpu.h"
 #include "core/half.h"
 #include "core/random.h"
 #include "core/thread_pool.h"
+#include "measure.h"
 #include "ops/gemm.h"
 
 namespace {
@@ -268,7 +266,8 @@ int main(int argc, char**) {
   }
 
 #if !LLM_HALF_X86
-  std::printf("\nотдельное ядро прототипа написано под x86 с F16C; пропущено\n");
+  std::printf(
+      "\nотдельное ядро прототипа написано под x86 с F16C; пропущено\n");
   return 0;
 #else
   if (!llm::cpu_features().has_avx2_f16c()) {

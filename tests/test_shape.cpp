@@ -102,9 +102,9 @@ LLM_TEST(Shape, EmptyAxisWinsOverStretchedOne) {
             llm::Shape({0}));
   LLM_CHECK(llm::broadcast_shapes(llm::Shape({1}), llm::Shape({0})) ==
             llm::Shape({0}));
-  LLM_CHECK(llm::broadcast_shapes(llm::Shape({2, 0, 3}),
-                                  llm::Shape({1, 1, 3})) ==
-            llm::Shape({2, 0, 3}));
+  LLM_CHECK(
+      llm::broadcast_shapes(llm::Shape({2, 0, 3}), llm::Shape({1, 1, 3})) ==
+      llm::Shape({2, 0, 3}));
   // Недостающая слева ось тоже считается единицей и тоже растягивается в ноль.
   LLM_CHECK(llm::broadcast_shapes(llm::Shape({0, 3}), llm::Shape({3})) ==
             llm::Shape({0, 3}));

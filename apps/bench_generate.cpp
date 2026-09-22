@@ -19,13 +19,12 @@
 #include <vector>
 
 #include "args.h"
-
 #include "core/cpu.h"
 #include "core/thread_pool.h"
 #include "infer/generate.h"
-#include "ops/gemm.h"
 #include "nn/config.h"
 #include "nn/model.h"
+#include "ops/gemm.h"
 
 namespace {
 
@@ -123,9 +122,10 @@ int main(int argc, char** argv) {
       if (total <= 0.0) {
         return 0.0;
       }
-      std::printf("%s: A %.1f МБ (%.0f%%)  B %.1f МБ (%.0f%%)  C %.1f МБ (%.0f%%)\n",
-                  name, a / 1048576.0, 100 * a / total, b / 1048576.0,
-                  100 * b / total, c / 1048576.0, 100 * c / total);
+      std::printf(
+          "%s: A %.1f МБ (%.0f%%)  B %.1f МБ (%.0f%%)  C %.1f МБ (%.0f%%)\n",
+          name, a / 1048576.0, 100 * a / total, b / 1048576.0, 100 * b / total,
+          c / 1048576.0, 100 * c / total);
       return b / total;
     };
     std::printf("\nтрафик умножений за прогон\n");

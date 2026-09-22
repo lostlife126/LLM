@@ -12,11 +12,11 @@
 #include <sstream>
 #include <string>
 
-#include "core/check.h"
 #include "args.h"
-#include "read_file.h"
+#include "core/check.h"
 #include "data/dataset.h"
 #include "nn/model.h"
+#include "read_file.h"
 #include "serialize/checkpoint.h"
 #include "tokenizer/bpe.h"
 #include "train/resume.h"
@@ -36,7 +36,8 @@ int main(int argc, char** argv) {
   const std::string preset = argc > 3 ? argv[3] : "nano";
   const int64_t steps =
       argc > 4 ? bench::parse_positive_int64(argv[4], "число шагов") : 2000;
-  const int64_t batch = argc > 5 ? bench::parse_positive_int64(argv[5], "батч") : 16;
+  const int64_t batch =
+      argc > 5 ? bench::parse_positive_int64(argv[5], "батч") : 16;
   const float dropout =
       argc > 6 ? static_cast<float>(bench::parse_double(argv[6], "дропаут"))
                : 0.0f;

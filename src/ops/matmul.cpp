@@ -218,16 +218,16 @@ Tensor matmul_half(const Tensor& a, const HalfMatrix& b) {
   LLM_CHECK_MSG(a.rank() == 2 || a.rank() == 3,
                 "matmul_half ожидает ранг 2 или 3, получено " << a.shape());
   LLM_CHECK_MSG(a.dim(-1) == b.rows,
-                "несовместимые формы: " << a.shape() << " и матрица "
-                                        << b.rows << " x " << b.columns);
+                "несовместимые формы: " << a.shape() << " и матрица " << b.rows
+                                        << " x " << b.columns);
 
   const int64_t m = a.dim(-2);
   const int64_t k = b.rows;
   const int64_t n = b.columns;
   const int64_t batch = a.rank() == 3 ? a.dim(0) : 1;
 
-  Tensor out = Tensor::uninitialized(a.rank() == 2 ? Shape{m, n}
-                                                   : Shape{batch, m, n});
+  Tensor out =
+      Tensor::uninitialized(a.rank() == 2 ? Shape{m, n} : Shape{batch, m, n});
 
   // Здесь матрица справа общая всегда — она одна по самому виду HalfMatrix, —
   // поэтому плотный трёхмерный вход сливается в одно умножение без всяких

@@ -20,12 +20,10 @@
 #include <vector>
 
 #include "args.h"
-
-#include "measure.h"
-
 #include "core/cpu.h"
-#include "core/util.h"
 #include "core/random.h"
+#include "core/util.h"
+#include "measure.h"
 #include "ops/fast_exp.h"
 
 namespace {

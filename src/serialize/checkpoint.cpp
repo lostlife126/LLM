@@ -56,11 +56,11 @@ std::string read_string(std::ifstream* file, const std::string& path) {
 uint8_t read_choice(std::ifstream* file, const std::string& path,
                     const char* what, uint8_t limit) {
   const uint8_t value = read_pod<uint8_t>(file, path);
-  LLM_CHECK_MSG(value < limit,
-                "в чекпоинте " << path << " развилка " << what << " равна "
-                               << static_cast<int>(value)
-                               << ", а известны значения от 0 до "
-                               << static_cast<int>(limit - 1));
+  LLM_CHECK_MSG(value < limit, "в чекпоинте "
+                                   << path << " развилка " << what << " равна "
+                                   << static_cast<int>(value)
+                                   << ", а известны значения от 0 до "
+                                   << static_cast<int>(limit - 1));
   return value;
 }
 
@@ -104,12 +104,11 @@ nn::ModelConfig read_config_body(std::ifstream* file, const std::string& path,
   config.init_std = read_pod<float>(file, path);
   config.tie_embeddings = read_pod<uint8_t>(file, path) != 0;
   if (version >= 2) {
-    config.norm = static_cast<nn::NormKind>(
-        read_choice(file, path, "нормировки", 2));
-    config.position = static_cast<nn::PositionKind>(
-        read_choice(file, path, "позиций", 3));
-    config.ffn =
-        static_cast<nn::FfnKind>(read_choice(file, path, "FFN", 2));
+    config.norm =
+        static_cast<nn::NormKind>(read_choice(file, path, "нормировки", 2));
+    config.position =
+        static_cast<nn::PositionKind>(read_choice(file, path, "позиций", 3));
+    config.ffn = static_cast<nn::FfnKind>(read_choice(file, path, "FFN", 2));
     config.post_norm = read_pod<uint8_t>(file, path) != 0;
   }
   if (version >= 3) {

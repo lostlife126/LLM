@@ -232,11 +232,20 @@ LLM_TEST(Pretokenize, BrokenUtf8GoesToOtherSymbols) {
 
   // Тот же байт между буквами: у GPT-2 он обязан отделиться с обеих сторон,
   // потому что необязательный ведущий символ там — только пробел.
-  expect_split("a\xD0" "b", kGpt2, {"a", "\xD0", "b"});
+  expect_split(
+      "a\xD0"
+      "b",
+      kGpt2, {"a", "\xD0", "b"});
   // Байт, который иначе сошёл бы за пробел.
-  expect_split("a\xA0" "b", kGpt2, {"a", "\xA0", "b"});
+  expect_split(
+      "a\xA0"
+      "b",
+      kGpt2, {"a", "\xA0", "b"});
   // И за цифру: 0xB2 — это верхний индекс «два».
-  expect_split("a\xB2" "b", kGpt2, {"a", "\xB2", "b"});
+  expect_split(
+      "a\xB2"
+      "b",
+      kGpt2, {"a", "\xB2", "b"});
 
   // Годная последовательность разбирается как прежде — проверка на valid
   // касается только мусора.
@@ -265,18 +274,16 @@ LLM_TEST(Pretokenize, Utf8RoundTripsForEveryCodePoint) {
     std::string encoded;
     llm::append_utf8(code, &encoded);
 
-    const int expected_bytes = code < 0x80u
-                                   ? 1
-                                   : (code < 0x800u ? 2
-                                                    : (code < 0x10000u ? 3 : 4));
+    const int expected_bytes =
+        code < 0x80u ? 1 : (code < 0x800u ? 2 : (code < 0x10000u ? 3 : 4));
     LLM_CHECK_MSG(static_cast<int>(encoded.size()) == expected_bytes,
                   "точка " << code << " записана в " << encoded.size()
                            << " байт вместо " << expected_bytes);
 
     const llm::Utf8Char back = llm::decode_utf8(encoded.data(), encoded.size());
     LLM_CHECK_MSG(back.valid, "точка " << code << " не прочиталась обратно");
-    LLM_CHECK_MSG(back.code == code, "точка " << code << " вернулась как "
-                                              << back.code);
+    LLM_CHECK_MSG(back.code == code,
+                  "точка " << code << " вернулась как " << back.code);
     LLM_CHECK_MSG(back.bytes == expected_bytes,
                   "точка " << code << ": прочитано " << back.bytes
                            << " байт вместо " << expected_bytes);
@@ -295,8 +302,8 @@ LLM_TEST(Pretokenize, JsonEscapeDecodingAgreesWithAppendUtf8) {
   //
   // Точки подобраны по границам длины записи и вокруг них, плюс пара из
   // дополнительных плоскостей, которые в JSON приходят суррогатной парой.
-  const uint32_t codes[] = {0x00u,   0x41u,   0x7Fu,    0x80u,
-                            0x7FFu,  0x800u,  0x0416u,  0xFFFFu,
+  const uint32_t codes[] = {0x00u,    0x41u,    0x7Fu,    0x80u,
+                            0x7FFu,   0x800u,   0x0416u,  0xFFFFu,
                             0x10000u, 0x1F600u, 0x10FFFFu};
 
   for (std::size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
@@ -313,8 +320,7 @@ LLM_TEST(Pretokenize, JsonEscapeDecodingAgreesWithAppendUtf8) {
       escaped += buffer;
     } else {
       const uint32_t rest = code - 0x10000u;
-      std::snprintf(buffer, sizeof(buffer), "\\u%04X",
-                    0xD800u + (rest >> 10));
+      std::snprintf(buffer, sizeof(buffer), "\\u%04X", 0xD800u + (rest >> 10));
       escaped += buffer;
       std::snprintf(buffer, sizeof(buffer), "\\u%04X",
                     0xDC00u + (rest & 0x3FFu));
@@ -325,9 +331,9 @@ LLM_TEST(Pretokenize, JsonEscapeDecodingAgreesWithAppendUtf8) {
     const llm::serialize::JsonDocument document =
         llm::serialize::JsonDocument::parse(escaped);
     LLM_CHECK(document.root().is_string());
-    LLM_CHECK_MSG(document.root().text() == expected,
-                  "точка " << code
-                           << ": разбор JSON и append_utf8 дали разные байты");
+    LLM_CHECK_MSG(
+        document.root().text() == expected,
+        "точка " << code << ": разбор JSON и append_utf8 дали разные байты");
   }
 }
 
@@ -362,12 +368,12 @@ LLM_TEST(Pretokenize, UnicodeTablesMatchTheDatabaseByCount) {
 
   // И несколько точек по именам, чтобы при расхождении было видно не только
   // «число не то», но и где искать: по одной из каждой части таблицы.
-  LLM_CHECK(llm::is_unicode_letter('A'));       // латиница, начало таблицы
-  LLM_CHECK(llm::is_unicode_letter(0x0416u));   // кириллица Ж
-  LLM_CHECK(llm::is_unicode_letter(0x4E2Du));   // китайский 中, середина
+  LLM_CHECK(llm::is_unicode_letter('A'));  // латиница, начало таблицы
+  LLM_CHECK(llm::is_unicode_letter(0x0416u));  // кириллица Ж
+  LLM_CHECK(llm::is_unicode_letter(0x4E2Du));  // китайский 中, середина
   LLM_CHECK(llm::is_unicode_letter(0x1E921u));  // адлам, конец таблицы
   LLM_CHECK(llm::is_unicode_number('7'));
-  LLM_CHECK(llm::is_unicode_number(0x0669u));   // арабо-индийская девятка
+  LLM_CHECK(llm::is_unicode_number(0x0669u));  // арабо-индийская девятка
   LLM_CHECK(llm::is_unicode_number(0x1FBF9u));  // сегментная девятка, конец
 
   // И отрицательные: пробел, знак, эмодзи и незанятая точка буквами не бывают.
@@ -388,10 +394,9 @@ LLM_TEST(Pretokenize, UnicodeTablesMatchTheDatabaseByCount) {
 // отдельно. Другие куски — другие номера токенов.
 LLM_TEST(Pretokenize, EveryWhiteSpaceCodePointCountsAsSpace) {
   // Весь White_Space, по одной точке из каждого куска списка.
-  const uint32_t spaces[] = {0x09u,   0x0Au,   0x0Bu,   0x0Cu,   0x0Du,
-                             0x20u,   0x85u,   0xA0u,   0x1680u, 0x2000u,
-                             0x200Au, 0x2028u, 0x2029u, 0x202Fu, 0x205Fu,
-                             0x3000u};
+  const uint32_t spaces[] = {
+      0x09u,   0x0Au,   0x0Bu,   0x0Cu,   0x0Du,   0x20u,   0x85u,   0xA0u,
+      0x1680u, 0x2000u, 0x200Au, 0x2028u, 0x2029u, 0x202Fu, 0x205Fu, 0x3000u};
   // Цепочка из двух пробелов между буквами: первый уходит своим куском, а
   // второй достаётся следующему слову. «Прочий символ» вместо пробела дал бы
   // здесь один склеенный кусок из обоих.
@@ -442,6 +447,5 @@ LLM_TEST(Pretokenize, EveryWhiteSpaceCodePointCountsAsSpace) {
   // U+200B пробелом не является, что бы ни говорило его название.
   std::string zero_width;
   llm::append_utf8(0x200Bu, &zero_width);
-  expect_split("a" + zero_width + "b", kGpt2,
-               {"a", zero_width, "b"});
+  expect_split("a" + zero_width + "b", kGpt2, {"a", zero_width, "b"});
 }

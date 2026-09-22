@@ -89,7 +89,7 @@ class BufferPool {
   }
 
  private:
-  typedef std::map<std::size_t, std::vector<unsigned char*> > Map;
+  typedef std::map<std::size_t, std::vector<unsigned char*>> Map;
 
   // Сколько байт пул готов держать. Пик живой памяти у tiny — около 450 МБ,
   // и потолок выбран с запасом над ним: пул должен переживать шаг целиком,

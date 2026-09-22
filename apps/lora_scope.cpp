@@ -19,12 +19,12 @@
 #include <string>
 #include <vector>
 
+#include "args.h"
 #include "core/check.h"
 #include "core/util.h"
-#include "args.h"
-#include "read_file.h"
 #include "data/dataset.h"
 #include "nn/model.h"
+#include "read_file.h"
 #include "serialize/checkpoint.h"
 #include "tokenizer/bpe.h"
 #include "train/trainer.h"

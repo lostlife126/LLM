@@ -78,9 +78,9 @@ LLM_TEST(Quantize, ScaleKeepsErrorAtTheLatticeLevel) {
   llm::quantize(&raw, llm::Precision::kFp8E4M3NoScale);
   const double without_scale = worst_relative_error(values, raw);
 
-  LLM_CHECK_MSG(with_scale <= 1.0 / 16.0 + 1e-6,
-                "с масштабом погрешность " << with_scale
-                                           << " больше решётки формата");
+  LLM_CHECK_MSG(
+      with_scale <= 1.0 / 16.0 + 1e-6,
+      "с масштабом погрешность " << with_scale << " больше решётки формата");
   // Без масштаба она обязана быть в разы хуже. Если бы оказалась такой же,
   // значит масштаб ни на что не влияет, и вся конструкция бессмысленна.
   LLM_CHECK_MSG(without_scale > 10.0 * with_scale,
@@ -127,11 +127,11 @@ LLM_TEST(Quantize, ScaleExponentFitsTheFormat) {
     const int exponent = llm::scale_exponent(tensor, llm::Precision::kFp8E4M3);
     const double largest = std::ldexp(0.7, shift);
     const double after = std::ldexp(largest, -exponent);
-    LLM_CHECK_MSG(after <= 448.0, "после масштаба " << after
-                                                    << " всё ещё больше 448");
-    LLM_CHECK_MSG(after > 448.0 / 2.0,
-                  "после масштаба " << after
-                                    << " оставляет больше бинады запаса");
+    LLM_CHECK_MSG(after <= 448.0,
+                  "после масштаба " << after << " всё ещё больше 448");
+    LLM_CHECK_MSG(
+        after > 448.0 / 2.0,
+        "после масштаба " << after << " оставляет больше бинады запаса");
   }
 
   // Отдельно — случай, которого множитель 0.7 никогда не даёт: наибольшее
@@ -169,15 +169,15 @@ LLM_TEST(Quantize, ScaleExponentFitsTheFormat) {
 // применяется, и весь смысл файла — «измеренная погрешность относится к
 // формату, а не к арифметике вокруг него» — теряется без единого признака.
 LLM_TEST(Quantize, InfinityIsRefusedAndNanPassesThrough) {
-  llm::Tensor with_infinity = tensor_from(
-      {0.01f, std::numeric_limits<float>::infinity(), -0.02f});
+  llm::Tensor with_infinity =
+      tensor_from({0.01f, std::numeric_limits<float>::infinity(), -0.02f});
   LLM_EXPECT_THROWS(
       llm::scale_exponent(with_infinity, llm::Precision::kFp8E4M3));
   LLM_EXPECT_THROWS(llm::quantize(&with_infinity, llm::Precision::kFp8E4M3));
 
   // Отрицательная бесконечность тоже: наибольшим берётся модуль.
-  llm::Tensor negative = tensor_from(
-      {0.01f, -std::numeric_limits<float>::infinity()});
+  llm::Tensor negative =
+      tensor_from({0.01f, -std::numeric_limits<float>::infinity()});
   LLM_EXPECT_THROWS(llm::scale_exponent(negative, llm::Precision::kFp8E4M3));
 
   // А NaN проходит и остаётся NaN: обучение, ушедшее в NaN, надо увидеть, а

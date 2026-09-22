@@ -108,8 +108,7 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
   // взят не круглым числом, а от самого файла: словарь в tokenizer.json
   // плотный, номера идут подряд от нуля, и запас в шестнадцать раз
   // отличает редкий словарь от испорченного.
-  const int64_t id_limit =
-      16 * static_cast<int64_t>(vocab.size()) + 1024;
+  const int64_t id_limit = 16 * static_cast<int64_t>(vocab.size()) + 1024;
 
   int32_t highest = -1;
   std::vector<std::pair<int32_t, std::string>> entries;
@@ -202,9 +201,9 @@ HfTokenizer HfTokenizer::parse(const std::string& text,
     // но added_tokens() отдаётся наружу, и пусть он не зависит от того, чья
     // это стандартная библиотека.
     std::stable_sort(out.added_tokens_.begin(), out.added_tokens_.end(),
-              [](const HfAddedToken& a, const HfAddedToken& b) {
-                return a.content.size() > b.content.size();
-              });
+                     [](const HfAddedToken& a, const HfAddedToken& b) {
+                       return a.content.size() > b.content.size();
+                     });
   }
 
   // --- предтокенизатор ---
